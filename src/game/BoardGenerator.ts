@@ -1,26 +1,37 @@
 export class BoardGenerator {
-  static generate(colorCount: number, emptyBottles: number = 2, capacity: number = 4): number[][] {
+  static generate(level: number): { bottles: number[][], capacities: number[] } {
+    const colorCount = Math.min(4 + Math.floor((level - 1) / 2), 12);
+    const emptyBottles = 2;
+
+    const capacities: number[] = [];
     const bottles: number[][] = [];
     
-    // Fill bottles with distinct colors
+    // Choose capacities for filled bottles
     for (let i = 0; i < colorCount; i++) {
-      bottles.push(Array(capacity).fill(i));
+      let cap = 4;
+      if (level >= 3) cap = Math.random() < 0.3 ? 3 : (Math.random() < 0.5 ? 5 : 4);
+      if (level >= 5 && Math.random() < 0.2) cap = 6;
+      capacities.push(cap);
+      bottles.push(Array(cap).fill(i));
     }
+    
+    // Choose capacities for empty bottles
     for (let i = 0; i < emptyBottles; i++) {
+      let cap = 4;
+      if (level >= 3) cap = Math.random() < 0.5 ? 4 : 5;
+      capacities.push(cap);
       bottles.push([]);
     }
 
     // Reverse pour logic
-    const shuffles = colorCount * 20;
+    const shuffles = colorCount * 50;
     for (let i = 0; i < shuffles; i++) {
       const from = Math.floor(Math.random() * bottles.length);
       const to = Math.floor(Math.random() * bottles.length);
       
-      if (from !== to && bottles[from].length > 0 && bottles[to].length < capacity) {
-         const amount = Math.floor(Math.random() * Math.min(bottles[from].length, capacity - bottles[to].length)) + 1;
+      if (from !== to && bottles[from].length > 0 && bottles[to].length < capacities[to]) {
+         const amount = Math.floor(Math.random() * Math.min(bottles[from].length, capacities[to] - bottles[to].length)) + 1;
          
-         // In reverse pour, we can pour if 'to' is empty or 'to' top matches color (though reverse doesn't enforce match perfectly, true reverse needs careful logic).
-         // Simplified: just shuffle elements directly to ensure solvability.
          for(let j=0; j<amount; j++){
            if(bottles[from].length > 0){
              bottles[to].push(bottles[from].pop()!);
@@ -29,6 +40,6 @@ export class BoardGenerator {
       }
     }
 
-    return bottles;
+    return { bottles, capacities };
   }
 }

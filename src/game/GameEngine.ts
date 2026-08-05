@@ -4,7 +4,8 @@ import { AudioSystem } from './AudioSystem';
 
 const COLORS = [
   '#FF5733', '#33FF57', '#3357FF', '#F333FF',
-  '#33FFF3', '#FFFF33', '#FF8F33', '#8F33FF'
+  '#33FFF3', '#FFFF33', '#FF8F33', '#8F33FF',
+  '#FF3388', '#88FF33', '#3388FF', '#FF3333'
 ];
 
 export class GameEngine {
@@ -66,6 +67,9 @@ export class GameEngine {
           if (this.state.isWin()) {
             this.audio.playWin();
             confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent('game-clear'));
+            }, 2000);
           }
         } else {
           this.audio.playError();
@@ -102,8 +106,10 @@ export class GameEngine {
     const cellW = width / cols;
     const cellH = height / rows;
     
+    const maxCapacity = Math.max(...this.state.capacities);
     const bottleW = Math.min(cellW * 0.4, 60);
-    const bottleH = Math.min(cellH * 0.6, 180);
+    // Scale height based on max capacity to ensure tall bottles fit
+    const bottleH = Math.min(cellH * 0.6, 150 + (maxCapacity - 4) * 20);
 
     for (let i = 0; i < n; i++) {
       const col = i % cols;
@@ -114,34 +120,37 @@ export class GameEngine {
       
       if (this.selectedBottle === i) cy -= 20;
       
-      this.drawBottle(cx, cy, bottleW, bottleH, this.state.bottles[i]);
+      this.drawBottle(cx, cy, bottleW, bottleH, this.state.bottles[i], this.state.capacities[i]);
     }
   }
 
-  drawBottle(x: number, y: number, w: number, h: number, colors: number[]) {
+  drawBottle(x: number, y: number, w: number, h: number, colors: number[], capacity: number) {
     const ctx = this.ctx;
     const rad = w * 0.2;
     
+    // Adjust height proportional to capacity for visual distinction
+    const actualH = h * (capacity / Math.max(...this.state.capacities));
+    y = y + (h - actualH) / 2; // Bottom align
+
     // Draw colors
-    const cap = this.state.capacity;
-    const hPerColor = (h - rad) / cap;
+    const hPerColor = (actualH - rad) / capacity;
     
     ctx.save();
     // Path for clipping
     ctx.beginPath();
-    ctx.roundRect(x - w/2, y - h/2, w, h, [0, 0, rad, rad]);
+    ctx.roundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
     ctx.clip();
     
     for (let i = 0; i < colors.length; i++) {
       ctx.fillStyle = COLORS[colors[i] % COLORS.length];
-      const yOffset = y + h/2 - (i + 1) * hPerColor;
+      const yOffset = y + actualH/2 - (i + 1) * hPerColor;
       ctx.fillRect(x - w/2, yOffset, w, hPerColor);
     }
     ctx.restore();
     
     // Outline
     ctx.beginPath();
-    ctx.roundRect(x - w/2, y - h/2, w, h, [0, 0, rad, rad]);
+    ctx.roundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
     ctx.lineWidth = 4;
     ctx.stroke();

@@ -1,16 +1,18 @@
 export class GameState {
   bottles: number[][];
-  capacity: number;
+  capacities: number[];
   history: { bottles: number[][]; score: number }[];
   score: number;
   moves: number;
+  level: number;
 
-  constructor(bottles: number[][], capacity: number = 4) {
+  constructor(bottles: number[][], capacities: number[], level: number = 1) {
     this.bottles = bottles.map(b => [...b]);
-    this.capacity = capacity;
+    this.capacities = [...capacities];
     this.history = [];
     this.score = 0;
     this.moves = 0;
+    this.level = level;
   }
 
   canPour(from: number, to: number): boolean {
@@ -18,7 +20,7 @@ export class GameState {
     const bFrom = this.bottles[from];
     const bTo = this.bottles[to];
     if (bFrom.length === 0) return false;
-    if (bTo.length >= this.capacity) return false;
+    if (bTo.length >= this.capacities[to]) return false;
     
     if (bTo.length === 0) return true;
     
@@ -34,7 +36,7 @@ export class GameState {
     const bTo = this.bottles[to];
     const color = bFrom[bFrom.length - 1];
     
-    while (bFrom.length > 0 && bFrom[bFrom.length - 1] === color && bTo.length < this.capacity) {
+    while (bFrom.length > 0 && bFrom[bFrom.length - 1] === color && bTo.length < this.capacities[to]) {
       bTo.push(bFrom.pop() as number);
     }
     this.moves++;
@@ -44,6 +46,7 @@ export class GameState {
   addEmptyBottle() {
     this.saveState();
     this.bottles.push([]);
+    this.capacities.push(4); // Default capacity for added bottles
   }
 
   saveState() {
@@ -62,9 +65,10 @@ export class GameState {
   }
 
   isWin(): boolean {
-    for (const b of this.bottles) {
+    for (let i = 0; i < this.bottles.length; i++) {
+      const b = this.bottles[i];
       if (b.length > 0) {
-        if (b.length !== this.capacity) return false;
+        if (b.length !== this.capacities[i]) return false;
         const color = b[0];
         if (!b.every(c => c === color)) return false;
       }
@@ -74,7 +78,8 @@ export class GameState {
 
   isBottleComplete(index: number): boolean {
     const b = this.bottles[index];
-    if (b.length !== this.capacity) return false;
+    if (b.length === 0) return false;
+    if (b.length !== this.capacities[index]) return false;
     return b.every(c => c === b[0]);
   }
 }
