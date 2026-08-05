@@ -27,14 +27,12 @@ export class GameEngine {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
     
-    // Bind both pointerdown and touchstart for mobile responsiveness
-    const handleInput = (e: MouseEvent | TouchEvent) => {
-      e.preventDefault();
-      this.onClick(e);
-    };
-
-    this.canvas.addEventListener('pointerdown', handleInput as EventListener);
-    this.canvas.addEventListener('touchstart', handleInput as EventListener, { passive: false });
+    // Bind pointerdown and click fallback
+    this.canvas.addEventListener('pointerdown', (e: PointerEvent) => this.onClick(e));
+    this.canvas.addEventListener('click', (e: MouseEvent) => {
+      // Fallback for non-pointer devices if pointerdown didn't fire
+      if (e.detail === 0) this.onClick(e); 
+    });
     
     this.loop();
   }
@@ -47,8 +45,17 @@ export class GameEngine {
     this.canvas.height = Math.max(h, 300);
   }
 
-  onClick(e: MouseEvent | TouchEvent) {
+  onClick(e: MouseEvent | PointerEvent | TouchEvent) {
     if (this.animating || !this.state || this.state.isWin()) return;
+    
+    // Prevent menu clicks from registering on canvas behind
+    const startMenu = document.getElementById('start-menu');
+    const resultMenu = document.getElementById('result-menu');
+    if ((startMenu && !startMenu.classList.contains('hidden')) ||
+        (resultMenu && !resultMenu.classList.contains('hidden'))) {
+      return;
+    }
+
     try {
       this.audio.init();
     } catch {
@@ -59,12 +66,15 @@ export class GameEngine {
     let clientX = 0;
     let clientY = 0;
 
-    if ('touches' in e && e.touches.length > 0) {
+    if ('changedTouches' in e && e.changedTouches.length > 0) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else if ('touches' in e && e.touches.length > 0) {
       clientX = e.touches[0].clientX;
       clientY = e.touches[0].clientY;
     } else if ('clientX' in e) {
-      clientX = e.clientX;
-      clientY = e.clientY;
+      clientX = (e as MouseEvent).clientX;
+      clientY = (e as MouseEvent).clientY;
     } else {
       return;
     }
@@ -124,12 +134,28 @@ export class GameEngine {
     
     const cellW = width / cols;
     const cellH = height / rows;
-    
-    const col = Math.floor(x / cellW);
-    const row = Math.floor(y / cellH);
-    
-    const idx = row * cols + col;
-    return idx < n ? idx : null;
+
+    const maxCapacity = Math.max(...this.state.capacities);
+    const bottleW = Math.min(cellW * 0.4, 60);
+    const bottleH = Math.min(cellH * 0.6, 150 + (maxCapacity - 4) * 20);
+
+    for (let i = 0; i < n; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      
+      const cx = col * cellW + cellW / 2;
+      const cy = row * cellH + cellH / 2;
+
+      // Expand hit area for mobile touch target comfort
+      const hitW = Math.max(bottleW * 1.8, cellW * 0.8);
+      const hitH = Math.max(bottleH * 1.5, cellH * 0.8);
+
+      if (x >= cx - hitW / 2 && x <= cx + hitW / 2 &&
+          y >= cy - hitH / 2 && y <= cy + hitH / 2) {
+        return i;
+      }
+    }
+    return null;
   }
 
   draw() {
