@@ -25,6 +25,7 @@ export class GameEngine {
     
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
     this.canvas.addEventListener('pointerdown', this.onClick.bind(this));
     
     this.loop();
@@ -32,11 +33,10 @@ export class GameEngine {
 
   resize() {
     const parent = this.canvas.parentElement;
-    if (parent) {
-      const rect = parent.getBoundingClientRect();
-      this.canvas.width = (rect.width || parent.clientWidth || window.innerWidth);
-      this.canvas.height = (rect.height || parent.clientHeight || window.innerHeight);
-    }
+    const w = (parent && parent.clientWidth) || window.innerWidth;
+    const h = (parent && parent.clientHeight) || (window.innerHeight - 60);
+    this.canvas.width = Math.max(w, 300);
+    this.canvas.height = Math.max(h, 300);
   }
 
   onClick(e: PointerEvent) {
@@ -128,12 +128,31 @@ export class GameEngine {
     }
   }
 
+  drawRoundRect(x: number, y: number, w: number, h: number, radii: number[]) {
+    const ctx = this.ctx;
+    const r = radii[2] || 0;
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(x, y, w, h, radii);
+    } else {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y);
+      ctx.closePath();
+    }
+  }
+
   drawBottle(x: number, y: number, w: number, h: number, colors: number[], capacity: number) {
     const ctx = this.ctx;
     const rad = w * 0.2;
     
     // Adjust height proportional to capacity for visual distinction
-    const actualH = h * (capacity / Math.max(...this.state.capacities));
+    const maxCap = Math.max(...this.state.capacities);
+    const actualH = h * (capacity / maxCap);
     y = y + (h - actualH) / 2; // Bottom align
 
     // Draw colors
@@ -141,8 +160,7 @@ export class GameEngine {
     
     ctx.save();
     // Path for clipping
-    ctx.beginPath();
-    ctx.roundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
+    this.drawRoundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
     ctx.clip();
     
     for (let i = 0; i < colors.length; i++) {
@@ -153,8 +171,7 @@ export class GameEngine {
     ctx.restore();
     
     // Outline
-    ctx.beginPath();
-    ctx.roundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
+    this.drawRoundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
     ctx.lineWidth = 4;
     ctx.stroke();
