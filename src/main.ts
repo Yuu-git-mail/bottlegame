@@ -43,24 +43,27 @@ let engine: GameEngine;
 let audio = new AudioSystem();
 let currentLevel = 1;
 
-function startGame(level: number) {
+function initGame(level: number = 1) {
   currentLevel = level;
-  document.getElementById('start-menu')!.classList.add('hidden');
-  document.getElementById('result-menu')!.classList.add('hidden');
-  
   const { bottles, capacities } = BoardGenerator.generate(level);
   state = new GameState(bottles, capacities, level);
   
   const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
   if(engine) {
      engine.state = state;
-     engine.selectedBottle = null; // reset selection
+     engine.selectedBottle = null;
   } else {
      engine = new GameEngine(canvas, state, audio);
   }
   
   document.getElementById('level-num')!.innerText = level.toString();
   updateUI();
+}
+
+function startGame(level: number) {
+  initGame(level);
+  document.getElementById('start-menu')!.classList.add('hidden');
+  document.getElementById('result-menu')!.classList.add('hidden');
 }
 
 document.getElementById('btn-start')!.addEventListener('click', () => {
@@ -98,6 +101,7 @@ function updateUI() {
   document.getElementById('moves')!.innerText = state.moves.toString();
 }
 
-// Menu initial setup
+// Initial setup: display start menu and initialize background board render so canvas is never blank
 document.getElementById('start-menu')!.classList.remove('hidden');
 document.getElementById('result-menu')!.classList.add('hidden');
+initGame(1);
