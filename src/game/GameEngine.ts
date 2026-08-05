@@ -27,12 +27,13 @@ export class GameEngine {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
     
-    // Bind pointerdown and click fallback
+    // Bind touchstart, pointerdown and click
+    this.canvas.addEventListener('touchstart', (e: TouchEvent) => {
+      e.preventDefault();
+      this.onClick(e);
+    }, { passive: false });
     this.canvas.addEventListener('pointerdown', (e: PointerEvent) => this.onClick(e));
-    this.canvas.addEventListener('click', (e: MouseEvent) => {
-      // Fallback for non-pointer devices if pointerdown didn't fire
-      if (e.detail === 0) this.onClick(e); 
-    });
+    this.canvas.addEventListener('click', (e: MouseEvent) => this.onClick(e));
     
     this.loop();
   }
@@ -41,8 +42,12 @@ export class GameEngine {
     const parent = this.canvas.parentElement;
     const w = (parent && parent.clientWidth) || window.innerWidth;
     const h = (parent && parent.clientHeight) || (window.innerHeight - 60);
-    this.canvas.width = Math.max(w, 300);
-    this.canvas.height = Math.max(h, 300);
+    const dpr = window.devicePixelRatio || 1;
+
+    this.canvas.width = Math.max(w, 300) * dpr;
+    this.canvas.height = Math.max(h, 300) * dpr;
+    this.ctx.resetTransform?.();
+    this.ctx.scale(dpr, dpr);
   }
 
   onClick(e: MouseEvent | PointerEvent | TouchEvent) {
@@ -127,7 +132,9 @@ export class GameEngine {
   }
 
   getBottleAt(x: number, y: number): number | null {
-    const { width, height } = this.canvas;
+    const dpr = window.devicePixelRatio || 1;
+    const width = this.canvas.width / dpr;
+    const height = this.canvas.height / dpr;
     const n = this.state.bottles.length;
     const cols = Math.ceil(Math.sqrt(n));
     const rows = Math.ceil(n / cols);
@@ -159,9 +166,11 @@ export class GameEngine {
   }
 
   draw() {
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    const dpr = window.devicePixelRatio || 1;
+    const width = this.canvas.width / dpr;
+    const height = this.canvas.height / dpr;
+    this.ctx.clearRect(0, 0, width, height);
     
-    const { width, height } = this.canvas;
     const n = this.state.bottles.length;
     const cols = Math.ceil(Math.sqrt(n));
     const rows = Math.ceil(n / cols);
@@ -194,13 +203,15 @@ export class GameEngine {
     if (typeof ctx.roundRect === 'function') {
       ctx.roundRect(x, y, w, h, radii);
     } else {
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + w, y);
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
       ctx.lineTo(x + w, y + h - r);
       ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
       ctx.lineTo(x + r, y + h);
       ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-      ctx.lineTo(x, y);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
       ctx.closePath();
     }
   }
@@ -237,7 +248,11 @@ export class GameEngine {
   }
 
   loop() {
-    this.draw();
+    try {
+      this.draw();
+    } catch (err) {
+      console.error('Render error:', err);
+    }
     requestAnimationFrame(this.loop.bind(this));
   }
 }

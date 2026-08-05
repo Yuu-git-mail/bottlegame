@@ -70,6 +70,7 @@ function startGame(level: number) {
   initGame(level);
   document.getElementById('start-menu')?.classList.add('hidden');
   document.getElementById('result-menu')?.classList.add('hidden');
+  setTimeout(() => engine?.resize(), 50);
 }
 
 function initApp() {
