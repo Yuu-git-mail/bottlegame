@@ -60,48 +60,46 @@ function initGame(level: number = 1) {
   updateUI();
 }
 
-function startGame(level: number) {
-  initGame(level);
-  document.getElementById('start-menu')!.classList.add('hidden');
-  document.getElementById('result-menu')!.classList.add('hidden');
-}
-
-document.getElementById('btn-start')!.addEventListener('click', () => {
-  const select = document.getElementById('select-level') as HTMLSelectElement;
-  const level = select ? parseInt(select.value, 10) : currentLevel;
-  startGame(level);
-});
-
-document.getElementById('btn-next-level')!.addEventListener('click', () => {
-  startGame(currentLevel + 1);
-});
-
-document.getElementById('btn-retry')!.addEventListener('click', () => {
-  startGame(currentLevel);
-});
-
-document.getElementById('btn-undo')!.addEventListener('click', () => {
-  if(state) { state.undo(); updateUI(); }
-});
-
-document.getElementById('btn-reset')!.addEventListener('click', () => {
-  startGame(currentLevel);
-});
-
-document.getElementById('btn-add')!.addEventListener('click', () => {
-  if(state) { state.addEmptyBottle(); }
-});
-
-window.addEventListener('game-clear', () => {
-  document.getElementById('result-menu')!.classList.remove('hidden');
-});
-
 function updateUI() {
   if(!state) return;
-  document.getElementById('moves')!.innerText = state.moves.toString();
+  const movesEl = document.getElementById('moves');
+  if (movesEl) movesEl.innerText = state.moves.toString();
 }
 
-// Initial setup: display start menu and initialize background board render so canvas is never blank
-document.getElementById('start-menu')!.classList.remove('hidden');
-document.getElementById('result-menu')!.classList.add('hidden');
-initGame(1);
+function startGame(level: number) {
+  initGame(level);
+  document.getElementById('start-menu')?.classList.add('hidden');
+  document.getElementById('result-menu')?.classList.add('hidden');
+}
+
+function initApp() {
+  const startBtn = document.getElementById('btn-start');
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      const select = document.getElementById('select-level') as HTMLSelectElement;
+      const level = select ? parseInt(select.value, 10) : currentLevel;
+      startGame(level);
+    });
+  }
+
+  document.getElementById('btn-next-level')?.addEventListener('click', () => startGame(currentLevel + 1));
+  document.getElementById('btn-retry')?.addEventListener('click', () => startGame(currentLevel));
+  document.getElementById('btn-undo')?.addEventListener('click', () => { if(state) { state.undo(); updateUI(); } });
+  document.getElementById('btn-reset')?.addEventListener('click', () => startGame(currentLevel));
+  document.getElementById('btn-add')?.addEventListener('click', () => { if(state) { state.addEmptyBottle(); } });
+
+  window.addEventListener('game-clear', () => {
+    document.getElementById('result-menu')?.classList.remove('hidden');
+  });
+
+  document.getElementById('start-menu')?.classList.remove('hidden');
+  document.getElementById('result-menu')?.classList.add('hidden');
+
+  initGame(1);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}

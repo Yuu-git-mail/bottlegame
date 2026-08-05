@@ -8,7 +8,10 @@ body {
   align-items: center;
   height: 100vh;
   height: 100dvh;
+  width: 100vw;
   overflow: hidden;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
 }
 #app {
   width: 100%;
@@ -16,6 +19,7 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .header {
   display: flex;
@@ -23,6 +27,7 @@ body {
   padding: 1rem;
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(10px);
+  z-index: 5;
 }
 .button-group button {
   background: rgba(255, 255, 255, 0.1);
@@ -40,7 +45,8 @@ body {
 .game-container {
   flex: 1;
   width: 100%;
-  min-height: 0;
+  height: 100%;
+  min-height: 200px;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -56,12 +62,12 @@ canvas {
 .menu-overlay {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.8);
+  background: rgba(26, 26, 46, 0.92);
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  z-index: 10;
+  z-index: 20;
 }
 .menu-overlay h1 { margin-bottom: 2rem; }
 .menu-overlay button {
@@ -73,6 +79,7 @@ canvas {
   border-radius: 8px;
   margin-bottom: 1rem;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 .menu-overlay button:hover { background: #8a2be2; }
-.hidden { display: none !important; }
+.hidden { display: none !important; visibility: hidden !important; }
