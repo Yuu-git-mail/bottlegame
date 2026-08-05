@@ -68,9 +68,7 @@ document.getElementById('btn-undo')!.addEventListener('click', () => {
 });
 
 document.getElementById('btn-reset')!.addEventListener('click', () => {
-  if(state) {
-    document.getElementById('start-menu')!.classList.remove('hidden');
-  }
+  startGame(currentLevel);
 });
 
 document.getElementById('btn-add')!.addEventListener('click', () => {
@@ -84,6 +82,15 @@ window.addEventListener('game-clear', () => {
 function updateUI() {
   if(!state) return;
   document.getElementById('moves')!.innerText = state.moves.toString();
-  requestAnimationFrame(updateUI);
 }
+
+// Auto start game on load
+window.addEventListener('DOMContentLoaded', () => {
+  startGame(1);
+});
+// Fallback if DOMContentLoaded fired already
+setTimeout(() => {
+  if(!state) startGame(1);
+}, 100);
+
 updateUI();

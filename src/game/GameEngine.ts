@@ -31,8 +31,11 @@ export class GameEngine {
   }
 
   resize() {
-    this.canvas.width = this.canvas.parentElement!.clientWidth;
-    this.canvas.height = this.canvas.parentElement!.clientHeight;
+    const parent = this.canvas.parentElement;
+    if (parent) {
+      this.canvas.width = parent.clientWidth || window.innerWidth;
+      this.canvas.height = parent.clientHeight || (window.innerHeight - 80);
+    }
   }
 
   onClick(e: PointerEvent) {
