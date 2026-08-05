@@ -27,13 +27,21 @@ export class GameEngine {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
     
-    // Bind touchstart, pointerdown and click
+    // Bind event listeners for touch/mouse
+    let handled = false;
+    const handleTap = (e: MouseEvent | PointerEvent | TouchEvent) => {
+      if (handled) return;
+      handled = true;
+      setTimeout(() => { handled = false; }, 100);
+      this.onClick(e);
+    };
+
+    this.canvas.addEventListener('pointerdown', (e: PointerEvent) => handleTap(e));
     this.canvas.addEventListener('touchstart', (e: TouchEvent) => {
       e.preventDefault();
-      this.onClick(e);
+      handleTap(e);
     }, { passive: false });
-    this.canvas.addEventListener('pointerdown', (e: PointerEvent) => this.onClick(e));
-    this.canvas.addEventListener('click', (e: MouseEvent) => this.onClick(e));
+    this.canvas.addEventListener('click', (e: MouseEvent) => handleTap(e));
     
     this.loop();
   }
@@ -71,25 +79,25 @@ export class GameEngine {
     let clientX = 0;
     let clientY = 0;
 
-    if ('changedTouches' in e && e.changedTouches.length > 0) {
-      clientX = e.changedTouches[0].clientX;
-      clientY = e.changedTouches[0].clientY;
-    } else if ('touches' in e && e.touches.length > 0) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else if ('clientX' in e) {
-      clientX = (e as MouseEvent).clientX;
-      clientY = (e as MouseEvent).clientY;
+    const touchEvent = e as TouchEvent;
+    const mouseEvent = e as MouseEvent;
+
+    if (touchEvent.touches && touchEvent.touches.length > 0) {
+      clientX = touchEvent.touches[0].clientX;
+      clientY = touchEvent.touches[0].clientY;
+    } else if (touchEvent.changedTouches && touchEvent.changedTouches.length > 0) {
+      clientX = touchEvent.changedTouches[0].clientX;
+      clientY = touchEvent.changedTouches[0].clientY;
+    } else if (mouseEvent.clientX !== undefined) {
+      clientX = mouseEvent.clientX;
+      clientY = mouseEvent.clientY;
     } else {
       return;
     }
 
-    // Canvas scaling ratio for high DPI and CSS scaling
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-
-    const x = (clientX - rect.left) * scaleX;
-    const y = (clientY - rect.top) * scaleY;
+    // Coordinates relative to element CSS size
+    const x = (clientX - rect.left) * (this.canvas.clientWidth / rect.width);
+    const y = (clientY - rect.top) * (this.canvas.clientHeight / rect.height);
 
     const clickedIdx = this.getBottleAt(x, y);
     if (clickedIdx === null) return;
