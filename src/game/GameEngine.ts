@@ -26,7 +26,15 @@ export class GameEngine {
     this.resize();
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
-    this.canvas.addEventListener('pointerdown', this.onClick.bind(this));
+    
+    // Bind both pointerdown and touchstart for mobile responsiveness
+    const handleInput = (e: MouseEvent | TouchEvent) => {
+      e.preventDefault();
+      this.onClick(e);
+    };
+
+    this.canvas.addEventListener('pointerdown', handleInput as EventListener);
+    this.canvas.addEventListener('touchstart', handleInput as EventListener, { passive: false });
     
     this.loop();
   }
@@ -39,13 +47,34 @@ export class GameEngine {
     this.canvas.height = Math.max(h, 300);
   }
 
-  onClick(e: PointerEvent) {
-    if (this.animating || this.state.isWin()) return;
-    this.audio.init();
+  onClick(e: MouseEvent | TouchEvent) {
+    if (this.animating || !this.state || this.state.isWin()) return;
+    try {
+      this.audio.init();
+    } catch {
+      // Audio context initialization error guard
+    }
 
     const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    let clientX = 0;
+    let clientY = 0;
+
+    if ('touches' in e && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if ('clientX' in e) {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    } else {
+      return;
+    }
+
+    // Canvas scaling ratio for high DPI and CSS scaling
+    const scaleX = this.canvas.width / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
 
     const clickedIdx = this.getBottleAt(x, y);
     if (clickedIdx === null) return;
@@ -70,7 +99,11 @@ export class GameEngine {
 
           if (this.state.isWin()) {
             this.audio.playWin();
-            confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+            try {
+              confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+            } catch {
+              // Confetti fallback
+            }
             setTimeout(() => {
               window.dispatchEvent(new CustomEvent('game-clear'));
             }, 2000);
