@@ -33,8 +33,9 @@ export class GameEngine {
   resize() {
     const parent = this.canvas.parentElement;
     if (parent) {
-      this.canvas.width = parent.clientWidth || window.innerWidth;
-      this.canvas.height = parent.clientHeight || (window.innerHeight - 80);
+      const rect = parent.getBoundingClientRect();
+      this.canvas.width = (rect.width || parent.clientWidth || window.innerWidth);
+      this.canvas.height = (rect.height || parent.clientHeight || window.innerHeight);
     }
   }
 

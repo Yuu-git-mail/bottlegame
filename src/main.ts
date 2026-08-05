@@ -19,6 +19,16 @@ app.innerHTML = `
   </div>
   <div id="start-menu" class="menu-overlay">
     <h1>Magic Sort</h1>
+    <div class="level-select" style="margin-bottom: 1.5rem; display: flex; gap: 0.5rem; align-items: center;">
+      <label for="select-level" style="font-size: 1.1rem;">Select Level:</label>
+      <select id="select-level" style="padding: 0.5rem 1rem; font-size: 1rem; border-radius: 4px; background: #2a2a4e; color: #fff; border: 1px solid #555;">
+        <option value="1">Level 1 (Easy)</option>
+        <option value="2">Level 2</option>
+        <option value="3">Level 3 (Variable Capacity)</option>
+        <option value="5">Level 5 (Harder)</option>
+        <option value="8">Level 8 (Expert)</option>
+      </select>
+    </div>
     <button id="btn-start">Start Game</button>
   </div>
   <div id="result-menu" class="menu-overlay hidden">
@@ -53,7 +63,11 @@ function startGame(level: number) {
   updateUI();
 }
 
-document.getElementById('btn-start')!.addEventListener('click', () => startGame(currentLevel));
+document.getElementById('btn-start')!.addEventListener('click', () => {
+  const select = document.getElementById('select-level') as HTMLSelectElement;
+  const level = select ? parseInt(select.value, 10) : currentLevel;
+  startGame(level);
+});
 
 document.getElementById('btn-next-level')!.addEventListener('click', () => {
   startGame(currentLevel + 1);
@@ -84,13 +98,6 @@ function updateUI() {
   document.getElementById('moves')!.innerText = state.moves.toString();
 }
 
-// Auto start game on load
-window.addEventListener('DOMContentLoaded', () => {
-  startGame(1);
-});
-// Fallback if DOMContentLoaded fired already
-setTimeout(() => {
-  if(!state) startGame(1);
-}, 100);
-
-updateUI();
+// Menu initial setup
+document.getElementById('start-menu')!.classList.remove('hidden');
+document.getElementById('result-menu')!.classList.add('hidden');
