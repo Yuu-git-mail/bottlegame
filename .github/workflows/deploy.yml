@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [ main, feature/uiux-update ]
+    branches: [ main, feature/uiux-update, feature/in-game-menu ]
 
 permissions:
   contents: read
