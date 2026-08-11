@@ -54,12 +54,12 @@ app.innerHTML = `
       </div>
 
       <div style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 0.8rem;">
-        <div style="font-size: 0.9rem; color: #a0a0d0; font-weight: bold; margin-bottom: 0.6rem; text-align: left;">👁️ 色覚サポート (Accessibility)</div>
+        <div style="font-size: 0.9rem; color: #a0a0d0; font-weight: bold; margin-bottom: 0.6rem; text-align: left;">👁️ 選べる見え方サポート</div>
         
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
-          <label for="select-overlay-mode" style="font-size: 0.9rem;">識別オーバーレイ:</label>
+          <label for="select-overlay-mode" style="font-size: 0.9rem;">識別マーク表示:</label>
           <select id="select-overlay-mode" style="padding: 0.35rem 0.6rem; font-size: 0.85rem; border-radius: 4px; background: #2a2a4e; color: #fff; border: 1px solid #555;">
-            <option value="none">なし (None)</option>
+            <option value="none">なし (Standard)</option>
             <option value="number">数字 (1, 2, 3)</option>
             <option value="symbol">記号 (★, ■, ▲)</option>
             <option value="texture">模様 (斜線/ドット/波線)</option>
@@ -67,7 +67,7 @@ app.innerHTML = `
         </div>
 
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
-          <label for="toggle-colorblind-palette" style="font-size: 0.9rem;">岡部・伊藤カラー:</label>
+          <label for="toggle-colorblind-palette" style="font-size: 0.9rem;">高コントラストカラー (UD):</label>
           <input type="checkbox" id="toggle-colorblind-palette" style="width: 18px; height: 18px; cursor: pointer;">
         </div>
 
