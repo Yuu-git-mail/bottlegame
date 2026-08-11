@@ -1,6 +1,8 @@
 export class GameState {
   bottles: number[][];
   capacities: number[];
+  initialBottles: number[][];
+  initialCapacities: number[];
   history: { bottles: number[][]; score: number }[];
   score: number;
   moves: number;
@@ -9,10 +11,19 @@ export class GameState {
   constructor(bottles: number[][], capacities: number[], level: number = 1) {
     this.bottles = bottles.map(b => [...b]);
     this.capacities = [...capacities];
+    this.initialBottles = bottles.map(b => [...b]);
+    this.initialCapacities = [...capacities];
     this.history = [];
     this.score = 0;
     this.moves = 0;
     this.level = level;
+  }
+
+  restartToInitial() {
+    this.bottles = this.initialBottles.map(b => [...b]);
+    this.capacities = [...this.initialCapacities];
+    this.history = [];
+    this.moves = 0;
   }
 
   canPour(from: number, to: number): boolean {

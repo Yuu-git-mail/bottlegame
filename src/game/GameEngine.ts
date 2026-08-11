@@ -114,6 +114,7 @@ export class GameEngine {
         if (this.state.canPour(this.selectedBottle, clickedIdx)) {
           this.state.pour(this.selectedBottle, clickedIdx);
           this.audio.playPour();
+          window.dispatchEvent(new CustomEvent('state-changed'));
           
           if (this.state.isBottleComplete(clickedIdx)) {
             this.audio.playBottleComplete();

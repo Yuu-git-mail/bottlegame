@@ -104,7 +104,75 @@ function syncAccessibilityUI() {
   if (hlToggle) hlToggle.checked = accessibility.highlightSameColor;
 }
 
-function initGame(level: number = 1) {
+const SAVE_KEY = 'magic_sort_saved_game_state';
+
+function saveGameStateToStorage() {
+  if (!state) return;
+  try {
+    const data = {
+      level: currentLevel,
+      bottles: state.bottles,
+      capacities: state.capacities,
+      initialBottles: state.initialBottles,
+      initialCapacities: state.initialCapacities,
+      moves: state.moves,
+      score: state.score,
+      history: state.history
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (err) {
+    console.warn('Failed to auto-save game state:', err);
+  }
+}
+
+function loadSavedGameState(): boolean {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.bottles) || !Array.isArray(data.capacities)) return false;
+
+    currentLevel = data.level || 1;
+    state = new GameState(data.bottles, data.capacities, currentLevel);
+    if (data.initialBottles && data.initialCapacities) {
+      state.initialBottles = data.initialBottles.map((b: number[]) => [...b]);
+      state.initialCapacities = [...data.initialCapacities];
+    }
+    if (typeof data.moves === 'number') state.moves = data.moves;
+    if (typeof data.score === 'number') state.score = data.score;
+    if (Array.isArray(data.history)) state.history = data.history;
+
+    const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
+    if (engine) {
+      engine.state = state;
+      engine.selectedBottle = null;
+    } else {
+      engine = new GameEngine(canvas, state, audio, accessibility);
+    }
+
+    const headerSelect = document.getElementById('header-level-select') as HTMLSelectElement;
+    if (headerSelect) headerSelect.value = currentLevel.toString();
+    const menuSelect = document.getElementById('select-level') as HTMLSelectElement;
+    if (menuSelect) menuSelect.value = currentLevel.toString();
+
+    syncAccessibilityUI();
+    updateUI();
+    return true;
+  } catch (err) {
+    console.warn('Failed to restore saved game state:', err);
+    return false;
+  }
+}
+
+function clearSavedGameState() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    // Ignore error
+  }
+}
+
+function initGame(level: number = 1, forceNewBoard: boolean = false) {
   currentLevel = level;
   const { bottles, capacities } = BoardGenerator.generate(level);
   state = new GameState(bottles, capacities, level);
@@ -125,6 +193,7 @@ function initGame(level: number = 1) {
 
   syncAccessibilityUI();
   updateUI();
+  saveGameStateToStorage();
 }
 
 function updateUI() {
@@ -134,7 +203,7 @@ function updateUI() {
 }
 
 function startGame(level: number) {
-  initGame(level);
+  initGame(level, true);
   document.getElementById('start-menu')?.classList.add('hidden');
   document.getElementById('result-menu')?.classList.add('hidden');
   setTimeout(() => engine?.resize(), 50);
@@ -184,17 +253,50 @@ function initApp() {
   document.getElementById('btn-menu')?.addEventListener('click', () => showStartMenu());
   document.getElementById('btn-menu-from-result')?.addEventListener('click', () => showStartMenu());
   document.getElementById('btn-next-level')?.addEventListener('click', () => startGame(currentLevel + 1));
-  document.getElementById('btn-retry')?.addEventListener('click', () => startGame(currentLevel));
-  document.getElementById('btn-undo')?.addEventListener('click', () => { if(state) { state.undo(); updateUI(); } });
-  document.getElementById('btn-reset')?.addEventListener('click', () => startGame(currentLevel));
-  document.getElementById('btn-add')?.addEventListener('click', () => { if(state) { state.addEmptyBottle(); } });
+  document.getElementById('btn-retry')?.addEventListener('click', () => {
+    if (state) {
+      state.restartToInitial();
+      updateUI();
+      saveGameStateToStorage();
+    }
+  });
+  document.getElementById('btn-undo')?.addEventListener('click', () => {
+    if(state) {
+      state.undo();
+      updateUI();
+      saveGameStateToStorage();
+    }
+  });
+  document.getElementById('btn-reset')?.addEventListener('click', () => {
+    if (state) {
+      state.restartToInitial();
+      updateUI();
+      saveGameStateToStorage();
+    }
+  });
+  document.getElementById('btn-add')?.addEventListener('click', () => {
+    if(state) {
+      state.addEmptyBottle();
+      saveGameStateToStorage();
+    }
+  });
+
+  window.addEventListener('state-changed', () => {
+    updateUI();
+    saveGameStateToStorage();
+  });
 
   window.addEventListener('game-clear', () => {
+    clearSavedGameState();
     document.getElementById('result-menu')?.classList.remove('hidden');
   });
 
+  // Try auto-loading saved game state first
+  const restored = loadSavedGameState();
+  if (!restored) {
+    initGame(1);
+  }
   showStartMenu();
-  initGame(1);
 }
 
 if (document.readyState === 'loading') {
