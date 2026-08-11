@@ -168,14 +168,17 @@ function initApp() {
   // Accessibility event handlers
   document.getElementById('select-overlay-mode')?.addEventListener('change', (e) => {
     accessibility.overlayMode = (e.target as HTMLSelectElement).value as OverlayMode;
+    accessibility.saveToStorage();
   });
 
   document.getElementById('toggle-colorblind-palette')?.addEventListener('change', (e) => {
     accessibility.useColorblindPalette = (e.target as HTMLInputElement).checked;
+    accessibility.saveToStorage();
   });
 
   document.getElementById('toggle-same-color-hl')?.addEventListener('change', (e) => {
     accessibility.highlightSameColor = (e.target as HTMLInputElement).checked;
+    accessibility.saveToStorage();
   });
 
   document.getElementById('btn-menu')?.addEventListener('click', () => showStartMenu());

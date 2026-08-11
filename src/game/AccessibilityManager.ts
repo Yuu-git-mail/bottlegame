@@ -30,26 +30,65 @@ export class AccessibilityManager {
   highlightSameColor: boolean = true;
 
   constructor() {
+    this.loadFromStorage();
     this.parseURLParams();
+  }
+
+  loadFromStorage() {
+    try {
+      const mode = localStorage.getItem('magic_sort_overlay_mode');
+      if (mode === 'none' || mode === 'number' || mode === 'symbol' || mode === 'texture') {
+        this.overlayMode = mode;
+      }
+
+      const cb = localStorage.getItem('magic_sort_colorblind_palette');
+      if (cb !== null) {
+        this.useColorblindPalette = cb === 'true';
+      }
+
+      const hl = localStorage.getItem('magic_sort_highlight_same_color');
+      if (hl !== null) {
+        this.highlightSameColor = hl === 'true';
+      }
+    } catch (err) {
+      console.warn('Failed to load accessibility settings from localStorage', err);
+    }
+  }
+
+  saveToStorage() {
+    try {
+      localStorage.setItem('magic_sort_overlay_mode', this.overlayMode);
+      localStorage.setItem('magic_sort_colorblind_palette', this.useColorblindPalette.toString());
+      localStorage.setItem('magic_sort_highlight_same_color', this.highlightSameColor.toString());
+    } catch (err) {
+      console.warn('Failed to save accessibility settings to localStorage', err);
+    }
   }
 
   parseURLParams() {
     const params = new URLSearchParams(window.location.search);
+    let updated = false;
+
     const mode = params.get('mode');
-    if (mode === 'number' || mode === 'symbol' || mode === 'texture') {
+    if (mode === 'number' || mode === 'symbol' || mode === 'texture' || mode === 'none') {
       this.overlayMode = mode;
-    } else if (mode === 'none') {
-      this.overlayMode = 'none';
+      updated = true;
     }
 
     const cb = params.get('colorblind');
-    if (cb === 'true' || cb === '1') {
-      this.useColorblindPalette = true;
+    if (cb !== null) {
+      this.useColorblindPalette = cb === 'true' || cb === '1';
+      updated = true;
     }
 
     const hl = params.get('highlight');
-    if (hl === 'false' || hl === '0') {
-      this.highlightSameColor = false;
+    if (hl !== null) {
+      this.highlightSameColor = hl !== 'false' && hl !== '0';
+      updated = true;
+    }
+
+    if (updated) {
+      this.saveToStorage();
     }
   }
 
