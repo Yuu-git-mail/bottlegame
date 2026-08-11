@@ -1,9 +1,12 @@
+import './style.css';
 import { GameState } from './game/GameState';
 import { BoardGenerator } from './game/BoardGenerator';
 import { GameEngine } from './game/GameEngine';
 import { AudioSystem } from './game/AudioSystem';
+import { AccessibilityManager, OverlayMode } from './game/AccessibilityManager';
 
 const app = document.getElementById('app')!;
+const accessibility = new AccessibilityManager();
 
 function generateLevelOptionsHTML(selectedLevel: number = 1): string {
   let html = '';
@@ -42,12 +45,39 @@ app.innerHTML = `
   </div>
   <div id="start-menu" class="menu-overlay">
     <h1>Magic Sort</h1>
-    <div class="level-select" style="margin-bottom: 1.5rem; display: flex; gap: 0.5rem; align-items: center;">
-      <label for="select-level" style="font-size: 1.1rem;">Select Level:</label>
-      <select id="select-level" style="padding: 0.5rem 1rem; font-size: 1rem; border-radius: 4px; background: #2a2a4e; color: #fff; border: 1px solid #555;">
-        ${generateLevelOptionsHTML(1)}
-      </select>
+    <div class="menu-settings-box" style="background: rgba(255, 255, 255, 0.05); padding: 1.2rem 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 1rem; width: 90%; max-width: 360px; border: 1px solid rgba(255, 255, 255, 0.1);">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <label for="select-level" style="font-weight: bold; font-size: 1rem;">Level Select:</label>
+        <select id="select-level" style="padding: 0.4rem 0.8rem; font-size: 0.95rem; border-radius: 4px; background: #2a2a4e; color: #fff; border: 1px solid #555;">
+          ${generateLevelOptionsHTML(1)}
+        </select>
+      </div>
+
+      <div style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 0.8rem;">
+        <div style="font-size: 0.9rem; color: #a0a0d0; font-weight: bold; margin-bottom: 0.6rem; text-align: left;">👁️ 色覚サポート (Accessibility)</div>
+        
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+          <label for="select-overlay-mode" style="font-size: 0.9rem;">識別オーバーレイ:</label>
+          <select id="select-overlay-mode" style="padding: 0.35rem 0.6rem; font-size: 0.85rem; border-radius: 4px; background: #2a2a4e; color: #fff; border: 1px solid #555;">
+            <option value="none">なし (None)</option>
+            <option value="number">数字 (1, 2, 3)</option>
+            <option value="symbol">記号 (★, ■, ▲)</option>
+            <option value="texture">模様 (斜線/ドット/波線)</option>
+          </select>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+          <label for="toggle-colorblind-palette" style="font-size: 0.9rem;">岡部・伊藤カラー:</label>
+          <input type="checkbox" id="toggle-colorblind-palette" style="width: 18px; height: 18px; cursor: pointer;">
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <label for="toggle-same-color-hl" style="font-size: 0.9rem;">選択時に同色ハイライト:</label>
+          <input type="checkbox" id="toggle-same-color-hl" style="width: 18px; height: 18px; cursor: pointer;">
+        </div>
+      </div>
     </div>
+
     <button id="btn-start">Start Game</button>
   </div>
   <div id="result-menu" class="menu-overlay hidden">
@@ -63,6 +93,17 @@ let engine: GameEngine;
 let audio = new AudioSystem();
 let currentLevel = 1;
 
+function syncAccessibilityUI() {
+  const overlaySelect = document.getElementById('select-overlay-mode') as HTMLSelectElement;
+  if (overlaySelect) overlaySelect.value = accessibility.overlayMode;
+
+  const cbToggle = document.getElementById('toggle-colorblind-palette') as HTMLInputElement;
+  if (cbToggle) cbToggle.checked = accessibility.useColorblindPalette;
+
+  const hlToggle = document.getElementById('toggle-same-color-hl') as HTMLInputElement;
+  if (hlToggle) hlToggle.checked = accessibility.highlightSameColor;
+}
+
 function initGame(level: number = 1) {
   currentLevel = level;
   const { bottles, capacities } = BoardGenerator.generate(level);
@@ -73,7 +114,7 @@ function initGame(level: number = 1) {
      engine.state = state;
      engine.selectedBottle = null;
   } else {
-     engine = new GameEngine(canvas, state, audio);
+     engine = new GameEngine(canvas, state, audio, accessibility);
   }
   
   // Sync selects
@@ -82,6 +123,7 @@ function initGame(level: number = 1) {
   const menuSelect = document.getElementById('select-level') as HTMLSelectElement;
   if (menuSelect) menuSelect.value = level.toString();
 
+  syncAccessibilityUI();
   updateUI();
 }
 
@@ -99,6 +141,7 @@ function startGame(level: number) {
 }
 
 function showStartMenu() {
+  syncAccessibilityUI();
   document.getElementById('start-menu')?.classList.remove('hidden');
   document.getElementById('result-menu')?.classList.add('hidden');
 }
@@ -121,6 +164,19 @@ function initApp() {
       startGame(level);
     });
   }
+
+  // Accessibility event handlers
+  document.getElementById('select-overlay-mode')?.addEventListener('change', (e) => {
+    accessibility.overlayMode = (e.target as HTMLSelectElement).value as OverlayMode;
+  });
+
+  document.getElementById('toggle-colorblind-palette')?.addEventListener('change', (e) => {
+    accessibility.useColorblindPalette = (e.target as HTMLInputElement).checked;
+  });
+
+  document.getElementById('toggle-same-color-hl')?.addEventListener('change', (e) => {
+    accessibility.highlightSameColor = (e.target as HTMLInputElement).checked;
+  });
 
   document.getElementById('btn-menu')?.addEventListener('click', () => showStartMenu());
   document.getElementById('btn-menu-from-result')?.addEventListener('click', () => showStartMenu());

@@ -1,27 +1,26 @@
 import confetti from 'canvas-confetti';
 import { GameState } from './GameState';
 import { AudioSystem } from './AudioSystem';
+import { AccessibilityManager } from './AccessibilityManager';
 
-const COLORS = [
-  '#FF5733', '#33FF57', '#3357FF', '#F333FF',
-  '#33FFF3', '#FFFF33', '#FF8F33', '#8F33FF',
-  '#FF3388', '#88FF33', '#3388FF', '#FF3333'
-];
+
 
 export class GameEngine {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   state: GameState;
   audio: AudioSystem;
+  accessibility: AccessibilityManager;
   
   selectedBottle: number | null = null;
   animating: boolean = false;
 
-  constructor(canvas: HTMLCanvasElement, state: GameState, audio: AudioSystem) {
+  constructor(canvas: HTMLCanvasElement, state: GameState, audio: AudioSystem, accessibility?: AccessibilityManager) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.state = state;
     this.audio = audio;
+    this.accessibility = accessibility || new AccessibilityManager();
     
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -191,6 +190,15 @@ export class GameEngine {
     // Scale height based on max capacity to ensure tall bottles fit
     const bottleH = Math.min(cellH * 0.6, 150 + (maxCapacity - 4) * 20);
 
+    // Get selected color for same-color highlight
+    let selectedColorIndex: number | null = null;
+    if (this.selectedBottle !== null && this.accessibility.highlightSameColor) {
+      const selectedBottleColors = this.state.bottles[this.selectedBottle];
+      if (selectedBottleColors.length > 0) {
+        selectedColorIndex = selectedBottleColors[selectedBottleColors.length - 1];
+      }
+    }
+
     for (let i = 0; i < n; i++) {
       const col = i % cols;
       const row = Math.floor(i / cols);
@@ -200,7 +208,7 @@ export class GameEngine {
       
       if (this.selectedBottle === i) cy -= 20;
       
-      this.drawBottle(cx, cy, bottleW, bottleH, this.state.bottles[i], this.state.capacities[i]);
+      this.drawBottle(cx, cy, bottleW, bottleH, this.state.bottles[i], this.state.capacities[i], selectedColorIndex);
     }
   }
 
@@ -224,7 +232,7 @@ export class GameEngine {
     }
   }
 
-  drawBottle(x: number, y: number, w: number, h: number, colors: number[], capacity: number) {
+  drawBottle(x: number, y: number, w: number, h: number, colors: number[], capacity: number, selectedColorIndex: number | null) {
     const ctx = this.ctx;
     const rad = w * 0.2;
     
@@ -233,7 +241,6 @@ export class GameEngine {
     const actualH = h * (capacity / maxCap);
     y = y + (h - actualH) / 2; // Bottom align
 
-    // Draw colors
     const hPerColor = (actualH - rad) / capacity;
     
     ctx.save();
@@ -242,13 +249,51 @@ export class GameEngine {
     ctx.clip();
     
     for (let i = 0; i < colors.length; i++) {
-      ctx.fillStyle = COLORS[colors[i] % COLORS.length];
+      const colorIdx = colors[i];
+      const hexColor = this.accessibility.getColor(colorIdx);
       const yOffset = y + actualH/2 - (i + 1) * hPerColor;
+
+      // Base solid fill
+      ctx.fillStyle = hexColor;
       ctx.fillRect(x - w/2, yOffset, w, hPerColor);
+
+      // Texture pattern overlay
+      if (this.accessibility.overlayMode === 'texture') {
+        this.accessibility.drawTexture(ctx, colorIdx, x - w/2, yOffset, w, hPerColor);
+      }
+
+      // Symbol / Number text overlay
+      if (this.accessibility.overlayMode === 'number' || this.accessibility.overlayMode === 'symbol') {
+        const text = this.accessibility.overlayMode === 'number'
+          ? this.accessibility.getNumber(colorIdx)
+          : this.accessibility.getSymbol(colorIdx);
+
+        const textColor = this.accessibility.getContrastTextColor(hexColor);
+        ctx.save();
+        ctx.fillStyle = textColor;
+        ctx.font = `bold ${Math.max(12, Math.floor(hPerColor * 0.55))}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = textColor === '#FFFFFF' ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.6)';
+        ctx.shadowBlur = 3;
+        ctx.fillText(text, x, yOffset + hPerColor / 2);
+        ctx.restore();
+      }
+
+      // Same-color highlight stroke inside bottle block
+      if (selectedColorIndex !== null && colorIdx === selectedColorIndex) {
+        ctx.save();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = '#FFFF00';
+        ctx.shadowBlur = 8;
+        ctx.strokeRect(x - w/2 + 2, yOffset + 2, w - 4, hPerColor - 4);
+        ctx.restore();
+      }
     }
     ctx.restore();
     
-    // Outline
+    // Bottle Glass Outline
     this.drawRoundRect(x - w/2, y - actualH/2, w, actualH, [0, 0, rad, rad]);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
     ctx.lineWidth = 4;
