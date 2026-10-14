@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>神経衰弱 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .board {
+      display: grid;
+      width: 100%; height: 100%;
+      gap: 4px;
+      -webkit-perspective: 800px;
+      perspective: 800px;
+      -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: manipulation;
+    }
+    .card {
+      position: relative;
+      min-width: 0; min-height: 0;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .card-in {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      -webkit-transform-style: preserve-3d;
+      transform-style: preserve-3d;
+      -webkit-transition: -webkit-transform 0.35s ease;
+      transition: transform 0.35s ease;
+      -webkit-transform: rotateY(0deg);
+      transform: rotateY(0deg);
+    }
+    .card.open .card-in, .card.done .card-in {
+      -webkit-transform: rotateY(180deg);
+      transform: rotateY(180deg);
+    }
+    .face {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      border-radius: 10%;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      box-shadow: 0 0 0 1px var(--panel-border);
+    }
+    .face.back {
+      background: linear-gradient(135deg, #3a2a7a, #6a0dad);
+    }
+    .face.back::after {
+      content: '';
+      position: absolute; top: 14%; left: 14%; right: 14%; bottom: 14%;
+      border: 2px solid rgba(255, 255, 255, 0.28);
+      border-radius: 10%;
+    }
+    .face.front {
+      background: #f4f0ff;
+      color: #222;
+      -webkit-transform: rotateY(180deg);
+      transform: rotateY(180deg);
+      line-height: 1;
+    }
+    .face.front span { font-size: var(--emoji, 40px); display: block; }
+    .card.done .face.front {
+      background: #e6ffe9;
+      box-shadow: 0 0 0 2px #4cd964, 0 0 14px rgba(76, 217, 100, 0.6);
+    }
+    .card.done { -webkit-animation: pop 0.45s ease; animation: pop 0.45s ease; }
+    .card.p1.done .face.front { box-shadow: 0 0 0 2px #4da3ff, 0 0 14px rgba(77, 163, 255, 0.6); }
+    .card.p2.done .face.front { box-shadow: 0 0 0 2px #ff7a59, 0 0 14px rgba(255, 122, 89, 0.6); }
+    .card.p1.done .face.front::before, .card.p2.done .face.front::before {
+      content: attr(data-p);
+      position: absolute; top: 4px; left: 6px;
+      font-size: 11px; font-weight: 800; color: #555;
+    }
+    @-webkit-keyframes pop { 0% { -webkit-transform: scale(1); } 40% { -webkit-transform: scale(1.12); } 100% { -webkit-transform: scale(1); } }
+    @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.12); } 100% { transform: scale(1); } }
+    .hud-item.turn b { color: #4da3ff; }
+    .hud-item.turn.two b { color: #ff7a59; }
+    .opt-row { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+    .opt-row .seg button { min-height: 40px; padding: 0 14px; font-size: 15px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="神経衰弱" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item" id="hud-a">手数<b id="moves">0</b></span>
+      <span class="hud-item" id="hud-b">タイム<b id="time">0:00</b></span>
+      <span class="hud-item" id="hud-c">ベスト<b id="best">-</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <div class="board" id="board"></div>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>裏返ったカードを 2 枚めくる。同じ絵なら取れる。</li>
+            <li>全部取ったらクリア。手数が少なく、速いほどよい。</li>
+            <li>二人用: 交互にめくり、取れたら続けて自分の番。取った枚数の多い人が勝ち。</li>
+            <li>違ったカードはしばらくして戻る。待たずに次をタップしてもよい。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: カードをタップ</li>
+            <li>PC: クリック</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var store = H.store('memory');
+    var EMOJI = ['🐶', '🐱', '🐭', '🐰', '🦊', '🐻', '🐼', '🐸', '🐵', '🐔', '🐧', '🐙',
+                 '🍎', '🍌', '🍇', '🍓', '🍉', '🍋', '🥕', '🌽', '🍄', '🍩', '🍕', '🎂',
+                 '🚗', '🚌', '🚀', '✈️', '⛵', '🚲', '⭐', '🌙', '☀️', '🌈', '⚽', '🎸'];
+    var SIZES = [
+      { key: '4x3', label: '4×3', a: 4, b: 3 },
+      { key: '4x4', label: '4×4', a: 4, b: 4 },
+      { key: '6x5', label: '6×5', a: 6, b: 5 },
+      { key: '6x6', label: '6×6', a: 6, b: 6 }
+    ];
+    var sizeKey = store.get('size', '4x4');
+    var mode = store.get('mode', 1);             // 1 = 一人, 2 = 二人
+    var cards = [];                               // {el, emoji, done}
+    var open = [];                                // めくり中の index
+    var lock = false, hideTimer = null;
+    var running = false, finished = false;
+    var moves = 0, elapsed = 0, lastTick = 0, timer = null;
+    var turn = 1, score = [0, 0, 0];
+    var cols = 4, rows = 4;
+
+    var stage = document.getElementById('stage');
+    var board = document.getElementById('board');
+
+    function sizeOf() {
+      for (var i = 0; i < SIZES.length; i++) if (SIZES[i].key === sizeKey) return SIZES[i];
+      return SIZES[1];
+    }
+
+    function fmt(ms) {
+      var s = Math.floor(ms / 1000);
+      var m = Math.floor(s / 60); s = s % 60;
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    function layout() {
+      var sz = sizeOf();
+      var main = stage.parentElement;
+      var r = main.getBoundingClientRect();
+      var land = r.width > r.height;
+      var big = Math.max(sz.a, sz.b), small = Math.min(sz.a, sz.b);
+      cols = land ? big : small;
+      rows = land ? small : big;
+      board.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+      board.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+      var f = H.fitStage(stage, cols, rows);
+      var cell = f.width / cols;
+      board.style.setProperty('--emoji', Math.floor(cell * 0.55) + 'px');
+    }
+    H.onResize(layout);
+
+    function hud() {
+      var a = document.getElementById('hud-a'), b = document.getElementById('hud-b'), c = document.getElementById('hud-c');
+      if (mode === 1) {
+        a.firstChild.nodeValue = '手数'; b.firstChild.nodeValue = 'タイム'; c.firstChild.nodeValue = 'ベスト';
+        c.className = 'hud-item';
+        document.getElementById('moves').textContent = moves;
+        document.getElementById('time').textContent = fmt(elapsed);
+        var bst = store.get('best_' + sizeKey, null);
+        document.getElementById('best').textContent = bst ? bst.moves + '手 ' + fmt(bst.time) : '-';
+      } else {
+        a.firstChild.nodeValue = '1P'; b.firstChild.nodeValue = '2P'; c.firstChild.nodeValue = '番';
+        c.className = 'hud-item turn' + (turn === 2 ? ' two' : '');
+        document.getElementById('moves').textContent = score[1];
+        document.getElementById('time').textContent = score[2];
+        document.getElementById('best').textContent = turn + 'P';
+      }
+    }
+
+    function stopTimer() {
+      if (timer) { clearInterval(timer); timer = null; }
+    }
+    function startTimer() {
+      stopTimer();
+      lastTick = Date.now();
+      timer = setInterval(function () {
+        var now = Date.now();
+        elapsed += Math.min(1000, now - lastTick);
+        lastTick = now;
+        if (mode === 1) document.getElementById('time').textContent = fmt(elapsed);
+      }, 250);
+    }
+
+    function shuffle(arr) {
+      for (var i = arr.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+      }
+      return arr;
+    }
+
+    function build() {
+      var sz = sizeOf();
+      var n = sz.a * sz.b;
+      var pool = shuffle(EMOJI.slice()).slice(0, n / 2);
+      var deck = shuffle(pool.concat(pool));
+      board.innerHTML = '';
+      cards = [];
+      deck.forEach(function (em, i) {
+        var el = document.createElement('div');
+        el.className = 'card';
+        el.innerHTML = '<div class="card-in"><div class="face back"></div><div class="face front"><span>' + em + '</span></div></div>';
+        board.appendChild(el);
+        var c = { el: el, emoji: em, done: false };
+        cards.push(c);
+        H.onTap(el, function () { tap(i); });
+      });
+      layout();
+    }
+
+    function resolveMismatch() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      for (var i = 0; i < open.length; i++) cards[open[i]].el.classList.remove('open');
+      open = [];
+      lock = false;
+      if (mode === 2) { turn = turn === 1 ? 2 : 1; hud(); }
+    }
+
+    function tap(i) {
+      if (!running || finished) return;
+      var c = cards[i];
+      if (lock) {
+        if (hideTimer) resolveMismatch(); else return;   // 不一致表示中なら早送り
+      }
+      if (c.done || open.indexOf(i) >= 0) return;
+      if (!timer) startTimer();
+      c.el.classList.add('open');
+      open.push(i);
+      H.audio.click();
+      if (open.length < 2) return;
+      lock = true;
+      moves++;
+      var a = cards[open[0]], b = cards[open[1]];
+      if (a.emoji === b.emoji) {
+        setTimeout(function () {
+          a.done = b.done = true;
+          a.el.classList.remove('open'); b.el.classList.remove('open');
+          a.el.classList.add('done'); b.el.classList.add('done');
+          if (mode === 2) {
+            score[turn]++;
+            a.el.classList.add('p' + turn); b.el.classList.add('p' + turn);
+            a.el.querySelector('.front').setAttribute('data-p', turn + 'P');
+            b.el.querySelector('.front').setAttribute('data-p', turn + 'P');
+          }
+          H.audio.good();
+          open = []; lock = false;
+          hud();
+          if (allDone()) finish();
+        }, 300);
+      } else {
+        hideTimer = setTimeout(function () { H.audio.bad(); resolveMismatch(); }, 800);
+      }
+      hud();
+    }
+
+    function allDone() {
+      for (var i = 0; i < cards.length; i++) if (!cards[i].done) return false;
+      return true;
+    }
+
+    function finish() {
+      finished = true; running = false;
+      stopTimer();
+      H.audio.win();
+      var btns = [
+        { label: 'もう一度', onClick: start },
+        { label: 'サイズを変える', secondary: true, onClick: showStart }
+      ];
+      if (mode === 1) {
+        var bst = store.get('best_' + sizeKey, null);
+        var isNew = !bst || moves < bst.moves || (moves === bst.moves && elapsed < bst.time);
+        if (isNew) { bst = { moves: moves, time: elapsed }; store.set('best_' + sizeKey, bst); }
+        hud();
+        H.overlay({
+          title: isNew ? '新記録！' : 'クリア！',
+          big: moves + ' 手',
+          html: 'タイム ' + fmt(elapsed) + '<br>ベスト ' + bst.moves + ' 手 ' + fmt(bst.time) + '（' + sizeOf().label + '）',
+          buttons: btns
+        });
+      } else {
+        var title = score[1] === score[2] ? '引き分け' : (score[1] > score[2] ? '1P の勝ち！' : '2P の勝ち！');
+        H.overlay({
+          title: title,
+          big: score[1] + ' - ' + score[2],
+          html: '1P ' + score[1] + ' 組、2P ' + score[2] + ' 組<br>タイム ' + fmt(elapsed),
+          buttons: btns
+        });
+      }
+    }
+
+    function start() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      stopTimer();
+      moves = 0; elapsed = 0; open = []; lock = false;
+      turn = 1; score = [0, 0, 0];
+      finished = false; running = true;
+      build();
+      hud();
+    }
+
+    function seg(items, value, onPick) {
+      var s = document.createElement('span');
+      s.className = 'seg';
+      items.forEach(function (it) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = it.label;
+        if (it.value === value) b.className = 'on';
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var all = s.querySelectorAll('button');
+          for (var k = 0; k < all.length; k++) all[k].className = '';
+          b.className = 'on';
+          onPick(it.value);
+        });
+        s.appendChild(b);
+      });
+      return s;
+    }
+
+    function showStart() {
+      running = false;
+      if (!cards.length) build();           // 読み込み直後も裏向きの盤を見せる
+      var el = H.overlay({
+        title: '神経衰弱',
+        html: '同じ絵を 2 枚そろえて全部取ろう',
+        buttons: [{ label: 'スタート', onClick: start }]
+      });
+      var row = document.createElement('div');
+      row.className = 'opt-row';
+      row.appendChild(seg(SIZES.map(function (s) { return { label: s.label, value: s.key }; }), sizeKey,
+        function (v) { sizeKey = v; store.set('size', v); build(); hud(); }));
+      row.appendChild(seg([{ label: '一人で', value: 1 }, { label: '二人で', value: 2 }], mode,
+        function (v) { mode = v; store.set('mode', v); hud(); }));
+      el.insertBefore(row, el.querySelector('.btn-row'));
+    }
+
+    window.resetGame = function () {
+      var ov = document.querySelector('.overlay');
+      if (ov && ov.close) ov.close();
+      start();
+    };
+
+    var timerWasOn = false;
+    H.pauseWhenHidden(function () {
+      timerWasOn = !!timer;
+      stopTimer();
+    }, function () {
+      if (timerWasOn && running && !finished) startTimer();
+      timerWasOn = false;
+    });
+
+    hud();
+    showStart();
+  })();
+  </script>
+</body>
+</html>

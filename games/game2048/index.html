@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>2048 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-main { touch-action: none; }
+    .app-controls { gap: 12px; align-items: center; }
+    .seg button { min-height: 44px; min-width: 64px; font-size: 15px; }
+    .ctl-btn.wide:disabled { opacity: 0.4; }
+    .hud-item.gain b { color: var(--ok); min-width: 3.2em; display: inline-block; text-align: left; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="2048" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item gain"><b id="gain"></b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main" id="main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>盤面をスワイプすると、全部のタイルがその方向へ滑る。</li>
+            <li>同じ数字がぶつかると合体して 2 倍になる（2+2=4、4+4=8 …）。合体した数がスコアに足される。</li>
+            <li>1 回動かすごとに新しいタイル（2 か 4）が 1 つ出る。</li>
+            <li>2048 を作れば達成。その後も続けて大きな数を目指せる。</li>
+            <li>動かせる方向が無くなるとゲームオーバー。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 画面をスワイプ（上下左右）</li>
+            <li>PC: 矢印キー か W/A/S/D</li>
+            <li>「1 手戻す」は直前の 1 手だけ取り消せる（Z キーでも可）。</li>
+            <li>4×4 / 5×5 の切り替えで盤面の大きさを選べる。それぞれ途中の盤面とベストを別に保存する。</li>
+            <li>ページを閉じても、次に開いたとき途中から続けられる。↻ で最初から。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="seg" id="seg-size">
+        <button type="button" data-size="4">4×4</button>
+        <button type="button" data-size="5">5×5</button>
+      </div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn wide" id="btn-undo">1 手戻す</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /* ENGINE-START */
+  // 盤面ロジック（純関数。node でそのままテストできる）
+  var Engine2048 = (function () {
+    'use strict';
+    function emptyBoard(n) {
+      var b = [];
+      for (var r = 0; r < n; r++) { b.push([]); for (var c = 0; c < n; c++) b[r].push(0); }
+      return b;
+    }
+    function cloneBoard(b) { return b.map(function (row) { return row.slice(); }); }
+    function emptyCells(b) {
+      var out = [];
+      for (var r = 0; r < b.length; r++) for (var c = 0; c < b.length; c++) if (!b[r][c]) out.push({ r: r, c: c });
+      return out;
+    }
+    // rnd: 0..1 を返す関数（テストで固定できる）
+    function spawn(b, rnd) {
+      rnd = rnd || Math.random;
+      var cells = emptyCells(b);
+      if (!cells.length) return null;
+      var p = cells[Math.floor(rnd() * cells.length)];
+      var v = rnd() < 0.9 ? 2 : 4;
+      b[p.r][p.c] = v;
+      return { r: p.r, c: p.c, v: v };
+    }
+    // dir: 'up' | 'down' | 'left' | 'right'
+    // 戻り値: { moved, board, points, moves:[{v, fr, fc, tr, tc, merged}], merges:[{r,c,v}] }
+    function move(board, dir) {
+      var n = board.length;
+      var out = emptyBoard(n);
+      var moves = [], merges = [];
+      var points = 0, moved = false;
+      // ライン i の j 番目のマス座標。j=0 が移動先の壁側
+      var pos = function (i, j) {
+        if (dir === 'up') return { r: j, c: i };
+        if (dir === 'down') return { r: n - 1 - j, c: i };
+        if (dir === 'left') return { r: i, c: j };
+        return { r: i, c: n - 1 - j };
+      };
+      for (var i = 0; i < n; i++) {
+        var slot = -1;           // 置き終わった最後の位置
+        var lastMerged = false;  // 直前の slot が合体で出来たか（二重合体防止）
+        var lastVal = 0;
+        for (var j = 0; j < n; j++) {
+          var p = pos(i, j);
+          var v = board[p.r][p.c];
+          if (!v) continue;
+          var t;
+          if (slot >= 0 && !lastMerged && lastVal === v) {
+            t = pos(i, slot);
+            out[t.r][t.c] = v * 2;
+            points += v * 2;
+            lastMerged = true;
+            lastVal = v * 2;
+            merges.push({ r: t.r, c: t.c, v: v * 2 });
+            moves.push({ v: v, fr: p.r, fc: p.c, tr: t.r, tc: t.c, merged: true });
+            moved = true;
+          } else {
+            slot++;
+            t = pos(i, slot);
+            out[t.r][t.c] = v;
+            lastMerged = false;
+            lastVal = v;
+            moves.push({ v: v, fr: p.r, fc: p.c, tr: t.r, tc: t.c, merged: false });
+            if (t.r !== p.r || t.c !== p.c) moved = true;
+          }
+        }
+      }
+      return { moved: moved, board: out, points: points, moves: moves, merges: merges };
+    }
+    function canMove(b) {
+      var n = b.length;
+      for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) {
+        var v = b[r][c];
+        if (!v) return true;
+        if (r + 1 < n && b[r + 1][c] === v) return true;
+        if (c + 1 < n && b[r][c + 1] === v) return true;
+      }
+      return false;
+    }
+    function maxTile(b) {
+      var m = 0;
+      for (var r = 0; r < b.length; r++) for (var c = 0; c < b.length; c++) if (b[r][c] > m) m = b[r][c];
+      return m;
+    }
+    return { emptyBoard: emptyBoard, cloneBoard: cloneBoard, spawn: spawn, move: move, canMove: canMove, maxTile: maxTile, emptyCells: emptyCells };
+  })();
+  /* ENGINE-END */
+  if (typeof module !== 'undefined' && module.exports) module.exports = Engine2048;
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, E = Engine2048;
+    var BASE = 400;
+    var SLIDE_MS = 90, POP_MS = 90;
+    var store = H.store('2048');
+
+    var size = store.get('size', 4);
+    if (size !== 4 && size !== 5) size = 4;
+    var board, score, best, won, prev, over;
+    var gameStarted = false;       // 盤面に 1 手以上入れたか（タイルの初期スポーン以外）
+    var overlayEl = null;
+    var anim = null;               // { t0, moves, spawnTile, merges, fromBoard }
+    var rafId = 0;
+    var gainTimer = null;
+
+    var canvas = document.getElementById('cv');
+    var st = null;
+    st = H.canvasStage(canvas, BASE, BASE, function (w, h, ctx, sc) {
+      // canvasStage は DPR までしか面倒を見ないので、論理座標 BASE → 表示サイズ の拡縮はここで掛ける
+      ctx.scale(sc, sc);
+      draw();
+    });
+
+    var TILE = {
+      2: ['#eee4da', '#776e65'], 4: ['#ede0c8', '#776e65'], 8: ['#f2b179', '#fff'],
+      16: ['#f59563', '#fff'], 32: ['#f67c5f', '#fff'], 64: ['#f65e3b', '#fff'],
+      128: ['#edcf72', '#fff'], 256: ['#edcc61', '#fff'], 512: ['#edc850', '#fff'],
+      1024: ['#edc53f', '#fff'], 2048: ['#edc22e', '#fff'],
+      4096: ['#56b4e9', '#fff'], 8192: ['#8a2be2', '#fff'], 16384: ['#e74c3c', '#fff']
+    };
+
+    // ---------- 保存 ----------
+    function saveState() {
+      store.set('state' + size, { board: board, score: score, won: won, prev: prev, started: gameStarted });
+    }
+    function loadState() {
+      var s = store.get('state' + size, null);
+      if (!s || !s.board || s.board.length !== size) return false;
+      board = s.board; score = s.score || 0; won = !!s.won; prev = s.prev || null; gameStarted = !!s.started;
+      return true;
+    }
+
+    // ---------- HUD ----------
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('btn-undo').disabled = !prev;
+      var segs = document.querySelectorAll('#seg-size button');
+      for (var i = 0; i < segs.length; i++) segs[i].classList.toggle('on', +segs[i].getAttribute('data-size') === size);
+    }
+    function showGain(p) {
+      var g = document.getElementById('gain');
+      g.textContent = p > 0 ? '+' + p : '';
+      if (gainTimer) clearTimeout(gainTimer);
+      gainTimer = setTimeout(function () { g.textContent = ''; }, 700);
+    }
+
+    // ---------- 描画 ----------
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function geom() {
+      var pad = size === 4 ? 12 : 10;
+      var cell = (BASE - pad * (size + 1)) / size;
+      return { pad: pad, cell: cell };
+    }
+    function cellXY(g, r, c) { return { x: g.pad + c * (g.cell + g.pad), y: g.pad + r * (g.cell + g.pad) }; }
+    function drawTile(ctx, g, x, y, v, scale) {
+      var col = TILE[v] || ['#3c3a32', '#fff'];
+      var s = g.cell * (scale === undefined ? 1 : scale);
+      var ox = x + (g.cell - s) / 2, oy = y + (g.cell - s) / 2;
+      ctx.fillStyle = col[0];
+      rr(ctx, ox, oy, s, s, 8);
+      ctx.fill();
+      if (v >= 2048) {
+        ctx.save();
+        ctx.shadowColor = 'rgba(255, 220, 100, 0.6)';
+        ctx.shadowBlur = 16;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      }
+      var digits = String(v).length;
+      var fs = g.cell * (digits <= 2 ? 0.5 : digits === 3 ? 0.42 : digits === 4 ? 0.34 : 0.28) * (s / g.cell);
+      ctx.fillStyle = col[1];
+      ctx.font = 'bold ' + fs + 'px ' + 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(v), ox + s / 2, oy + s / 2 + fs * 0.05);
+    }
+    function ease(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; }
+
+    function draw(now) {
+      if (!st || !board) return;   // canvasStage の最初の layout は st 代入前に呼ばれる
+      var ctx = st.ctx();
+      if (!ctx) return;
+      var g = geom();
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#2b2b4a';
+      rr(ctx, 0, 0, BASE, BASE, 12);
+      ctx.fill();
+      var r, c, p;
+      for (r = 0; r < size; r++) for (c = 0; c < size; c++) {
+        p = cellXY(g, r, c);
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        rr(ctx, p.x, p.y, g.cell, g.cell, 8);
+        ctx.fill();
+      }
+      if (anim) {
+        var el = (now || performance.now()) - anim.t0;
+        if (el < SLIDE_MS) {
+          var t = ease(el / SLIDE_MS);
+          for (var i = 0; i < anim.moves.length; i++) {
+            var m = anim.moves[i];
+            var a = cellXY(g, m.fr, m.fc), b = cellXY(g, m.tr, m.tc);
+            drawTile(ctx, g, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, m.v);
+          }
+          return;
+        }
+        var t2 = Math.min(1, (el - SLIDE_MS) / POP_MS);
+        var popMap = {};
+        for (var k = 0; k < anim.merges.length; k++) popMap[anim.merges[k].r + ',' + anim.merges[k].c] = 'merge';
+        if (anim.spawnTile) popMap[anim.spawnTile.r + ',' + anim.spawnTile.c] = 'new';
+        for (r = 0; r < size; r++) for (c = 0; c < size; c++) {
+          if (!board[r][c]) continue;
+          p = cellXY(g, r, c);
+          var kind = popMap[r + ',' + c];
+          var sc = 1;
+          if (kind === 'merge') sc = 1 + 0.18 * Math.sin(t2 * Math.PI);
+          else if (kind === 'new') sc = 0.2 + 0.8 * t2;
+          drawTile(ctx, g, p.x, p.y, board[r][c], sc);
+        }
+        return;
+      }
+      for (r = 0; r < size; r++) for (c = 0; c < size; c++) {
+        if (!board[r][c]) continue;
+        p = cellXY(g, r, c);
+        drawTile(ctx, g, p.x, p.y, board[r][c]);
+      }
+    }
+
+    function tick(now) {
+      rafId = 0;
+      if (!anim) { draw(); return; }
+      if (now - anim.t0 >= SLIDE_MS + POP_MS) { anim = null; draw(); afterMove(); return; }
+      draw(now);
+      rafId = requestAnimationFrame(tick);
+    }
+    function finishAnim() {
+      if (!anim) return;
+      anim = null;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      afterMove();
+    }
+
+    // ---------- 進行 ----------
+    var pendingCheck = false;
+    function afterMove() {
+      if (!pendingCheck) return;
+      pendingCheck = false;
+      draw();
+      if (!won && E.maxTile(board) >= 2048) {
+        won = true;
+        saveState();
+        H.audio.win();
+        showWin();
+        return;
+      }
+      if (!E.canMove(board)) gameOver();
+    }
+
+    var helpSheet = document.getElementById('help-sheet');
+    function doMove(dir) {
+      if (over || overlayEl) return;
+      if (!helpSheet.classList.contains('hidden')) return;   // 遊び方を開いている間は動かさない
+      if (anim) finishAnim();
+      if (over || overlayEl) return;
+      var res = E.move(board, dir);
+      if (!res.moved) return;
+      prev = { board: E.cloneBoard(board), score: score };
+      board = res.board;
+      score += res.points;
+      gameStarted = true;
+      if (score > best) { best = score; store.set('best' + size, best); }
+      var sp = E.spawn(board);
+      anim = { t0: performance.now(), moves: res.moves, merges: res.merges, spawnTile: sp };
+      pendingCheck = true;
+      if (res.merges.length) {
+        var big = 0;
+        for (var i = 0; i < res.merges.length; i++) if (res.merges[i].v > big) big = res.merges[i].v;
+        if (big >= 128) H.audio.good(); else H.audio.beep(440 + Math.min(big, 64) * 6, 0.07, 'triangle', 0.06);
+      } else {
+        H.audio.click();
+      }
+      showGain(res.points);
+      hud();
+      saveState();
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    }
+
+    function undo() {
+      if (!prev || anim) return;
+      if (overlayEl) { overlayEl.close(); overlayEl = null; }
+      over = false;
+      board = prev.board;
+      score = prev.score;
+      prev = null;
+      H.audio.click();
+      hud();
+      saveState();
+      draw();
+    }
+
+    function newGame() {
+      if (overlayEl) { overlayEl.close(); overlayEl = null; }
+      anim = null; pendingCheck = false;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      board = E.emptyBoard(size);
+      E.spawn(board); E.spawn(board);
+      score = 0; won = false; prev = null; over = false; gameStarted = false;
+      hud(); saveState(); draw();
+    }
+
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+
+    function showWin() {
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: '2048 達成!',
+        big: score + ' 点',
+        html: 'おめでとう! このまま続けてもっと大きな数を目指せる',
+        buttons: [
+          { label: '続ける', onClick: function () { overlayEl = null; if (!E.canMove(board)) gameOver(); } },
+          { label: '最初から', secondary: true, onClick: function () { overlayEl = null; newGame(); } }
+        ]
+      });
+    }
+    function gameOver() {
+      over = true;
+      H.audio.bad();
+      saveState();
+      closeOverlay();
+      var btns = [{ label: 'もう一度', onClick: function () { overlayEl = null; newGame(); } }];
+      if (prev) btns.push({ label: '1 手戻す', secondary: true, onClick: function () { overlayEl = null; undo(); } });
+      btns.push({ label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } });
+      overlayEl = H.overlay({
+        title: 'ゲームオーバー',
+        big: score + ' 点',
+        html: '最大タイル ' + E.maxTile(board) + ' ／ ベスト ' + best + ' 点',
+        buttons: btns
+      });
+    }
+
+    function setSize(n) {
+      if (n === size) return;
+      if (anim) finishAnim();
+      closeOverlay();
+      size = n;
+      store.set('size', size);
+      best = store.get('best' + size, 0);
+      if (!loadState()) newGame();
+      else { over = !E.canMove(board); hud(); draw(); if (over) gameOver(); }
+      H.toast(size + '×' + size);
+    }
+
+    // ---------- 入力 ----------
+    var main = document.getElementById('main');
+    H.swipe(main, function (dir) { doMove(dir); });
+    H.keys({
+      ArrowUp: function () { doMove('up'); }, ArrowDown: function () { doMove('down'); },
+      ArrowLeft: function () { doMove('left'); }, ArrowRight: function () { doMove('right'); },
+      w: function () { doMove('up'); }, s: function () { doMove('down'); }, a: function () { doMove('left'); }, d: function () { doMove('right'); },
+      z: function () { undo(); }, Backspace: function () { undo(); }
+    });
+    document.getElementById('btn-undo').addEventListener('click', function () { undo(); });
+    var segBtns = document.querySelectorAll('#seg-size button');
+    for (var i = 0; i < segBtns.length; i++) {
+      segBtns[i].addEventListener('click', function (e) { setSize(+e.currentTarget.getAttribute('data-size')); });
+    }
+    main.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    window.resetGame = function () { newGame(); H.toast('最初から'); };
+    H.pauseWhenHidden(function () { if (board) saveState(); });
+
+    // ---------- 開始 ----------
+    best = store.get('best' + size, 0);
+    if (!loadState()) newGame();
+    else { over = !E.canMove(board); hud(); draw(); }
+    setTimeout(function () {
+      if (over) { gameOver(); return; }
+      if (overlayEl) return;
+      H.toast(H.isTouch ? 'スワイプでタイルを動かす' : '矢印キーでタイルを動かす', 2200);
+    }, 400);
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ピクロス - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .ctl-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .ctl-btn.mode { min-width: 92px; font-size: 16px; }
+    .ctl-btn.mode .mk { font-size: 20px; margin-right: 6px; line-height: 1; }
+    .ctl-btn.mode .mk.x { color: #ff6b6b; }
+    .ctl-btn.on .mk.x { color: #fff; }
+    /* 問題一覧(オーバーレイの中) */
+    .pz-wrap { display: block; width: 100%; max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; text-align: left; }
+    .pz-h { display: block; color: var(--muted); font-size: 13px; font-weight: 700; margin: 8px 0 4px; }
+    .pz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 5px; }
+    .pz-btn { min-height: 42px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--panel); color: var(--text); font-size: 15px; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.15; padding: 4px 2px; }
+    .pz-btn small { font-size: 11px; color: var(--muted); font-weight: 600; }
+    .pz-btn.done { border-color: var(--warn); }
+    .pz-btn.done small { color: var(--warn); }
+    .pz-btn.cur { background: var(--accent); border-color: var(--accent); }
+    .pz-btn.cur small { color: #fff; }
+    .pz-btn:active { background: var(--panel-strong); }
+    .overlay .pz-p { max-width: 520px; width: 100%; }
+    .overlay.list { justify-content: flex-start; overflow-y: auto; -webkit-overflow-scrolling: touch; gap: 8px; }
+    .overlay.list h2 { font-size: 20px; }
+    .overlay canvas.pic { display: block; margin: 0 auto 6px; border-radius: 8px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ピクロス" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">問題<b id="hud-no">1</b></span>
+      <span class="hud-item">サイズ<b id="hud-size">5×5</b></span>
+      <span class="hud-item">ミス<b id="hud-miss">0</b></span>
+      <span class="hud-item">時間<b id="hud-time">0:00</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>上と左の数字は、その列・行で「連続して塗るマスの数」。左(上)から順に並んでいる。</li>
+            <li>数字が 2 つ以上あるときは、かたまりの間に 1 マス以上の空きが入る。</li>
+            <li>全部正しく塗ると絵が完成してクリア。</li>
+            <li>間違ったマスを塗るとミスになり、そのマスは自動で × になる。</li>
+            <li>そろった行・列の数字は薄くなる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下の「塗る」「×」を選んでマスをタップ。なぞると続けて入力できる。</li>
+            <li>PC: 左クリックで塗る、右クリックで ×。矢印キーでカーソル移動、スペースで塗る、X で ×。</li>
+            <li>↻ で今の問題をやり直し。「問題」で一覧から選べる。クリアした問題は記録される。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn mode on" id="btn-fill"><span class="mk">■</span>塗る</button>
+      <button type="button" class="ctl-btn mode" id="btn-cross"><span class="mk x">×</span>バツ</button>
+      <button type="button" class="ctl-btn wide" id="btn-list">問題</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var store = H.store('picross');
+
+    // 問題。r は行を / で区切った文字列。# が塗るマス。全問 node の線形ソルバーで一意に解けることを確認済み。
+    var PUZZLES = [
+      { n: 'ハート', c: '#ff5f7e', r: '.#.#./#####/#####/.###./..#..' },
+      { n: 'ひよこ', c: '#ffd93d', r: '.##../##.#./####./.####/.#.#.' },
+      { n: 'きのこ', c: '#ff8c42', r: '.###./##.##/#####/.###./..#..' },
+      { n: 'ダイヤ', c: '#5cd3ff', r: '..#../.###./#####/.###./..#..' },
+      { n: 'いえ', c: '#c9a06b', r: '..#../.###./#####/#.#.#/#####' },
+      { n: 'やじるし', c: '#8be28b', r: '..#../.###./#.#.#/..#../..#..' },
+      { n: 'かさ', c: '#b48cff', r: '.###./#####/..#../..#../.##..' },
+      { n: 'ねこ', c: '#ffb347', r: '#...#/#####/#.#.#/#####/.###.' },
+      { n: 'スター', c: '#ffd93d', r: '....##..../....##..../...####.../##########/.########./..######../..##..##../.##....##./.#......#./##......##' },
+      { n: 'ねこ', c: '#ffb347', r: '##......##/###....###/##########/#.######.#/##########/.##.##.##./..######../...#..#.../..#.##.#../..##..##..' },
+      { n: 'ハート', c: '#ff5f7e', r: '.##....##./####..####/##########/##########/##########/.########./..######../...####.../....##..../..........' },
+      { n: 'き', c: '#6fcf6f', r: '....##..../...####.../..######../.########./##########/..######../....##..../....##..../....##..../..######..' },
+      { n: 'いぬ', c: '#d9a066', r: '.##....##./.###..###./.########./##.####.##/##########/.########./..#.##.#../..######../...#..#.../....##....' },
+      { n: 'かさ', c: '#b48cff', r: '....##..../..######../.########./##########/#.#.##.#.#/.....#..../.....#..../.....#..../...#.#..../....##....' },
+      { n: 'カップ', c: '#5cd3ff', r: '........../.######.../.######.#./.######.#./.######.#./.######.#./.######.../..####..../........../.########.' },
+      { n: 'ヨット', c: '#4fa3ff', r: '....#...../....##..../....###.../....####../....#####./....#...../##########/.########./..######../..........' },
+      { n: 'ロケット', c: '#ff8c42', r: '....##..../...####.../...####.../...#..#.../...#..#.../...####.../..######../.#.####.#./.#.####.#./...#..#...' },
+      { n: 'おんぷ', c: '#f4f4ff', r: '....#####./....#...#./....#...#./....#...#./....#...#./....#...#./.####...#./######.###/######.###/.####..##.' },
+      { n: 'さかな', c: '#5cd3ff', r: '........../...####.../..######.#/.##.####.#/.#########/.########./..######.#/...####..#/........../..........' },
+      { n: 'ちょうちょ', c: '#ff8ad8', r: '#...##...#/##..##..##/###.##.###/##########/##########/###.##.###/##..##..##/#...##...#/....##..../....##....' },
+      { n: 'くるま', c: '#ff5f5f', r: '.............../.............../.....#####...../....#######..../....#.#.#.#..../...#########.../###############/###############/###############/..###.....###../..###.....###../...#.......#.../.............../.............../...............' },
+      { n: 'いえ', c: '#c9a06b', r: '.......#......./......###....../.....#####...../....#######..../...#########.../..###########../.#############./###############/.#...........#./.#.###.....#.#./.#.###.....#.#./.#.###.....#.#./.#.........#.#./.#.........#.#./.#############.' },
+      { n: 'うさぎ', c: '#f4f4ff', r: '...##...##...../...##...##...../...##...##...../...##...##...../...##...##...../..##########.../.#.##..##..#.../.#....#....#.../.#..######.#.../..##########.../...#########.../..############./.##############/.##############/..###.....###..' },
+      { n: 'とり', c: '#4fa3ff', r: '.............../......###....../.....#####...../....###.###..../...##########../..###########../.############../#############../.############../..###########../...########..../....######...../......##......./.....####....../....######.....' },
+      { n: 'ちょうちょ', c: '#ff8ad8', r: '..#....#....#../..#....#....#../...#...#...#.../.#####.#.#####./##.####.####.##/#....##.##....#/#....##.##....#/##..###.###..##/.#######.######/..#####.#####../...####.####.../..#####.#####../.######.######./..####...####../...##.....##...' },
+      { n: 'かめ', c: '#6fcf6f', r: '.............../.............../.....######..../....########.../...##########../...##.##.###.../..####.####.##./.######.####.##/.###########.##/..###########../...#########.../...##.....##.../..###.....###../.............../...............' }
+    ];
+    PUZZLES.forEach(function (p) {
+      p.sol = p.r.split('/').map(function (row) { return row.split('').map(function (ch) { return ch === '#' ? 1 : 0; }); });
+      p.size = p.sol.length;
+    });
+
+    function lineHints(arr) {
+      var h = [], c = 0;
+      for (var i = 0; i < arr.length; i++) { if (arr[i] === 1) c++; else if (c) { h.push(c); c = 0; } }
+      if (c) h.push(c);
+      return h.length ? h : [0];
+    }
+    function hintsEqual(a, b) {
+      if (a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    }
+
+    // ---------- 状態 ----------
+    var BASE = 1000;                 // 盤面の論理サイズ(正方形)
+    var cur = 0, P = null, N = 0;
+    var grid = [];                   // 0 空 / 1 塗り / 2 ×
+    var rowH = [], colH = [], rowDone = [], colDone = [];
+    var mode = 'fill';
+    var miss = 0, elapsed = 0, lastTick = 0, timer = null, running = false, cleared = false;
+    var cursor = { x: -1, y: -1 };
+    var flash = null;                // {x,y,t} ミスの赤点滅
+    var L = {};                      // レイアウト: cell, ox, oy
+    var done = store.get('done', {}); // { index: bestSec }
+
+    var canvas = document.getElementById('cv');
+    var scale = 1;
+    var st = H.canvasStage(canvas, BASE, BASE, function (w, h, ctx, sc) { scale = sc || (w / BASE); draw(); });
+
+    function fmtTime(s) { s = Math.floor(s); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+    function hud() {
+      document.getElementById('hud-no').textContent = (cur + 1) + '/' + PUZZLES.length;
+      document.getElementById('hud-size').textContent = N + '×' + N;
+      document.getElementById('hud-miss').textContent = miss;
+      document.getElementById('hud-time').textContent = fmtTime(elapsed);
+    }
+
+    function load(i) {
+      cur = i; P = PUZZLES[i]; N = P.size;
+      store.set('last', i);
+      grid = []; rowDone = []; colDone = [];
+      for (var y = 0; y < N; y++) { grid.push(new Array(N).fill(0)); rowDone.push(false); colDone.push(false); }
+      rowH = P.sol.map(lineHints);
+      colH = [];
+      for (var x = 0; x < N; x++) { var col = []; for (var yy = 0; yy < N; yy++) col.push(P.sol[yy][x]); colH.push(lineHints(col)); }
+      miss = 0; elapsed = 0; cleared = false; flash = null; cursor = { x: -1, y: -1 };
+      // 空行・空列は最初から × を入れておく(数字 0)
+      for (var r = 0; r < N; r++) if (rowH[r][0] === 0) for (var c = 0; c < N; c++) grid[r][c] = 2;
+      for (var c2 = 0; c2 < N; c2++) if (colH[c2][0] === 0) for (var r2 = 0; r2 < N; r2++) grid[r2][c2] = 2;
+      for (var k = 0; k < N; k++) { rowDone[k] = checkLine(k, true); colDone[k] = checkLine(k, false); }
+      layout();
+      startTimer();
+      hud(); draw();
+    }
+
+    function startTimer() {
+      stopTimer();
+      running = true; lastTick = Date.now();
+      timer = setInterval(tick, 250);
+    }
+    function stopTimer() { running = false; if (timer) { clearInterval(timer); timer = null; } }
+    function tick() {
+      var now = Date.now();
+      var dt = Math.min(1.0, (now - lastTick) / 1000);
+      lastTick = now;
+      if (running && !cleared) { elapsed += dt; document.getElementById('hud-time').textContent = fmtTime(elapsed); }
+      if (flash && now - flash.t > 500) { flash = null; draw(); }
+    }
+
+    // ---------- レイアウト ----------
+    function layout() {
+      var maxR = 1, maxC = 1;
+      for (var i = 0; i < N; i++) { maxR = Math.max(maxR, rowH[i].length); maxC = Math.max(maxC, colH[i].length); }
+      var hu = Math.max(maxR * 0.68 + 0.2, maxC * 0.66 + 0.2, 1.5); // ヒント領域(マス単位)
+      var cell = BASE / (N + hu + 0.2);
+      L.cell = cell; L.hu = hu;
+      L.ox = BASE - cell * N - cell * 0.1;
+      L.oy = BASE - cell * N - cell * 0.1;
+    }
+
+    // ---------- 描画 ----------
+    function draw() {
+      if (!st || !P) return;
+      var ctx = st.ctx();
+      if (!ctx) return;
+      var cell = L.cell, ox = L.ox, oy = L.oy;
+      ctx.save();
+      ctx.scale(scale, scale);
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE, BASE);
+
+      // ヒント背景
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fillRect(ox - cell * 0.05, 0, cell * N + cell * 0.1, oy);
+      ctx.fillRect(0, oy - cell * 0.05, ox, cell * N + cell * 0.1);
+      // 5 マスごとの帯
+      ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      for (var b = 5; b < N; b += 10) {
+        ctx.fillRect(ox + b * cell, 0, Math.min(5, N - b) * cell, BASE);
+        ctx.fillRect(0, oy + b * cell, BASE, Math.min(5, N - b) * cell);
+      }
+
+      // マス
+      var x, y;
+      for (y = 0; y < N; y++) for (x = 0; x < N; x++) {
+        var px = ox + x * cell, py = oy + y * cell, v = grid[y][x];
+        ctx.fillStyle = (Math.floor(x / 5) + Math.floor(y / 5)) % 2 ? '#1c1c36' : '#20203c';
+        ctx.fillRect(px, py, cell, cell);
+        if (v === 1) {
+          ctx.fillStyle = cleared ? P.c : '#eceaff';
+          ctx.fillRect(px + 1, py + 1, cell - 2, cell - 2);
+        } else if (v === 2 && !cleared) {
+          ctx.strokeStyle = 'rgba(255,120,120,0.7)';
+          ctx.lineWidth = Math.max(2, cell * 0.08);
+          var m = cell * 0.3;
+          ctx.beginPath();
+          ctx.moveTo(px + m, py + m); ctx.lineTo(px + cell - m, py + cell - m);
+          ctx.moveTo(px + cell - m, py + m); ctx.lineTo(px + m, py + cell - m);
+          ctx.stroke();
+        }
+      }
+      if (flash) {
+        ctx.fillStyle = 'rgba(255,70,70,0.6)';
+        ctx.fillRect(ox + flash.x * cell, oy + flash.y * cell, cell, cell);
+      }
+
+      // 格子線
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = 1 / scale;
+      for (var i = 0; i <= N; i++) {
+        var gx = Math.round(ox + i * cell) + 0.5, gy = Math.round(oy + i * cell) + 0.5;
+        ctx.beginPath(); ctx.moveTo(gx, oy); ctx.lineTo(gx, oy + N * cell); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(ox, gy); ctx.lineTo(ox + N * cell, gy); ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = Math.max(2, cell * 0.07);
+      for (var j = 0; j <= N; j += 5) {
+        var bx = ox + j * cell, by = oy + j * cell;
+        ctx.beginPath(); ctx.moveTo(bx, 0); ctx.lineTo(bx, oy + N * cell); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(ox + N * cell, by); ctx.stroke();
+      }
+      if (N % 5) {
+        ctx.beginPath(); ctx.moveTo(ox + N * cell, 0); ctx.lineTo(ox + N * cell, oy + N * cell); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, oy + N * cell); ctx.lineTo(ox + N * cell, oy + N * cell); ctx.stroke();
+      }
+
+      // ヒント数字
+      var fs = Math.round(cell * 0.52);
+      ctx.font = '700 ' + fs + 'px -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif';
+      ctx.textBaseline = 'middle';
+      var k;
+      for (y = 0; y < N; y++) {
+        var h = rowH[y];
+        ctx.fillStyle = rowDone[y] ? 'rgba(169,169,201,0.35)' : (cursor.y === y ? '#ffd93d' : '#f4f4ff');
+        ctx.textAlign = 'right';
+        for (k = 0; k < h.length; k++) {
+          var tx = ox - cell * 0.22 - (h.length - 1 - k) * cell * 0.68;
+          ctx.fillText(h[k], tx, oy + y * cell + cell / 2 + 1);
+        }
+      }
+      ctx.textAlign = 'center';
+      for (x = 0; x < N; x++) {
+        var hc = colH[x];
+        ctx.fillStyle = colDone[x] ? 'rgba(169,169,201,0.35)' : (cursor.x === x ? '#ffd93d' : '#f4f4ff');
+        for (k = 0; k < hc.length; k++) {
+          var ty = oy - cell * 0.4 - (hc.length - 1 - k) * cell * 0.66;
+          ctx.fillText(hc[k], ox + x * cell + cell / 2, ty);
+        }
+      }
+
+      // キーボードカーソル
+      if (cursor.x >= 0 && !cleared) {
+        ctx.strokeStyle = '#ffd93d';
+        ctx.lineWidth = Math.max(2, cell * 0.1);
+        ctx.strokeRect(ox + cursor.x * cell + 2, oy + cursor.y * cell + 2, cell - 4, cell - 4);
+      }
+      ctx.restore();
+    }
+
+    // ---------- 入力 ----------
+    function checkLine(i, isRow) {
+      var arr = [];
+      for (var k = 0; k < N; k++) arr.push((isRow ? grid[i][k] : grid[k][i]) === 1 ? 1 : 0);
+      return hintsEqual(lineHints(arr), isRow ? rowH[i] : colH[i]);
+    }
+
+    // 1 マスに入力。戻り値: 変化したか
+    function apply(x, y, target) {
+      if (cleared || x < 0 || y < 0 || x >= N || y >= N) return false;
+      var v = grid[y][x];
+      if (v === target) return false;
+      if (target === 1) {
+        if (P.sol[y][x] !== 1) {
+          // 間違い: ミスを数えて × にする
+          miss++;
+          grid[y][x] = 2;
+          flash = { x: x, y: y, t: Date.now() };
+          H.audio.bad();
+          hud();
+          afterChange(x, y);
+          return true;
+        }
+        H.audio.click();
+      } else if (target === 2) {
+        if (v === 1) return false; // 塗ったマスは × にしない(塗るモードで消す)
+        H.audio.beep(520, 0.03);
+      } else {
+        if (v === 1 && P.sol[y][x] === 1) { /* 正解マスの取り消しは許す */ }
+        H.audio.beep(300, 0.03);
+      }
+      grid[y][x] = target;
+      afterChange(x, y);
+      return true;
+    }
+
+    function afterChange(x, y) {
+      var r = checkLine(y, true), c = checkLine(x, false);
+      if ((r && !rowDone[y]) || (c && !colDone[x])) H.audio.good();
+      rowDone[y] = r; colDone[x] = c;
+      draw();
+      checkWin();
+    }
+
+    function checkWin() {
+      for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) {
+        if ((grid[y][x] === 1) !== (P.sol[y][x] === 1)) return;
+      }
+      cleared = true;
+      stopTimer();
+      var sec = Math.floor(elapsed);
+      var prev = done[cur];
+      if (prev === undefined || sec < prev) { done[cur] = sec; store.set('done', done); }
+      // 残った空きマスを × に
+      for (var y2 = 0; y2 < N; y2++) for (var x2 = 0; x2 < N; x2++) if (grid[y2][x2] === 0) grid[y2][x2] = 2;
+      draw();
+      H.audio.win();
+      setTimeout(showClear, 500);
+    }
+
+    function cellAt(clientX, clientY) {
+      var p = st.toBase(clientX, clientY);
+      var x = Math.floor((p.x - L.ox) / L.cell), y = Math.floor((p.y - L.oy) / L.cell);
+      if (x < 0 || y < 0 || x >= N || y >= N) return null;
+      return { x: x, y: y };
+    }
+
+    // ドラッグ: 最初のマスで「何を入れるか」を決め、同じ状態だったマスだけ変える
+    var drag = null; // {target, from, id}
+    function dragStart(clientX, clientY, forceMode, id) {
+      if (cleared) return;
+      var c = cellAt(clientX, clientY);
+      if (!c) return;
+      var m = forceMode || mode;
+      var v = grid[c.y][c.x];
+      var target;
+      if (m === 'fill') target = (v === 1) ? 0 : 1;
+      else target = (v === 2) ? 0 : 2;
+      if (m === 'cross' && v === 1) return; // 塗ったマスの上で × を始めても何もしない
+      drag = { target: target, from: v, id: id, lastX: c.x, lastY: c.y };
+      cursor = { x: -1, y: -1 };
+      apply(c.x, c.y, target);
+    }
+    function dragMove(clientX, clientY) {
+      if (!drag || cleared) return;
+      var c = cellAt(clientX, clientY);
+      if (!c || (c.x === drag.lastX && c.y === drag.lastY)) return;
+      drag.lastX = c.x; drag.lastY = c.y;
+      if (grid[c.y][c.x] === drag.from) apply(c.x, c.y, drag.target);
+    }
+    function dragEnd() { drag = null; }
+
+    if (window.PointerEvent) {
+      canvas.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0 && e.button !== 2) return;
+        e.preventDefault();
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        dragStart(e.clientX, e.clientY, e.button === 2 ? 'cross' : null, e.pointerId);
+      });
+      canvas.addEventListener('pointermove', function (e) { if (drag && drag.id === e.pointerId) dragMove(e.clientX, e.clientY); });
+      canvas.addEventListener('pointerup', dragEnd);
+      canvas.addEventListener('pointercancel', dragEnd);
+      window.addEventListener('pointerup', dragEnd);
+    } else {
+      canvas.addEventListener('touchstart', function (e) { e.preventDefault(); var t = e.changedTouches[0]; dragStart(t.clientX, t.clientY, null, t.identifier); }, { passive: false });
+      canvas.addEventListener('touchmove', function (e) { e.preventDefault(); var t = e.changedTouches[0]; dragMove(t.clientX, t.clientY); }, { passive: false });
+      canvas.addEventListener('touchend', dragEnd);
+      canvas.addEventListener('touchcancel', dragEnd);
+      canvas.addEventListener('mousedown', function (e) { e.preventDefault(); dragStart(e.clientX, e.clientY, e.button === 2 ? 'cross' : null, 0); });
+      canvas.addEventListener('mousemove', function (e) { dragMove(e.clientX, e.clientY); });
+      window.addEventListener('mouseup', dragEnd);
+    }
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    // モード切替
+    var btnFill = document.getElementById('btn-fill'), btnCross = document.getElementById('btn-cross');
+    function setMode(m) {
+      mode = m;
+      btnFill.classList.toggle('on', m === 'fill');
+      btnCross.classList.toggle('on', m === 'cross');
+    }
+    H.onTap(btnFill, function () { setMode('fill'); H.audio.click(); });
+    H.onTap(btnCross, function () { setMode('cross'); H.audio.click(); });
+    H.onTap(document.getElementById('btn-list'), function () { showList(); });
+
+    // キーボード
+    function moveCursor(dx, dy) {
+      if (cleared) return;
+      if (cursor.x < 0) cursor = { x: 0, y: 0 };
+      else cursor = { x: Math.max(0, Math.min(N - 1, cursor.x + dx)), y: Math.max(0, Math.min(N - 1, cursor.y + dy)) };
+      draw();
+    }
+    function keyPut(m) {
+      if (cleared || cursor.x < 0) return;
+      var v = grid[cursor.y][cursor.x];
+      if (m === 'fill') apply(cursor.x, cursor.y, v === 1 ? 0 : 1);
+      else if (v !== 1) apply(cursor.x, cursor.y, v === 2 ? 0 : 2);
+    }
+    H.keys({
+      ArrowLeft: function () { moveCursor(-1, 0); }, ArrowRight: function () { moveCursor(1, 0); },
+      ArrowUp: function () { moveCursor(0, -1); }, ArrowDown: function () { moveCursor(0, 1); },
+      ' ': function () { keyPut('fill'); }, Enter: function () { keyPut('fill'); },
+      x: function () { keyPut('cross'); }, X: function () { keyPut('cross'); },
+      f: function () { setMode('fill'); }, c: function () { setMode('cross'); }
+    });
+
+    // ---------- オーバーレイ ----------
+    var ov = null;
+    function closeOv() { if (ov) { ov.close(); ov = null; } }
+
+    function showList() {
+      closeOv();
+      stopTimer();
+      var sizes = [5, 10, 15], html = '<span class="pz-wrap">';
+      sizes.forEach(function (s) {
+        html += '<span class="pz-h">' + s + '×' + s + '</span><span class="pz-grid">';
+        PUZZLES.forEach(function (p, i) {
+          if (p.size !== s) return;
+          var d = done[i] !== undefined;
+          html += '<button type="button" class="pz-btn' + (d ? ' done' : '') + (i === cur ? ' cur' : '') + '" data-i="' + i + '">No.' + (i + 1) +
+            '<small>' + (d ? '★ ' + fmtTime(done[i]) : '未') + '</small></button>';
+        });
+        html += '</span>';
+      });
+      html += '</span>';
+      var cnt = Object.keys(done).length;
+      ov = H.overlay({
+        title: '問題をえらぶ (' + cnt + '/' + PUZZLES.length + ' クリア)',
+        html: html,
+        buttons: [{ label: 'とじる', secondary: true, onClick: function () { ov = null; if (!cleared) resumeTimer(); } }]
+      });
+      ov.classList.add('list'); ov.classList.add('scrollable');
+      var pEl = ov.querySelector('p'); if (pEl) pEl.className = 'pz-p';
+      var btns = ov.querySelectorAll('.pz-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(this.getAttribute('data-i'), 10);
+          closeOv();
+          load(idx);
+        });
+      }
+    }
+    function resumeTimer() { if (!running) startTimer(); }
+
+    function showClear() {
+      closeOv();
+      var sec = Math.floor(elapsed);
+      var pic = Math.min(240, 16 * N);
+      var html = '<canvas class="pic" id="ov-pic" width="' + pic + '" height="' + pic + '"></canvas>' +
+        '時間 ' + fmtTime(sec) + ' / ミス ' + miss + '<br>ベスト ' + fmtTime(done[cur]);
+      var next = (cur + 1) % PUZZLES.length;
+      ov = H.overlay({
+        title: 'クリア! 「' + P.n + '」',
+        html: html,
+        buttons: [
+          { label: '次の問題', onClick: function () { ov = null; load(next); } },
+          { label: '問題一覧', secondary: true, onClick: function () { ov = null; showList(); } }
+        ]
+      });
+      var cv2 = document.getElementById('ov-pic');
+      if (cv2) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 3);
+        cv2.width = pic * dpr; cv2.height = pic * dpr;
+        cv2.style.width = pic + 'px'; cv2.style.height = pic + 'px';
+        var c2 = cv2.getContext('2d');
+        c2.scale(dpr, dpr);
+        c2.fillStyle = '#20203c'; c2.fillRect(0, 0, pic, pic);
+        var cs = pic / N;
+        c2.fillStyle = P.c;
+        for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) if (P.sol[y][x]) c2.fillRect(x * cs, y * cs, cs + 0.5, cs + 0.5);
+      }
+    }
+
+    window.resetGame = function () {
+      closeOv();
+      load(cur);
+      H.toast('やり直し');
+    };
+    window.onHelpClose = function () { if (!cleared && !ov) resumeTimer(); };
+    H.pauseWhenHidden(function () { stopTimer(); }, function () { if (!cleared && !ov && document.getElementById('help-sheet').classList.contains('hidden')) resumeTimer(); });
+
+    // 最初: 前回の問題(クリア済みなら次の未クリア)を開く
+    var first = store.get('last', 0);
+    if (typeof first !== 'number' || first < 0 || first >= PUZZLES.length) first = 0;
+    if (done[first] !== undefined) {
+      for (var q = 0; q < PUZZLES.length; q++) { var cand = (first + q) % PUZZLES.length; if (done[cand] === undefined) { first = cand; break; } }
+    }
+    load(first);
+  })();
+  </script>
+</body>
+</html>

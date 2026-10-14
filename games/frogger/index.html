@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>フロッガー - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.lives b { letter-spacing: 1px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="フロッガー" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item">面<b id="level">1</b></span>
+      <span class="hud-item lives">残り<b id="lives">🐸🐸🐸</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>カエルを 1 マスずつ動かし、道路と川を渡って上の 5 つの巣に入れる。</li>
+            <li>道路では車にぶつかるとミス。川では丸太・亀の上だけ安全。水に落ちるとミス。</li>
+            <li>丸太や亀に乗ると一緒に流される。画面の端まで流されるとミス。</li>
+            <li>亀はときどき沈む。沈んでいる間は乗れない。</li>
+            <li>下の時間バーが無くなる前に巣へ。巣に入ると残り時間がボーナス。</li>
+            <li>巣にハエがいるときに入ると +200。</li>
+            <li>5 つの巣を全部埋めると面クリア。面が進むと車が速く・多くなる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 盤面をスワイプ、または下の十字キー</li>
+            <li>PC: 矢印キー / WASD</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ---------- 定数 ----------
+    var CELL = 32, COLS = 13, ROWS = 13;        // row 0=巣, 1-5=川, 6=中洲, 7-11=道路, 12=スタート
+    var W = COLS * CELL, BAR_H = 14, BASE_H = ROWS * CELL + BAR_H;
+    var HOME_COLS = [0, 3, 6, 9, 12];
+    var TIME_LIMIT = 30, START_LIVES = 3, MAX_LIVES = 5;
+    var FROG_W = 24;
+
+    var VEHICLES = {
+      truck:  { len: 3.0, color: '#8e24aa', cab: '#ce93d8' },
+      bus:    { len: 2.5, color: '#f9a825', cab: '#fff59d' },
+      car:    { len: 1.2, color: '#43a047', cab: '#a5d6a7' },
+      racer:  { len: 1.2, color: '#e53935', cab: '#ef9a9a' },
+      taxi:   { len: 1.4, color: '#1e88e5', cab: '#90caf9' }
+    };
+
+    // ---------- 状態 ----------
+    var store = H.store('frogger');
+    var best = store.get('best', 0);
+    var state = 'start';            // start | play | dying | clear | over
+    var score = 0, level = 1, lives = START_LIVES;
+    var timeLeft = TIME_LIMIT, stateTimer = 0, animT = 0;
+    var frog = { x: 0, y: 0, row: 12, dir: 'up', bestRow: 12 };
+    var homes = [];                 // {col, filled, fly}
+    var lanes = [];
+    var flyTimer = 0;
+    var deathReason = '';
+    var currentOverlay = null;
+
+    var canvas = document.getElementById('cv');
+    var fitScale = 1;
+    var st = H.canvasStage(canvas, W, BASE_H, function (cw, ch, c, scale) { fitScale = scale || (cw / W); draw(); });
+
+    // ---------- レーン生成 ----------
+    function makeLane(row, kind, dir, count, lenCells, baseSpeed, opts) {
+      var mult = 1 + (level - 1) * 0.13;
+      var extra = Math.floor((level - 1) / 2);
+      count = Math.min(count + extra, kind === 'vehicle' ? 5 : 4);
+      var len = lenCells * CELL;
+      var minGap = kind === 'vehicle' ? CELL * 2.2 : CELL * 1.6;
+      var ring = Math.max(W + len, count * (len + minGap));
+      var items = [];
+      for (var i = 0; i < count; i++) {
+        items.push({ x: i * (ring / count) - len / 2 });
+      }
+      return {
+        row: row, kind: kind, speed: dir * baseSpeed * CELL * mult, len: len, ring: ring,
+        items: items, vtype: opts && opts.vtype, turtles: opts && opts.turtles,
+        dives: !!(opts && opts.dives), phase: Math.random() * 5
+      };
+    }
+
+    function buildLanes() {
+      lanes = [
+        makeLane(1, 'turtle', -1, 3, 2.6, 1.1, { turtles: 3, dives: level >= 2 }),
+        makeLane(2, 'log',    1, 3, 2,   1.4),
+        makeLane(3, 'log',    1, 2, 4,   2.0),
+        makeLane(4, 'turtle', -1, 3, 1.8, 1.3, { turtles: 2, dives: true }),
+        makeLane(5, 'log',    1, 3, 3,   1.0),
+        makeLane(7, 'vehicle', 1, 2, VEHICLES.truck.len, 1.0, { vtype: 'truck' }),
+        makeLane(8, 'vehicle', -1, 3, VEHICLES.car.len, 1.7, { vtype: 'car' }),
+        makeLane(9, 'vehicle', 1, 2, VEHICLES.racer.len, 2.7, { vtype: 'racer' }),
+        makeLane(10, 'vehicle', -1, 2, VEHICLES.bus.len, 1.2, { vtype: 'bus' }),
+        makeLane(11, 'vehicle', 1, 3, VEHICLES.taxi.len, 1.5, { vtype: 'taxi' })
+      ];
+    }
+
+    function buildHomes() {
+      homes = HOME_COLS.map(function (c) { return { col: c, filled: false, fly: 0 }; });
+    }
+
+    // ---------- カエル ----------
+    function placeFrog() {
+      frog.row = 12; frog.bestRow = 12; frog.dir = 'up';
+      frog.x = 6 * CELL + CELL / 2;
+      frog.y = 12 * CELL + CELL / 2;
+      timeLeft = TIME_LIMIT;
+    }
+    function frogCol() { return Math.floor(frog.x / CELL); }
+
+    function turtleUnder(lane) {
+      // 0=浮上, 1=沈没。周期 5 秒: 3.4 秒浮上, 0.5 秒沈下, 0.6 秒沈没, 0.5 秒浮上
+      if (!lane.dives) return 0;
+      var t = (animT + lane.phase) % 5;
+      if (t < 3.4) return 0;
+      if (t < 3.9) return (t - 3.4) / 0.5;
+      if (t < 4.5) return 1;
+      return 1 - (t - 4.5) / 0.5;
+    }
+
+    function laneAt(row) {
+      for (var i = 0; i < lanes.length; i++) if (lanes[i].row === row) return lanes[i];
+      return null;
+    }
+
+    function move(dir) {
+      if (state !== 'play') return;
+      var col = frogCol(), row = frog.row;
+      var nc = col, nr = row;
+      if (dir === 'up') nr--; else if (dir === 'down') nr++;
+      else if (dir === 'left') nc--; else if (dir === 'right') nc++;
+      if (nc < 0 || nc >= COLS || nr < 0 || nr > 12) return;
+      frog.dir = dir;
+      if (nr === 0) {
+        var home = null;
+        for (var i = 0; i < homes.length; i++) if (homes[i].col === nc) home = homes[i];
+        if (!home || home.filled) { H.audio.beep(200, 0.08, 'square', 0.04); return; } // 草むら・埋まった巣は進めない
+        frog.row = 0; frog.x = nc * CELL + CELL / 2; frog.y = CELL / 2;
+        reachHome(home);
+        return;
+      }
+      frog.row = nr;
+      // 川の上では丸太に合わせた位置を保つ(マス目に吸着させると丸太から落ちる)
+      if (row >= 1 && row <= 6 && nr >= 1 && nr <= 6) {
+        if (nc !== col) frog.x += (nc - col) * CELL;
+        frog.x = Math.max(4, Math.min(W - 4, frog.x));
+      } else {
+        frog.x = nc * CELL + CELL / 2;
+      }
+      frog.y = nr * CELL + CELL / 2;
+      H.audio.click();
+      if (nr < frog.bestRow) { frog.bestRow = nr; addScore(10); }
+    }
+
+    function reachHome(home) {
+      home.filled = true;
+      var bonus = 50 + Math.floor(timeLeft) * 10 + (home.fly > 0 ? 200 : 0);
+      if (home.fly > 0) { home.fly = 0; H.toast('ハエ +200'); }
+      addScore(bonus);
+      var all = true;
+      for (var i = 0; i < homes.length; i++) if (!homes[i].filled) all = false;
+      if (all) {
+        addScore(1000);
+        state = 'clear'; stateTimer = 1.2;
+        H.audio.win();
+      } else {
+        H.audio.good();
+        state = 'dying'; deathReason = ''; stateTimer = 0.5; // 巣入りの小休止(死亡ではない)
+      }
+    }
+
+    function die(reason) {
+      if (state !== 'play') return;
+      state = 'dying'; deathReason = reason; stateTimer = 1.0;
+      lives--;
+      H.audio.bad();
+      hud();
+    }
+
+    function addScore(n) {
+      score += n;
+      if (score > best) { best = score; store.set('best', best); }
+      hud();
+    }
+
+    // ---------- 更新 ----------
+    function moveLanes(dt) {
+      for (var i = 0; i < lanes.length; i++) {
+        var ln = lanes[i];
+        for (var j = 0; j < ln.items.length; j++) {
+          var it = ln.items[j];
+          it.x += ln.speed * dt;
+          // リング上で折り返す。リングは画面幅+長さ以上なので端から完全に消えてから反対側に出る
+          if (it.x > ln.ring - ln.len) it.x -= ln.ring;
+          else if (it.x < -ln.len) it.x += ln.ring;
+        }
+      }
+    }
+
+    function update(dt) {
+      animT += dt;
+      if (state === 'play' || state === 'dying' || state === 'clear') moveLanes(dt);
+
+      // ハエ
+      if (state === 'play') {
+        flyTimer -= dt;
+        var hasFly = false;
+        for (var i = 0; i < homes.length; i++) {
+          if (homes[i].fly > 0) { homes[i].fly -= dt; hasFly = true; }
+        }
+        if (!hasFly && flyTimer <= 0) {
+          var empty = homes.filter(function (h) { return !h.filled; });
+          if (empty.length > 0) {
+            empty[Math.floor(Math.random() * empty.length)].fly = 4;
+          }
+          flyTimer = 5 + Math.random() * 5;
+        }
+      }
+
+      if (state === 'play') {
+        timeLeft -= dt;
+        if (timeLeft <= 0) { timeLeft = 0; die('時間切れ'); return; }
+
+        var ln = laneAt(frog.row);
+        if (ln && ln.kind === 'vehicle') {
+          var fy0 = frog.x - FROG_W / 2 + 3, fy1 = frog.x + FROG_W / 2 - 3;
+          for (var k = 0; k < ln.items.length; k++) {
+            var vx = ln.items[k].x;
+            if (fy1 > vx + 2 && fy0 < vx + ln.len - 2) { die('車にぶつかった'); return; }
+          }
+        } else if (ln) {
+          // 川: 支えがあれば一緒に流れる
+          var support = null;
+          for (var m = 0; m < ln.items.length; m++) {
+            var ix = ln.items[m].x;
+            if (frog.x >= ix - 4 && frog.x <= ix + ln.len + 4) { support = ln.items[m]; break; }
+          }
+          if (support && ln.kind === 'turtle' && turtleUnder(ln) >= 1) support = null;
+          if (!support) { die('水に落ちた'); return; }
+          frog.x += ln.speed * dt;
+          if (frog.x < 0 || frog.x > W) { die('流された'); return; }
+        }
+      } else if (state === 'dying') {
+        stateTimer -= dt;
+        if (stateTimer <= 0) {
+          if (lives <= 0) { gameOver(); }
+          else { placeFrog(); state = 'play'; }
+        }
+      } else if (state === 'clear') {
+        stateTimer -= dt;
+        if (stateTimer <= 0) showClear();
+      }
+    }
+
+    // ---------- 描画 ----------
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawFrog(ctx, x, y, dir, size, alpha) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+      var ang = dir === 'right' ? Math.PI / 2 : dir === 'down' ? Math.PI : dir === 'left' ? -Math.PI / 2 : 0;
+      ctx.rotate(ang);
+      var s = size / 24;
+      ctx.scale(s, s);
+      ctx.fillStyle = '#2e7d32';
+      // 足
+      ctx.fillRect(-13, -4, 5, 9); ctx.fillRect(8, -4, 5, 9);
+      ctx.fillRect(-12, 5, 5, 8); ctx.fillRect(7, 5, 5, 8);
+      // 体
+      ctx.fillStyle = '#4caf50';
+      rr(ctx, -9, -10, 18, 20, 7); ctx.fill();
+      // 目
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-5, -8, 3.5, 0, Math.PI * 2); ctx.arc(5, -8, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111';
+      ctx.beginPath(); ctx.arc(-5, -9, 1.6, 0, Math.PI * 2); ctx.arc(5, -9, 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    function drawVehicle(ctx, x, y, len, type, dirSign) {
+      var v = VEHICLES[type];
+      var h = CELL - 8, top = y + 4;
+      ctx.fillStyle = '#111';
+      ctx.fillRect(x + 4, top - 2, 7, 3); ctx.fillRect(x + len - 11, top - 2, 7, 3);
+      ctx.fillRect(x + 4, top + h - 1, 7, 3); ctx.fillRect(x + len - 11, top + h - 1, 7, 3);
+      ctx.fillStyle = v.color;
+      rr(ctx, x, top, len, h, 5); ctx.fill();
+      ctx.fillStyle = v.cab;
+      var cabW = Math.min(14, len * 0.3);
+      var cx = dirSign > 0 ? x + len - cabW - 5 : x + 5;
+      rr(ctx, cx, top + 4, cabW, h - 8, 3); ctx.fill();
+      if (type === 'truck' || type === 'bus') {
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.fillRect(dirSign > 0 ? x + 6 : x + cabW + 12, top + 5, len - cabW - 18, h - 10);
+      }
+      // ヘッドライト
+      ctx.fillStyle = '#fff8c4';
+      var hx = dirSign > 0 ? x + len - 3 : x;
+      ctx.fillRect(hx, top + 3, 3, 4); ctx.fillRect(hx, top + h - 7, 3, 4);
+    }
+
+    function drawLog(ctx, x, y, len) {
+      var top = y + 6, h = CELL - 12;
+      ctx.fillStyle = '#6d4c41';
+      rr(ctx, x, top, len, h, h / 2); ctx.fill();
+      ctx.fillStyle = '#8d6e63';
+      ctx.fillRect(x + 10, top + 4, len - 20, 3);
+      ctx.fillRect(x + 16, top + h - 8, len - 32, 3);
+      ctx.fillStyle = '#a1887f';
+      ctx.beginPath(); ctx.arc(x + h / 2, top + h / 2, h / 2 - 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + len - h / 2, top + h / 2, h / 2 - 3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function drawTurtles(ctx, x, y, n, len, sub) {
+      var step = len / n, r = Math.min(12, step / 2 - 2);
+      var cy = y + CELL / 2;
+      for (var i = 0; i < n; i++) {
+        var cx = x + step * i + step / 2;
+        if (sub >= 1) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(cx, cy, r * 0.6, 0, Math.PI * 2); ctx.stroke();
+          continue;
+        }
+        ctx.save();
+        ctx.globalAlpha = 1 - sub * 0.7;
+        var rs = r * (1 - sub * 0.25);
+        ctx.fillStyle = '#558b2f';
+        ctx.beginPath(); ctx.arc(cx, cy, rs, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#9ccc65';
+        ctx.beginPath(); ctx.arc(cx, cy, rs * 0.55, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#33691e'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(cx - rs * 0.55, cy); ctx.lineTo(cx + rs * 0.55, cy);
+        ctx.moveTo(cx, cy - rs * 0.55); ctx.lineTo(cx, cy + rs * 0.55); ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function draw() {
+      if (!st) return;          // canvasStage の初回 layout は st 代入前に呼ばれる
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.save();
+      ctx.scale(fitScale, fitScale);   // canvasStage は DPR だけ合わせるので、盤面の拡縮はここで掛ける
+      ctx.clearRect(0, 0, W, BASE_H);
+
+      // 巣の列
+      ctx.fillStyle = '#1b5e20';
+      ctx.fillRect(0, 0, W, CELL);
+      ctx.fillStyle = '#2e7d32';
+      for (var c = 0; c < COLS; c++) {
+        if (HOME_COLS.indexOf(c) >= 0) continue;
+        ctx.beginPath(); ctx.arc(c * CELL + CELL / 2, CELL / 2, 11, 0, Math.PI * 2); ctx.fill();
+      }
+      for (var hI = 0; hI < homes.length; hI++) {
+        var hm = homes[hI], hx = hm.col * CELL;
+        ctx.fillStyle = '#0b3d91';
+        rr(ctx, hx + 3, 3, CELL - 6, CELL - 4, 5); ctx.fill();
+        if (hm.filled) drawFrog(ctx, hx + CELL / 2, CELL / 2, 'up', 22);
+        else if (hm.fly > 0) {
+          var fx = hx + CELL / 2 + Math.sin(animT * 9) * 3, fy = CELL / 2 + Math.cos(animT * 7) * 2;
+          ctx.fillStyle = '#eee';
+          ctx.beginPath(); ctx.ellipse(fx - 4, fy - 3, 4, 2.5, -0.5, 0, Math.PI * 2);
+          ctx.ellipse(fx + 4, fy - 3, 4, 2.5, 0.5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#212121';
+          ctx.beginPath(); ctx.ellipse(fx, fy, 4, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      // 川
+      ctx.fillStyle = '#0d47a1';
+      ctx.fillRect(0, CELL, W, 5 * CELL);
+      ctx.strokeStyle = 'rgba(100,181,246,0.5)'; ctx.lineWidth = 2;
+      var wo = (animT * 24) % 32;
+      for (var r = 1; r <= 5; r++) {
+        ctx.beginPath();
+        for (var x = -32; x <= W + 32; x += 8) {
+          var y = r * CELL + CELL / 2 + Math.sin((x + wo) * 0.15 + r) * 3;
+          if (x === -32) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      // 中洲・スタート
+      ctx.fillStyle = '#558b2f';
+      ctx.fillRect(0, 6 * CELL, W, CELL);
+      ctx.fillRect(0, 12 * CELL, W, CELL);
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      for (var g = 0; g < COLS; g += 2) { ctx.fillRect(g * CELL, 6 * CELL, CELL, CELL); ctx.fillRect(g * CELL, 12 * CELL, CELL, CELL); }
+
+      // 道路
+      ctx.fillStyle = '#263238';
+      ctx.fillRect(0, 7 * CELL, W, 5 * CELL);
+      ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 2; ctx.setLineDash([12, 12]);
+      for (var rr2 = 8; rr2 <= 11; rr2++) { ctx.beginPath(); ctx.moveTo(0, rr2 * CELL); ctx.lineTo(W, rr2 * CELL); ctx.stroke(); }
+      ctx.setLineDash([]);
+
+      // レーン
+      for (var i = 0; i < lanes.length; i++) {
+        var ln = lanes[i], ly = ln.row * CELL;
+        var sub = ln.kind === 'turtle' ? turtleUnder(ln) : 0;
+        for (var j = 0; j < ln.items.length; j++) {
+          var ix = ln.items[j].x;
+          if (ix > W || ix + ln.len < 0) continue;
+          if (ln.kind === 'vehicle') drawVehicle(ctx, ix, ly, ln.len, ln.vtype, ln.speed > 0 ? 1 : -1);
+          else if (ln.kind === 'log') drawLog(ctx, ix, ly, ln.len);
+          else drawTurtles(ctx, ix, ly, ln.turtles, ln.len, sub);
+        }
+      }
+
+      // カエル
+      if (state === 'play' || state === 'start') {
+        drawFrog(ctx, frog.x, frog.y, frog.dir, FROG_W);
+      } else if (state === 'dying') {
+        if (deathReason) {
+          var p = 1 - stateTimer;  // 0→1
+          ctx.save();
+          ctx.strokeStyle = frog.row >= 7 ? '#ff7043' : '#bbdefb';
+          ctx.lineWidth = 3; ctx.globalAlpha = Math.max(0, 1 - p);
+          for (var a = 0; a < 8; a++) {
+            var ang = a * Math.PI / 4, d = 6 + p * 22;
+            ctx.beginPath(); ctx.moveTo(frog.x + Math.cos(ang) * 4, frog.y + Math.sin(ang) * 4);
+            ctx.lineTo(frog.x + Math.cos(ang) * d, frog.y + Math.sin(ang) * d); ctx.stroke();
+          }
+          ctx.restore();
+          ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(deathReason, W / 2, 6 * CELL + CELL / 2);
+        }
+      }
+
+      // 時間バー
+      var by = ROWS * CELL;
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, by, W, BAR_H);
+      var frac = Math.max(0, Math.min(1, timeLeft / TIME_LIMIT));
+      ctx.fillStyle = frac < 0.25 ? '#ef5350' : frac < 0.5 ? '#ffb74d' : '#66bb6a';
+      ctx.fillRect(4, by + 3, (W - 8) * frac, BAR_H - 6);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText('TIME', W - 6, by + BAR_H / 2);
+      ctx.restore();
+    }
+
+    // ---------- HUD / オーバーレイ ----------
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('level').textContent = level;
+      var s = '';
+      for (var i = 0; i < lives; i++) s += '🐸';
+      document.getElementById('lives').textContent = s || '-';
+    }
+
+    function closeOverlay() { if (currentOverlay) { currentOverlay.close(); currentOverlay = null; } }
+    function showOverlay(opts) { closeOverlay(); currentOverlay = H.overlay(opts); return currentOverlay; }
+
+    function showStart() {
+      state = 'start';
+      showOverlay({
+        title: 'フロッガー',
+        html: '車をよけ、丸太に乗って<br>上の 5 つの巣にカエルを入れよう',
+        buttons: [{ label: 'スタート', onClick: startGame }]
+      });
+    }
+    function startGame() {
+      closeOverlay();
+      score = 0; level = 1; lives = START_LIVES; animT = 0; flyTimer = 3;
+      buildHomes(); buildLanes(); placeFrog();
+      state = 'play'; hud();
+      loop.pause(false);
+    }
+    function showClear() {
+      state = 'clear';
+      showOverlay({
+        title: '面 ' + level + ' クリア!', big: score + ' 点',
+        html: '5 つの巣が埋まった。次は車が速くなる' + (lives < MAX_LIVES ? '<br>残機 +1' : ''),
+        buttons: [{ label: '次の面へ', onClick: nextLevel }]
+      });
+    }
+    function nextLevel() {
+      closeOverlay();
+      level++;
+      if (lives < MAX_LIVES) lives++;
+      buildHomes(); buildLanes(); placeFrog(); flyTimer = 3;
+      state = 'play'; hud();
+    }
+    function gameOver() {
+      state = 'over';
+      showOverlay({
+        title: 'ゲームオーバー', big: score + ' 点',
+        html: '面 ' + level + ' まで到達 / ベスト ' + best + ' 点',
+        buttons: [
+          { label: 'もう一度', onClick: startGame },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+    function showPause() {
+      if (state !== 'play' && state !== 'dying') return;
+      loop.pause(true);
+      showOverlay({ title: '一時停止', html: 'タップで再開', tapAnywhere: resume,
+        buttons: [{ label: '再開', onClick: resume }] });
+    }
+    function resume() { closeOverlay(); loop.pause(false); }
+
+    window.resetGame = function () {
+      loop.pause(false);
+      score = 0; level = 1; lives = START_LIVES;
+      buildHomes(); buildLanes(); placeFrog(); hud();
+      showStart();
+    };
+
+    // ---------- 入力 ----------
+    H.swipe(canvas, function (dir) { move(dir); });
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) move(dir); }, { repeatMs: 170 });
+    var km = {
+      ArrowUp: function () { move('up'); }, ArrowDown: function () { move('down'); },
+      ArrowLeft: function () { move('left'); }, ArrowRight: function () { move('right'); },
+      w: function () { move('up'); }, s: function () { move('down'); }, a: function () { move('left'); }, d: function () { move('right'); },
+      ' ': function () { if (currentOverlay && (state === 'play' || state === 'dying')) resume(); }
+    };
+    H.keys(km);
+
+    var loop = H.loop(update, draw);
+    H.pauseWhenHidden(showPause);
+
+    // 検証用(読み取りのみ)
+    window.__froggerDebug = function () { return { state: state, reason: deathReason, score: score, lives: lives, level: level, x: frog.x, row: frog.row, time: timeLeft, homes: homes.map(function (h) { return h.filled; }),
+      lanes: lanes.map(function (l) { return { row: l.row, kind: l.kind, speed: l.speed, len: l.len, sub: l.kind === 'turtle' ? turtleUnder(l) : 0, xs: l.items.map(function (it) { return it.x; }) }; }) }; };
+
+    buildHomes(); buildLanes(); placeFrog(); hud();
+    loop.start();
+    showStart();
+  })();
+  </script>
+</body>
+</html>

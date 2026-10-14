@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>カプセル - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .seg-row { display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: center; align-items: center; font-size: 14px; color: var(--muted); }
+    .seg-row .seg { margin-left: 4px; }
+    .seg-row .seg button { font-size: 15px; }
+    .ctl-btn.wide { min-width: 88px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="カプセル" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item accent">ウイルス<b id="virus">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>上から落ちてくる 2 色のカプセルを動かして積む。</li>
+            <li>同じ色が縦か横に 4 つ以上並ぶと消える。ウイルスも同じ色に数える。</li>
+            <li>ビンの中のウイルスを全部消すとクリア。次の面はウイルスが増える。</li>
+            <li>カプセルが入り口まで積み上がるとゲームオーバー。</li>
+            <li>一度に 2 列以上消すとコンボで点が増える。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下のボタン（◀ ▶ で移動、▼ で 1 段落とす、▲ か「回転」で回転、「落下」で一気に落とす）。盤面を左右にスワイプで移動、下にスワイプで落下、タップで回転。</li>
+            <li>PC: ← → で移動、↓ で 1 段落とす、↑ かスペースで回転、Enter で一気に落とす。</li>
+          </ul>
+          <h3>レベル</h3>
+          <ul>
+            <li>開始時にウイルスの数と速さを選べる。速さは積んだカプセルの数で少しずつ上がる。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn wide" id="btn-rotate">回転</button>
+        <button type="button" class="ctl-btn wide" id="btn-drop">落下</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ---------- 定数 ----------
+    var COLS = 8, ROWS = 16, CELL = 40;
+    var PANEL_W = 120;                       // 右側パネル(NEXT など)
+    var BASE_W = COLS * CELL + PANEL_W;      // 440
+    var BASE_H = ROWS * CELL;                // 640
+    var BOARD_W = COLS * CELL;
+    var COLORS = {
+      1: { bg: '#ef4444', dark: '#991b1b', light: '#fca5a5' },
+      2: { bg: '#3b82f6', dark: '#1e40af', light: '#93c5fd' },
+      3: { bg: '#eab308', dark: '#854d0e', light: '#fde68a' }
+    };
+    var VIRUS_CHOICES = [4, 8, 12, 16, 20, 24];
+    var SPEEDS = [
+      { label: 'ゆっくり', interval: 0.9 },
+      { label: 'ふつう', interval: 0.6 },
+      { label: 'はやい', interval: 0.35 }
+    ];
+    var EMPTY = 0, VIRUS = 1, CAP = 2;
+
+    // ---------- 状態 ----------
+    var store = H.store('drmario');
+    var best = store.get('best', 0);
+    var virusChoice = store.get('viruses', 4);
+    var speedIdx = store.get('speed', 1);
+    if (VIRUS_CHOICES.indexOf(virusChoice) < 0) virusChoice = 4;
+    if (!(speedIdx >= 0 && speedIdx < SPEEDS.length)) speedIdx = 1;
+
+    var board = [];            // board[r][c] = {t, c, link}  link: ''|'L'|'R'|'U'|'D' (相方の方向)
+    var cur = null;            // 操作中のカプセル {x,y,rot,c1,c2}
+    var next = null;
+    var score = 0, virusLeft = 0, placed = 0, chain = 0;
+    var state = 'idle';        // idle | play | clearing | gravity | over
+    var dropTimer = 0, stepTimer = 0, time = 0;
+    var clearing = [];         // 消去中のセル [{r,c}]
+    var clearInfo = null;      // 直前の消去 {viruses, cells}
+    var curOverlay = null;
+    var paused = false;
+
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function () { draw(); });
+
+    function dropInterval() {
+      var base = SPEEDS[speedIdx].interval;
+      var k = Math.floor(placed / 10);
+      return Math.max(0.18, base * Math.pow(0.9, k));
+    }
+
+    // ---------- 盤面 ----------
+    function cell(t, c, link) { return { t: t, c: c, link: link || '' }; }
+    function newBoard() {
+      board = [];
+      for (var r = 0; r < ROWS; r++) {
+        var row = [];
+        for (var c = 0; c < COLS; c++) row.push(cell(EMPTY, 0));
+        board.push(row);
+      }
+    }
+    function runLen(r, c, dr, dc, color) {
+      var n = 0;
+      var rr = r + dr, cc = c + dc;
+      while (rr >= 0 && rr < ROWS && cc >= 0 && cc < COLS && board[rr][cc].t !== EMPTY && board[rr][cc].c === color) { n++; rr += dr; cc += dc; }
+      return n;
+    }
+    function placeViruses(n) {
+      var tries = 0;
+      var minRow = Math.max(4, ROWS - 4 - Math.floor(n / 3));
+      while (n > 0 && tries < 5000) {
+        tries++;
+        var r = minRow + Math.floor(Math.random() * (ROWS - minRow));
+        var c = Math.floor(Math.random() * COLS);
+        if (board[r][c].t !== EMPTY) continue;
+        var color = 1 + Math.floor(Math.random() * 3);
+        // 同色が 3 つ以上並ばないようにする
+        if (runLen(r, c, 0, 1, color) + runLen(r, c, 0, -1, color) >= 2) continue;
+        if (runLen(r, c, 1, 0, color) + runLen(r, c, -1, 0, color) >= 2) continue;
+        board[r][c] = cell(VIRUS, color);
+        n--;
+      }
+      // 万一置き切れなかったら制限なしで埋める
+      while (n > 0) {
+        var r2 = minRow + Math.floor(Math.random() * (ROWS - minRow));
+        var c2 = Math.floor(Math.random() * COLS);
+        if (board[r2][c2].t === EMPTY) { board[r2][c2] = cell(VIRUS, 1 + Math.floor(Math.random() * 3)); n--; }
+      }
+    }
+    function countViruses() {
+      var n = 0;
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (board[r][c].t === VIRUS) n++;
+      return n;
+    }
+
+    // ---------- カプセル ----------
+    function randCapsule() {
+      return { x: 3, y: 0, rot: 0, c1: 1 + Math.floor(Math.random() * 3), c2: 1 + Math.floor(Math.random() * 3) };
+    }
+    // rot 0: 横(c1 左, c2 右) / 1: 縦(c1 下, c2 上) / 2: 横(c2 左, c1 右) / 3: 縦(c2 下, c1 上)
+    function parts(cap) {
+      var x = cap.x, y = cap.y;
+      if (cap.rot === 0) return [{ x: x, y: y, c: cap.c1, link: 'R' }, { x: x + 1, y: y, c: cap.c2, link: 'L' }];
+      if (cap.rot === 1) return [{ x: x, y: y, c: cap.c1, link: 'U' }, { x: x, y: y - 1, c: cap.c2, link: 'D' }];
+      if (cap.rot === 2) return [{ x: x, y: y, c: cap.c2, link: 'R' }, { x: x + 1, y: y, c: cap.c1, link: 'L' }];
+      return [{ x: x, y: y, c: cap.c2, link: 'U' }, { x: x, y: y - 1, c: cap.c1, link: 'D' }];
+    }
+    function fits(cap) {
+      var ps = parts(cap);
+      for (var i = 0; i < ps.length; i++) {
+        var p = ps[i];
+        if (p.x < 0 || p.x >= COLS || p.y < 0 || p.y >= ROWS) return false;
+        if (board[p.y][p.x].t !== EMPTY) return false;
+      }
+      return true;
+    }
+    function copy(cap) { return { x: cap.x, y: cap.y, rot: cap.rot, c1: cap.c1, c2: cap.c2 }; }
+
+    function spawn() {
+      cur = next || randCapsule();
+      next = randCapsule();
+      dropTimer = 0;
+      if (!fits(cur)) {
+        // 入り口が塞がっている: 見せるために置けるだけ置いてゲームオーバー
+        gameOver();
+        return;
+      }
+      state = 'play';
+    }
+
+    function tryMove(dx, dy) {
+      if (state !== 'play' || !cur) return false;
+      var n = copy(cur); n.x += dx; n.y += dy;
+      if (fits(n)) { cur = n; return true; }
+      return false;
+    }
+    function moveLeft() { if (tryMove(-1, 0)) H.audio.click(); }
+    function moveRight() { if (tryMove(1, 0)) H.audio.click(); }
+    function softDrop() {
+      if (state !== 'play' || !cur) return;
+      if (tryMove(0, 1)) { dropTimer = 0; }
+      else lock();
+    }
+    function hardDrop() {
+      if (state !== 'play' || !cur) return;
+      var n = 0;
+      while (tryMove(0, 1)) n++;
+      score += n;
+      H.audio.beep(300, 0.05, 'square', 0.04);
+      lock();
+    }
+    function rotate() {
+      if (state !== 'play' || !cur) return;
+      var n = copy(cur); n.rot = (cur.rot + 1) % 4;
+      var kicks = [[0, 0], [-1, 0], [1, 0], [0, 1], [-1, 1], [1, 1]];
+      for (var i = 0; i < kicks.length; i++) {
+        var t = copy(n); t.x += kicks[i][0]; t.y += kicks[i][1];
+        if (fits(t)) { cur = t; H.audio.beep(520, 0.04, 'triangle', 0.04); hud(); return; }
+      }
+    }
+
+    function lock() {
+      var ps = parts(cur);
+      for (var i = 0; i < ps.length; i++) {
+        var p = ps[i];
+        if (p.y >= 0 && p.y < ROWS) board[p.y][p.x] = cell(CAP, p.c, p.link);
+      }
+      cur = null;
+      placed++;
+      chain = 0;
+      H.audio.beep(200, 0.05, 'square', 0.03);
+      resolve();
+    }
+
+    // 固定後の処理: 消去 → 落下 → 消去 … を状態機械で回す
+    function resolve() {
+      var m = findMatches();
+      if (m.length > 0) {
+        chain++;
+        var viruses = 0;
+        for (var i = 0; i < m.length; i++) if (board[m[i].r][m[i].c].t === VIRUS) viruses++;
+        var mult = chain;
+        score += (m.length * 10 + viruses * 100) * mult;
+        clearing = m;
+        clearInfo = { viruses: viruses, cells: m.length, chain: chain };
+        state = 'clearing';
+        stepTimer = 0;
+        if (viruses > 0) H.audio.good(); else H.audio.beep(700, 0.08, 'triangle', 0.05);
+        if (chain >= 2) H.toast(chain + ' コンボ!');
+        hud();
+        return;
+      }
+      if (canFall()) { state = 'gravity'; stepTimer = 0; return; }
+      finishTurn();
+    }
+    function finishTurn() {
+      virusLeft = countViruses();
+      hud();
+      if (virusLeft === 0) { stageClear(); return; }
+      spawn();
+    }
+    function removeClearing() {
+      for (var i = 0; i < clearing.length; i++) {
+        var r = clearing[i].r, c = clearing[i].c;
+        var cl = board[r][c];
+        // 相方のつながりを切る
+        if (cl.link) {
+          var pr = r + (cl.link === 'U' ? -1 : cl.link === 'D' ? 1 : 0);
+          var pc = c + (cl.link === 'L' ? -1 : cl.link === 'R' ? 1 : 0);
+          if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS) board[pr][pc].link = '';
+        }
+        board[r][c] = cell(EMPTY, 0);
+      }
+      clearing = [];
+      virusLeft = countViruses();
+      hud();
+    }
+
+    function findMatches() {
+      var set = {}, out = [];
+      function add(r, c) { var k = r + ',' + c; if (!set[k]) { set[k] = 1; out.push({ r: r, c: c }); } }
+      var r, c, start, color;
+      for (r = 0; r < ROWS; r++) {
+        c = 0;
+        while (c < COLS) {
+          if (board[r][c].t === EMPTY) { c++; continue; }
+          color = board[r][c].c; start = c;
+          while (c < COLS && board[r][c].t !== EMPTY && board[r][c].c === color) c++;
+          if (c - start >= 4) for (var k = start; k < c; k++) add(r, k);
+        }
+      }
+      for (c = 0; c < COLS; c++) {
+        r = 0;
+        while (r < ROWS) {
+          if (board[r][c].t === EMPTY) { r++; continue; }
+          color = board[r][c].c; start = r;
+          while (r < ROWS && board[r][c].t !== EMPTY && board[r][c].c === color) r++;
+          if (r - start >= 4) for (var k2 = start; k2 < r; k2++) add(k2, c);
+        }
+      }
+      return out;
+    }
+
+    // 1 マス落とせるカプセル片があるか
+    function canFall() { return gravityStep(true); }
+    // 全カプセル片を 1 マスだけ落とす。dry=true なら判定だけ
+    function gravityStep(dry) {
+      var moved = false;
+      for (var r = ROWS - 2; r >= 0; r--) {
+        for (var c = 0; c < COLS; c++) {
+          var cl = board[r][c];
+          if (cl.t !== CAP) continue;
+          if (cl.link === 'D') continue;                 // 縦の上半分は下半分と一緒に動く
+          if (cl.link === 'L') continue;                 // 横の右半分は左半分で処理
+          var ok;
+          if (cl.link === 'R') {
+            ok = c + 1 < COLS && board[r + 1][c].t === EMPTY && board[r + 1][c + 1].t === EMPTY;
+            if (ok) {
+              if (dry) return true;
+              board[r + 1][c] = board[r][c]; board[r + 1][c + 1] = board[r][c + 1];
+              board[r][c] = cell(EMPTY, 0); board[r][c + 1] = cell(EMPTY, 0);
+              moved = true;
+            }
+          } else {
+            ok = board[r + 1][c].t === EMPTY;
+            if (ok) {
+              if (dry) return true;
+              board[r + 1][c] = board[r][c];
+              board[r][c] = cell(EMPTY, 0);
+              if (cl.link === 'U' && r - 1 >= 0 && board[r - 1][c].t === CAP && board[r - 1][c].link === 'D') {
+                board[r][c] = board[r - 1][c];
+                board[r - 1][c] = cell(EMPTY, 0);
+              }
+              moved = true;
+            }
+          }
+        }
+      }
+      return moved;
+    }
+
+    // ---------- 進行 ----------
+    function update(dt) {
+      time += dt;
+      if (state === 'play') {
+        dropTimer += dt;
+        if (dropTimer >= dropInterval()) { dropTimer = 0; softDrop(); }
+      } else if (state === 'clearing') {
+        stepTimer += dt;
+        if (stepTimer >= 0.42) {
+          removeClearing();
+          if (canFall()) { state = 'gravity'; stepTimer = 0; }
+          else resolve();
+        }
+      } else if (state === 'gravity') {
+        stepTimer += dt;
+        if (stepTimer >= 0.07) {
+          stepTimer = 0;
+          if (!gravityStep(false)) resolve();
+        }
+      }
+    }
+
+    var loop = H.loop(update, draw);
+
+    function hud() {
+      if (score > best) { best = score; store.set('best', best); }
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('virus').textContent = virusLeft;
+    }
+
+    function closeOverlay() { if (curOverlay) { curOverlay.close(); curOverlay = null; } }
+
+    function startGame(nViruses) {
+      closeOverlay();
+      newBoard();
+      placeViruses(nViruses);
+      score = 0; placed = 0; chain = 0; clearing = []; clearInfo = null;
+      virusLeft = countViruses();
+      next = randCapsule();
+      cur = null;
+      paused = false;
+      hud();
+      spawn();
+      draw();
+      loop.pause(false);
+      loop.start();
+    }
+
+    function gameOver() {
+      state = 'over';
+      H.audio.bad();
+      hud();
+      draw();
+      closeOverlay();
+      curOverlay = H.overlay({
+        title: 'ゲームオーバー', big: score + ' 点',
+        html: 'ウイルス のこり ' + virusLeft + ' / ベスト ' + best + ' 点',
+        buttons: [
+          { label: 'もう一度', onClick: function () { startGame(virusChoice); } },
+          { label: 'レベルを選ぶ', secondary: true, onClick: showStart },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+
+    function stageClear() {
+      state = 'over';
+      H.audio.win();
+      draw();
+      closeOverlay();
+      var nextN = virusChoice;
+      var idx = VIRUS_CHOICES.indexOf(virusChoice);
+      if (idx >= 0 && idx < VIRUS_CHOICES.length - 1) nextN = VIRUS_CHOICES[idx + 1];
+      var btns = [];
+      if (nextN !== virusChoice) {
+        btns.push({ label: '次の面 (ウイルス ' + nextN + ')', onClick: function () { virusChoice = nextN; store.set('viruses', nextN); startGame(nextN); } });
+      }
+      btns.push({ label: 'もう一度', secondary: nextN !== virusChoice, onClick: function () { startGame(virusChoice); } });
+      btns.push({ label: 'レベルを選ぶ', secondary: true, onClick: showStart });
+      curOverlay = H.overlay({
+        title: 'クリア!', big: score + ' 点',
+        html: 'ウイルス ' + virusChoice + ' 匹を全部消した / ベスト ' + best + ' 点',
+        buttons: btns
+      });
+    }
+
+    function segHtml(id, items, cur) {
+      var s = '<span class="seg" id="' + id + '">';
+      for (var i = 0; i < items.length; i++) {
+        s += '<button type="button" data-v="' + items[i].v + '"' + (items[i].v === cur ? ' class="on"' : '') + '>' + items[i].label + '</button>';
+      }
+      return s + '</span>';
+    }
+    function showStart() {
+      state = 'idle';
+      loop.pause(true);
+      closeOverlay();
+      var vItems = [], sItems = [];
+      for (var i = 0; i < VIRUS_CHOICES.length; i++) vItems.push({ v: VIRUS_CHOICES[i], label: String(VIRUS_CHOICES[i]) });
+      for (var j = 0; j < SPEEDS.length; j++) sItems.push({ v: j, label: SPEEDS[j].label });
+      var html = '<span class="seg-row">ウイルス' + segHtml('seg-virus', vItems, virusChoice) + '</span>' +
+                 '<span class="seg-row" style="margin-top:8px">速さ' + segHtml('seg-speed', sItems, speedIdx) + '</span>' +
+                 '<span style="display:block;margin-top:8px">同じ色を 4 つ並べてウイルスを全部消そう</span>';
+      curOverlay = H.overlay({
+        title: 'カプセル',
+        html: html,
+        buttons: [{ label: 'スタート', onClick: function () { startGame(virusChoice); } }]
+      });
+      bindSeg('seg-virus', function (v) { virusChoice = v; store.set('viruses', v); });
+      bindSeg('seg-speed', function (v) { speedIdx = v; store.set('speed', v); });
+    }
+    function bindSeg(id, onPick) {
+      var seg = document.getElementById(id);
+      if (!seg) return;
+      seg.addEventListener('click', function (e) {
+        var b = e.target;
+        while (b && b !== seg && b.tagName !== 'BUTTON') b = b.parentNode;
+        if (!b || b === seg) return;
+        e.stopPropagation();
+        var v = parseInt(b.getAttribute('data-v'), 10);
+        var bs = seg.querySelectorAll('button');
+        for (var i = 0; i < bs.length; i++) bs[i].className = bs[i] === b ? 'on' : '';
+        onPick(v);
+        H.audio.click();
+      });
+    }
+
+    function pauseGame() {
+      if (state === 'idle' || state === 'over' || paused) return;
+      paused = true;
+      loop.pause(true);
+      closeOverlay();
+      curOverlay = H.overlay({
+        title: '一時停止', html: 'スコア ' + score + ' / ウイルス のこり ' + virusLeft,
+        buttons: [
+          { label: '続ける', onClick: function () { paused = false; curOverlay = null; loop.pause(false); } },
+          { label: '最初から', secondary: true, onClick: function () { paused = false; curOverlay = null; showStart(); } }
+        ]
+      });
+    }
+
+    window.resetGame = function () { paused = false; showStart(); };
+    H.pauseWhenHidden(pauseGame);
+
+    // ---------- 入力 ----------
+    var upHeld = false;
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) {
+      if (dir === 'up') {                 // 回転は押しっぱなしで回り続けない
+        if (pressed && !upHeld) rotate();
+        upHeld = pressed;
+        return;
+      }
+      if (!pressed) return;
+      if (dir === 'left') moveLeft();
+      else if (dir === 'right') moveRight();
+      else if (dir === 'down') softDrop();
+    }, { repeatMs: 110 });
+    H.holdButton(document.getElementById('btn-rotate'), rotate, null, 0);
+    H.holdButton(document.getElementById('btn-drop'), hardDrop, null, 0);
+    H.swipe(canvas, function (dir) {
+      if (dir === 'left') moveLeft();
+      else if (dir === 'right') moveRight();
+      else if (dir === 'down') hardDrop();
+      else if (dir === 'up') rotate();
+    }, function () { rotate(); }, 28);
+    var keymap = {
+      ArrowLeft: function () { moveLeft(); },
+      ArrowRight: function () { moveRight(); },
+      ArrowDown: function () { softDrop(); },
+      ArrowUp: function (e) { if (!e.repeat) rotate(); },
+      ' ': function (e) { if (!e.repeat) rotate(); },
+      Enter: function (e) { if (!e.repeat) hardDrop(); },
+      z: function (e) { if (!e.repeat) rotate(); },
+      x: function (e) { if (!e.repeat) rotate(); },
+      p: function (e) { if (!e.repeat) pauseGame(); }
+    };
+    keymap.__repeat = true;
+    H.keys(keymap);
+
+    // ---------- 描画 ----------
+    function rrect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function drawHalf(ctx, px, py, color, link, size, flash) {
+      var col = COLORS[color];
+      var pad = size * 0.1, s = size - pad * 2;
+      var x = px + pad, y = py + pad;
+      var rad = s * 0.45;
+      ctx.fillStyle = flash ? '#ffffff' : col.bg;
+      ctx.beginPath();
+      // つながっている側は角を丸めない
+      var tl = (link === 'L' || link === 'D') ? 0 : rad;
+      var tr = (link === 'R' || link === 'D') ? 0 : rad;
+      var br = (link === 'R' || link === 'U') ? 0 : rad;
+      var bl = (link === 'L' || link === 'U') ? 0 : rad;
+      var ex = link === 'L' ? -pad : 0, ew = (link === 'L' || link === 'R') ? pad : 0;
+      var ey = link === 'D' ? -pad : 0, eh = (link === 'U' || link === 'D') ? pad : 0;
+      x += ex; y += ey; var w = s + ew, h = s + eh;
+      ctx.moveTo(x + tl, y);
+      ctx.lineTo(x + w - tr, y); if (tr) ctx.quadraticCurveTo(x + w, y, x + w, y + tr);
+      ctx.lineTo(x + w, y + h - br); if (br) ctx.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
+      ctx.lineTo(x + bl, y + h); if (bl) ctx.quadraticCurveTo(x, y + h, x, y + h - bl);
+      ctx.lineTo(x, y + tl); if (tl) ctx.quadraticCurveTo(x, y, x + tl, y);
+      ctx.closePath();
+      ctx.fill();
+      if (!flash) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(px + size * 0.38, py + size * 0.32, s * 0.18, s * 0.1, -0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    function drawVirus(ctx, px, py, color, size, flash, t) {
+      var col = COLORS[color];
+      var cx = px + size / 2, cy = py + size / 2;
+      var r = size * 0.4;
+      var wob = Math.sin(t * 4 + px * 0.3 + py * 0.2) * size * 0.03;
+      ctx.fillStyle = flash ? '#ffffff' : col.dark;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + wob, r, r * 0.92, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = flash ? '#ffffff' : col.bg;
+      ctx.lineWidth = size * 0.07;
+      ctx.stroke();
+      // とげ
+      ctx.fillStyle = flash ? '#ffffff' : col.bg;
+      for (var i = 0; i < 6; i++) {
+        var a = i * Math.PI / 3 + t * 1.5;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r * 0.95, cy + wob + Math.sin(a) * r * 0.9, size * 0.07, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (flash) return;
+      // 目
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.ellipse(cx - r * 0.35, cy + wob - r * 0.15, r * 0.25, r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx + r * 0.35, cy + wob - r * 0.15, r * 0.25, r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111';
+      var look = Math.sin(t * 2 + px) * r * 0.08;
+      ctx.beginPath(); ctx.arc(cx - r * 0.35 + look, cy + wob - r * 0.1, r * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + r * 0.35 + look, cy + wob - r * 0.1, r * 0.12, 0, Math.PI * 2); ctx.fill();
+      // 口
+      ctx.strokeStyle = '#111'; ctx.lineWidth = size * 0.05;
+      ctx.beginPath(); ctx.arc(cx, cy + wob + r * 0.35, r * 0.3, Math.PI * 1.15, Math.PI * 1.85, true); ctx.stroke();
+    }
+
+    function draw() {
+      if (!st) return;
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      // ビンの中
+      ctx.fillStyle = '#0c0c1c';
+      ctx.fillRect(0, 0, BOARD_W, BASE_H);
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for (var g = 1; g < COLS; g++) { ctx.beginPath(); ctx.moveTo(g * CELL, 0); ctx.lineTo(g * CELL, BASE_H); ctx.stroke(); }
+      for (var g2 = 1; g2 < ROWS; g2++) { ctx.beginPath(); ctx.moveTo(0, g2 * CELL); ctx.lineTo(BOARD_W, g2 * CELL); ctx.stroke(); }
+      // 入り口(危険域)
+      ctx.fillStyle = 'rgba(231,76,60,0.12)';
+      ctx.fillRect(3 * CELL, 0, 2 * CELL, CELL);
+
+      var flashOn = state === 'clearing' && Math.floor(stepTimer / 0.07) % 2 === 0;
+      var flashSet = {};
+      if (state === 'clearing') for (var i = 0; i < clearing.length; i++) flashSet[clearing[i].r + ',' + clearing[i].c] = 1;
+
+      for (var r = 0; r < ROWS; r++) {
+        for (var c = 0; c < COLS; c++) {
+          var cl = board[r] ? board[r][c] : null;
+          if (!cl || cl.t === EMPTY) continue;
+          var fl = !!flashSet[r + ',' + c] && flashOn;
+          if (cl.t === VIRUS) drawVirus(ctx, c * CELL, r * CELL, cl.c, CELL, fl, time);
+          else drawHalf(ctx, c * CELL, r * CELL, cl.c, cl.link, CELL, fl);
+        }
+      }
+      if (cur && state === 'play') {
+        var ps = parts(cur);
+        // 着地予測(うす色)
+        var ghost = copy(cur);
+        while (true) { var n = copy(ghost); n.y++; if (fits(n)) ghost = n; else break; }
+        if (ghost.y !== cur.y) {
+          var gp = parts(ghost);
+          ctx.globalAlpha = 0.18;
+          for (var k = 0; k < gp.length; k++) drawHalf(ctx, gp[k].x * CELL, gp[k].y * CELL, gp[k].c, gp[k].link, CELL, false);
+          ctx.globalAlpha = 1;
+        }
+        for (var j = 0; j < ps.length; j++) if (ps[j].y >= 0) drawHalf(ctx, ps[j].x * CELL, ps[j].y * CELL, ps[j].c, ps[j].link, CELL, false);
+      }
+
+      // 右パネル
+      var px = BOARD_W;
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(px, 0, PANEL_W, BASE_H);
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 16px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      var mx = px + PANEL_W / 2;
+      ctx.fillText('NEXT', mx, 14);
+      ctx.fillStyle = '#0c0c1c';
+      rrect(ctx, px + 14, 36, PANEL_W - 28, 60, 8); ctx.fill();
+      if (next) {
+        var ns = 36;
+        drawHalf(ctx, mx - ns, 48, next.c1, 'R', ns, false);
+        drawHalf(ctx, mx, 48, next.c2, 'L', ns, false);
+      }
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 14px system-ui, sans-serif';
+      ctx.fillText('ウイルス', mx, 120);
+      ctx.fillStyle = '#f5b041';
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.fillText(String(virusLeft), mx, 138);
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 14px system-ui, sans-serif';
+      ctx.fillText('速さ', mx, 190);
+      ctx.fillStyle = '#f4f4ff';
+      ctx.font = 'bold 18px system-ui, sans-serif';
+      ctx.fillText(SPEEDS[speedIdx].label, mx, 208);
+      var lvl = 1 + Math.floor(placed / 10);
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 14px system-ui, sans-serif';
+      ctx.fillText('スピード LV', mx, 246);
+      ctx.fillStyle = '#56b4e9';
+      ctx.font = 'bold 24px system-ui, sans-serif';
+      ctx.fillText(String(lvl), mx, 264);
+      // 色別の残りウイルス
+      var cnt = { 1: 0, 2: 0, 3: 0 };
+      for (var r2 = 0; r2 < ROWS; r2++) for (var c2 = 0; c2 < COLS; c2++) if (board[r2] && board[r2][c2].t === VIRUS) cnt[board[r2][c2].c]++;
+      var y0 = 320;
+      for (var col = 1; col <= 3; col++) {
+        drawVirus(ctx, mx - 44, y0 + (col - 1) * 44, col, 32, false, time);
+        ctx.fillStyle = '#f4f4ff';
+        ctx.font = 'bold 20px system-ui, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('× ' + cnt[col], mx - 4, y0 + (col - 1) * 44 + 16);
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      }
+      if (paused) {
+        ctx.fillStyle = 'rgba(12,12,28,0.7)';
+        ctx.fillRect(0, 0, BOARD_W, BASE_H);
+      }
+    }
+
+    // テスト用(ゲームには影響しない)
+    window.__dm = {
+      getBoard: function () { return board; }, setBoard: function (b) { board = b; },
+      getState: function () { return state; }, getCur: function () { return cur; },
+      findMatches: findMatches, gravityStep: gravityStep, resolve: resolve, update: update,
+      startGame: startGame, hardDrop: hardDrop, rotate: rotate, moveLeft: moveLeft, moveRight: moveRight,
+      setCur: function (c) { cur = c; state = 'play'; }, lock: lock, virusLeft: function () { return virusLeft; },
+      score: function () { return score; }, cell: cell
+    };
+    // ---------- 開始 ----------
+    newBoard();
+    placeViruses(virusChoice);
+    virusLeft = countViruses();
+    next = randCapsule();
+    hud();
+    draw();
+    showStart();
+    // アイドル中もウイルスを動かす
+    loop.start();
+    loop.pause(true);
+    (function idleAnim() {
+      if (state === 'idle') { time += 0.016; draw(); }
+      window.requestAnimationFrame(idleAnim);
+    })();
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ブロックパズル - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    canvas.stage-canvas { background: transparent; box-shadow: none; }
+    #score { display: inline-block; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ブロックパズル" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item">連続<b id="streak">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>下の 3 つのピースを 8×8 の盤に置く。</li>
+            <li>縦か横の 1 列が全部埋まると消える。同時に消すほど高得点。</li>
+            <li>続けて消すと連続ボーナス。消せない手で途切れる。</li>
+            <li>3 つ置くと次の 3 つ。どのピースも置けなくなったら終了。</li>
+            <li>途中の盤面は自動で保存。↻ で新しく始める。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: ピースを指で盤へ引っ張る。指の少し上にピースが出る。</li>
+            <li>ピースをタップして選び、盤をタップして置くこともできる。</li>
+            <li>PC: マウスでドラッグ、またはクリックで選んでクリックで置く。1〜3 キーで選択。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  // @core-start
+  var BlockCore = (function () {
+    'use strict';
+    var N = 8;
+    var SHAPES = [];
+    function add(name, cells, w) { SHAPES.push({ name: name, cells: cells, w: w }); }
+    function bar(len, horiz) {
+      var c = [];
+      for (var i = 0; i < len; i++) c.push(horiz ? [i, 0] : [0, i]);
+      return c;
+    }
+    add('1x1', bar(1, true), 7);
+    add('2h', bar(2, true), 6); add('2v', bar(2, false), 6);
+    add('3h', bar(3, true), 6); add('3v', bar(3, false), 6);
+    add('4h', bar(4, true), 3); add('4v', bar(4, false), 3);
+    add('5h', bar(5, true), 1.5); add('5v', bar(5, false), 1.5);
+    add('2x2', [[0,0],[1,0],[0,1],[1,1]], 6);
+    add('3x3', [[0,0],[1,0],[2,0],[0,1],[1,1],[2,1],[0,2],[1,2],[2,2]], 1.5);
+    // 小さい角(3 マス)
+    add('c1', [[0,0],[1,0],[0,1]], 4); add('c2', [[0,0],[1,0],[1,1]], 4);
+    add('c3', [[0,0],[0,1],[1,1]], 4); add('c4', [[1,0],[0,1],[1,1]], 4);
+    // L 字(4 マス)
+    add('L1', [[0,0],[0,1],[0,2],[1,2]], 2.5); add('L2', [[0,0],[1,0],[2,0],[0,1]], 2.5);
+    add('L3', [[0,0],[1,0],[1,1],[1,2]], 2.5); add('L4', [[2,0],[0,1],[1,1],[2,1]], 2.5);
+    add('J1', [[1,0],[1,1],[0,2],[1,2]], 2.5); add('J2', [[0,0],[0,1],[1,1],[2,1]], 2.5);
+    add('J3', [[0,0],[1,0],[0,1],[0,2]], 2.5); add('J4', [[0,0],[1,0],[2,0],[2,1]], 2.5);
+    // 大きい角(5 マス)
+    add('B1', [[0,0],[0,1],[0,2],[1,2],[2,2]], 1.5); add('B2', [[0,0],[1,0],[2,0],[0,1],[0,2]], 1.5);
+    add('B3', [[0,0],[1,0],[2,0],[2,1],[2,2]], 1.5); add('B4', [[2,0],[2,1],[0,2],[1,2],[2,2]], 1.5);
+    // T 字
+    add('T1', [[0,0],[1,0],[2,0],[1,1]], 2.5); add('T2', [[1,0],[0,1],[1,1],[2,1]], 2.5);
+    add('T3', [[0,0],[0,1],[1,1],[0,2]], 2.5); add('T4', [[1,0],[0,1],[1,1],[1,2]], 2.5);
+    // Z / S
+    add('Z1', [[0,0],[1,0],[1,1],[2,1]], 2); add('Z2', [[1,0],[0,1],[1,1],[0,2]], 2);
+    add('S1', [[1,0],[2,0],[0,1],[1,1]], 2); add('S2', [[0,0],[0,1],[1,1],[1,2]], 2);
+    var COLORS = ['#f5b041', '#5dade2', '#58d68d', '#ec7063', '#af7ac5', '#48c9b0', '#f4d03f', '#eb984e'];
+    SHAPES.forEach(function (s, i) {
+      var mw = 0, mh = 0;
+      s.cells.forEach(function (c) { if (c[0] + 1 > mw) mw = c[0] + 1; if (c[1] + 1 > mh) mh = c[1] + 1; });
+      s.w0 = mw; s.h0 = mh; s.id = i; s.color = COLORS[i % COLORS.length];
+    });
+    var totalW = SHAPES.reduce(function (a, s) { return a + s.w; }, 0);
+
+    function randomShape(rnd) {
+      var r = (rnd || Math.random)() * totalW;
+      for (var i = 0; i < SHAPES.length; i++) { r -= SHAPES[i].w; if (r <= 0) return SHAPES[i]; }
+      return SHAPES[SHAPES.length - 1];
+    }
+    function emptyBoard() {
+      var b = [];
+      for (var y = 0; y < N; y++) { b.push([]); for (var x = 0; x < N; x++) b[y].push(0); }
+      return b;
+    }
+    // board[y][x] は 0 か色文字列
+    function canPlace(board, shape, gx, gy) {
+      for (var i = 0; i < shape.cells.length; i++) {
+        var x = gx + shape.cells[i][0], y = gy + shape.cells[i][1];
+        if (x < 0 || y < 0 || x >= N || y >= N) return false;
+        if (board[y][x]) return false;
+      }
+      return true;
+    }
+    function anyPlace(board, shape) {
+      for (var y = 0; y <= N - shape.h0; y++)
+        for (var x = 0; x <= N - shape.w0; x++)
+          if (canPlace(board, shape, x, y)) return true;
+      return false;
+    }
+    function place(board, shape, gx, gy) {
+      shape.cells.forEach(function (c) { board[gy + c[1]][gx + c[0]] = shape.color; });
+    }
+    function fullLines(board) {
+      var rows = [], cols = [], x, y, full;
+      for (y = 0; y < N; y++) { full = true; for (x = 0; x < N; x++) if (!board[y][x]) { full = false; break; } if (full) rows.push(y); }
+      for (x = 0; x < N; x++) { full = true; for (y = 0; y < N; y++) if (!board[y][x]) { full = false; break; } if (full) cols.push(x); }
+      return { rows: rows, cols: cols };
+    }
+    function clearLines(board, lines) {
+      lines.rows.forEach(function (y) { for (var x = 0; x < N; x++) board[y][x] = 0; });
+      lines.cols.forEach(function (x) { for (var y = 0; y < N; y++) board[y][x] = 0; });
+    }
+    // 得点: マス数 + 列数×10×列数(同時倍率) + 連続ボーナス(前の連続数×5)
+    function scoreFor(cellCount, lineCount, streakBefore) {
+      var s = cellCount;
+      if (lineCount > 0) s += lineCount * 10 * lineCount + streakBefore * 5;
+      return s;
+    }
+    // 新しい 3 つ。少なくとも 1 つは盤に置ける組にする(最大 20 回引き直し、それでも駄目なら 1 つ差し替え)
+    function newTray(board, rnd) {
+      var tray = null;
+      for (var t = 0; t < 20; t++) {
+        tray = [randomShape(rnd), randomShape(rnd), randomShape(rnd)];
+        if (tray.some(function (s) { return anyPlace(board, s); })) return tray;
+      }
+      // 引き直しても駄目なら、置ける形を 1 つだけ混ぜる(無ければ本当に詰み)
+      var fits = SHAPES.filter(function (s) { return anyPlace(board, s); });
+      if (fits.length) tray[Math.floor((rnd || Math.random)() * 3)] = fits[Math.floor((rnd || Math.random)() * fits.length)];
+      return tray;
+    }
+    function isGameOver(board, tray) {
+      for (var i = 0; i < tray.length; i++) if (tray[i] && anyPlace(board, tray[i])) return false;
+      return true;
+    }
+    return { N: N, SHAPES: SHAPES, randomShape: randomShape, emptyBoard: emptyBoard, canPlace: canPlace,
+      anyPlace: anyPlace, place: place, fullLines: fullLines, clearLines: clearLines, scoreFor: scoreFor,
+      newTray: newTray, isGameOver: isGameOver };
+  })();
+  // @core-end
+
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = BlockCore, N = C.N;
+    var CELL = 40, PAD = 20;
+    var BASE_W = 360, BASE_H = 500;
+    var BOARD_X = PAD, BOARD_Y = PAD, BOARD_S = CELL * N;   // 20..340
+    var TRAY_Y = 362, TRAY_H = 118, SLOT_W = 120;
+    var TRAY_CELL = 22;
+    var store = H.store('blockblast');
+    var best = store.get('best', 0);
+    var board, tray, score, streak, running = false;
+    var selected = -1;        // タップ選択中の枡
+    var drag = null;          // {idx, shape, x, y, sx, sy, moved, gx, gy, ok}
+    var anims = [];           // 消去アニメ {cells:[[x,y,color]], t, dur}
+    var pops = [];            // 浮く文字
+    var rafId = 0;
+    var bestShown = false, bestAtStart = 0;
+
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function (cssW, cssH, ctx, scale) {
+      ctx.scale(scale, scale);
+      draw();
+    });
+
+    // ---------- 保存・復元 ----------
+    function save() {
+      if (!running) { store.remove('state'); return; }
+      store.set('state', { board: board, tray: tray.map(function (s) { return s ? s.id : -1; }), score: score, streak: streak });
+    }
+    function restore() {
+      var s = store.get('state', null);
+      if (!s || !s.board || !s.tray || s.board.length !== N) return false;
+      board = s.board;
+      tray = s.tray.map(function (id) { return id >= 0 && C.SHAPES[id] ? C.SHAPES[id] : null; });
+      score = s.score || 0; streak = s.streak || 0;
+      bestAtStart = score >= best ? 0 : best;
+      if (tray.every(function (t) { return !t; })) tray = C.newTray(board);
+      return true;
+    }
+    function newGame() {
+      board = C.emptyBoard(); tray = C.newTray(board); score = 0; streak = 0;
+      selected = -1; drag = null; activeId = null; anims = []; pops = []; bestShown = false; bestAtStart = best;
+      running = true; hud(); save(); draw();
+    }
+
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('streak').textContent = streak;
+    }
+
+    // ---------- 描画 ----------
+    function rrect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function block(ctx, x, y, s, color, alpha) {
+      ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+      ctx.fillStyle = color;
+      rrect(ctx, x + 1.5, y + 1.5, s - 3, s - 3, Math.max(2, s * 0.14)); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      rrect(ctx, x + 1.5, y + 1.5, s - 3, (s - 3) * 0.42, Math.max(2, s * 0.14)); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    function slotRect(i) { return { x: i * SLOT_W, y: TRAY_Y, w: SLOT_W, h: TRAY_H }; }
+    function shapeInSlot(i, shape) {
+      var r = slotRect(i), cs = TRAY_CELL;
+      return { cs: cs, x: r.x + (r.w - shape.w0 * cs) / 2, y: r.y + (r.h - shape.h0 * cs) / 2 };
+    }
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !board) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      rrect(ctx, BOARD_X - 6, BOARD_Y - 6, BOARD_S + 12, BOARD_S + 12, 10); ctx.fill();
+      var x, y, i;
+      for (y = 0; y < N; y++) for (x = 0; x < N; x++) {
+        ctx.fillStyle = '#1e1e3a';
+        rrect(ctx, BOARD_X + x * CELL + 1.5, BOARD_Y + y * CELL + 1.5, CELL - 3, CELL - 3, 5); ctx.fill();
+        if (board[y][x]) block(ctx, BOARD_X + x * CELL, BOARD_Y + y * CELL, CELL, board[y][x]);
+      }
+      // 置ける位置の予告
+      var ghost = drag && drag.moved ? drag : null;
+      if (ghost && ghost.gx !== null) {
+        var ok = ghost.ok;
+        if (ok) {
+          var pre = previewLines(ghost.shape, ghost.gx, ghost.gy);
+          ctx.fillStyle = 'rgba(255,255,255,0.12)';
+          pre.rows.forEach(function (ry) { ctx.fillRect(BOARD_X, BOARD_Y + ry * CELL, BOARD_S, CELL); });
+          pre.cols.forEach(function (cx) { ctx.fillRect(BOARD_X + cx * CELL, BOARD_Y, CELL, BOARD_S); });
+        }
+        ghost.shape.cells.forEach(function (c) {
+          var cx = ghost.gx + c[0], cy = ghost.gy + c[1];
+          if (cx < 0 || cy < 0 || cx >= N || cy >= N) return;
+          block(ctx, BOARD_X + cx * CELL, BOARD_Y + cy * CELL, CELL, ok ? ghost.shape.color : '#888', ok ? 0.45 : 0.3);
+        });
+      }
+      // 消去アニメ(光って縮む)
+      var now = performance.now();
+      anims.forEach(function (a) {
+        var p = Math.min(1, (now - a.t) / a.dur);
+        var s = CELL * (1 - p), off = (CELL - s) / 2;
+        a.cells.forEach(function (c) {
+          var bx = BOARD_X + c[0] * CELL, by = BOARD_Y + c[1] * CELL;
+          ctx.globalAlpha = (1 - p) * 0.9;
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(bx + off * 0.5, by + off * 0.5, CELL - off, CELL - off);
+          ctx.globalAlpha = 1;
+          if (s > 4) block(ctx, bx + off, by + off, s, c[2], 1 - p * 0.5);
+        });
+      });
+      // トレイ
+      for (i = 0; i < 3; i++) {
+        var r = slotRect(i);
+        ctx.fillStyle = selected === i ? 'rgba(245,176,65,0.18)' : 'rgba(255,255,255,0.05)';
+        rrect(ctx, r.x + 6, r.y, r.w - 12, r.h, 10); ctx.fill();
+        if (selected === i) { ctx.strokeStyle = '#f5b041'; ctx.lineWidth = 2; rrect(ctx, r.x + 6, r.y, r.w - 12, r.h, 10); ctx.stroke(); }
+        var sh = tray[i];
+        if (!sh || (drag && drag.idx === i)) continue;
+        var placeable = C.anyPlace(board, sh);
+        var pos = shapeInSlot(i, sh);
+        sh.cells.forEach(function (c) { block(ctx, pos.x + c[0] * pos.cs, pos.y + c[1] * pos.cs, pos.cs, sh.color, placeable ? 1 : 0.35); });
+      }
+      // ドラッグ中のピース(指の少し上に拡大)
+      if (drag && drag.moved) {
+        var g = ghostOrigin(drag);
+        ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 6;
+        drag.shape.cells.forEach(function (c) { block(ctx, g.x + c[0] * CELL, g.y + c[1] * CELL, CELL, drag.shape.color, 0.95); });
+        ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+      }
+      // 浮く文字
+      pops.forEach(function (p) {
+        var k = Math.min(1, (now - p.t) / p.dur);
+        var sc = p.big ? 1 + Math.sin(Math.min(1, k * 3) * Math.PI) * 0.35 : 1;
+        ctx.globalAlpha = 1 - k * k;
+        ctx.font = 'bold ' + Math.round(p.size * sc) + 'px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillText(p.text, p.x + 2, p.y - k * 40 + 2);
+        ctx.fillStyle = p.color;
+        ctx.fillText(p.text, p.x, p.y - k * 40);
+        ctx.globalAlpha = 1;
+      });
+    }
+    function previewLines(shape, gx, gy) {
+      var copy = board.map(function (r) { return r.slice(); });
+      C.place(copy, shape, gx, gy);
+      return C.fullLines(copy);
+    }
+    // ドラッグ中のピースの左上(論理座標)。指の上に浮かせ、横は形の中心を指に合わせる
+    function ghostOrigin(d) {
+      var lift = H.isTouch ? 60 : 24;
+      return { x: d.x - d.shape.w0 * CELL / 2, y: d.y - lift - d.shape.h0 * CELL };
+    }
+    function updateDragTarget(d) {
+      var g = ghostOrigin(d);
+      var gx = Math.round((g.x - BOARD_X) / CELL), gy = Math.round((g.y - BOARD_Y) / CELL);
+      if (gx < -1 || gy < -1 || gx > N || gy > N) { d.gx = null; d.ok = false; return; }
+      d.gx = gx; d.gy = gy; d.ok = C.canPlace(board, d.shape, gx, gy);
+    }
+
+    // ---------- アニメ ----------
+    function tick() {
+      rafId = 0;
+      var now = performance.now();
+      anims = anims.filter(function (a) { return now - a.t < a.dur; });
+      pops = pops.filter(function (p) { return now - p.t < p.dur; });
+      draw();
+      if (anims.length || pops.length) rafId = requestAnimationFrame(tick);
+    }
+    function kick() { if (!rafId) rafId = requestAnimationFrame(tick); }
+    function pop(text, x, y, color, size, dur, big) {
+      pops.push({ text: text, x: x, y: y, t: performance.now(), dur: dur || 900, color: color || '#fff', size: size || 22, big: !!big });
+      kick();
+    }
+    function flashScore() {
+      var el = document.getElementById('score');
+      el.style.transition = 'none'; el.style.transform = 'scale(1.5)'; el.style.color = '#f5b041';
+      setTimeout(function () { el.style.transition = 'transform .25s, color .4s'; el.style.transform = ''; el.style.color = ''; }, 30);
+    }
+
+    // ---------- 置く ----------
+    function tryPlace(idx, gx, gy) {
+      var shape = tray[idx];
+      if (!shape || !C.canPlace(board, shape, gx, gy)) return false;
+      C.place(board, shape, gx, gy);
+      tray[idx] = null;
+      var lines = C.fullLines(board);
+      var n = lines.rows.length + lines.cols.length;
+      var gained;
+      var px = BOARD_X + (gx + shape.w0 / 2) * CELL, py = BOARD_Y + gy * CELL + 10;
+      if (n > 0) {
+        gained = C.scoreFor(shape.cells.length, n, streak);
+        streak += 1;
+        var cells = [];
+        lines.rows.forEach(function (y) { for (var x = 0; x < N; x++) cells.push([x, y, board[y][x]]); });
+        lines.cols.forEach(function (x) { for (var y = 0; y < N; y++) if (lines.rows.indexOf(y) < 0) cells.push([x, y, board[y][x]]); });
+        C.clearLines(board, lines);
+        anims.push({ cells: cells, t: performance.now(), dur: 380 });
+        var cy = BOARD_Y + BOARD_S / 2;
+        if (n >= 2) { pop(n + ' 列同時!', BASE_W / 2, cy - 20, '#f5b041', 30, 1100, true); H.audio.win(); }
+        else H.audio.good();
+        if (streak >= 2) pop('連続 ' + streak + '!', BASE_W / 2, cy + 20, '#58d68d', 20, 1100);
+        pop('+' + gained, px, py, '#fff', 26, 900, true);
+        flashScore();
+      } else {
+        gained = C.scoreFor(shape.cells.length, 0, 0);
+        streak = 0;
+        H.audio.click();
+        pop('+' + gained, px, py, 'rgba(255,255,255,0.85)', 18, 600);
+      }
+      score += gained;
+      if (score > best) {
+        best = score; store.set('best', best);
+        if (bestAtStart > 0 && !bestShown) { bestShown = true; H.toast('ベスト更新!'); H.audio.good(); }
+      }
+      selected = -1;
+      if (tray.every(function (t) { return !t; })) tray = C.newTray(board);
+      hud(); save(); kick();
+      if (C.isGameOver(board, tray)) setTimeout(gameOver, 450);
+      return true;
+    }
+
+    // ---------- 入力 ----------
+    function slotAt(p) {
+      if (p.y < TRAY_Y - 10 || p.y > TRAY_Y + TRAY_H + 10) return -1;
+      var i = Math.floor(p.x / SLOT_W);
+      return i >= 0 && i < 3 ? i : -1;
+    }
+    function boardCellAt(p) {
+      var x = Math.floor((p.x - BOARD_X) / CELL), y = Math.floor((p.y - BOARD_Y) / CELL);
+      if (x < 0 || y < 0 || x >= N || y >= N) return null;
+      return { x: x, y: y };
+    }
+    var activeId = null;
+    canvas.addEventListener('pointerdown', function (ev) {
+      if (!running || activeId !== null) return;
+      ev.preventDefault();
+      var p = st.toBase(ev.clientX, ev.clientY);
+      var i = slotAt(p);
+      if (i >= 0 && tray[i]) {
+        activeId = ev.pointerId;
+        try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+        drag = { idx: i, shape: tray[i], x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false, gx: null, gy: 0, ok: false };
+        return;
+      }
+      var cell = boardCellAt(p);
+      if (cell && selected >= 0 && tray[selected]) {
+        var sh = tray[selected];
+        var gx = cell.x - Math.floor((sh.w0 - 1) / 2), gy = cell.y - Math.floor((sh.h0 - 1) / 2);
+        gx = Math.max(0, Math.min(N - sh.w0, gx)); gy = Math.max(0, Math.min(N - sh.h0, gy));
+        if (!tryPlace(selected, gx, gy)) { H.audio.bad(); H.toast('そこには置けない'); draw(); }
+      } else if (cell) {
+        H.toast('下のピースを選んでから');
+      }
+    });
+    canvas.addEventListener('pointermove', function (ev) {
+      if (!drag || ev.pointerId !== activeId) return;
+      ev.preventDefault();
+      var p = st.toBase(ev.clientX, ev.clientY);
+      drag.x = p.x; drag.y = p.y;
+      if (!drag.moved) {
+        var dx = p.x - drag.sx, dy = p.y - drag.sy;
+        if (dx * dx + dy * dy > 64) drag.moved = true;
+      }
+      if (drag.moved) { updateDragTarget(drag); draw(); }
+    });
+    function endDrag(ev, cancel) {
+      if (!drag || ev.pointerId !== activeId) return;
+      activeId = null;
+      var d = drag; drag = null;
+      if (cancel) { draw(); return; }
+      if (!d.moved) {
+        selected = selected === d.idx ? -1 : d.idx;
+        H.audio.click();
+        draw();
+        return;
+      }
+      if (d.gx !== null && d.ok) tryPlace(d.idx, d.gx, d.gy);
+      else if (d.gx !== null) H.audio.bad();
+      draw();
+    }
+    canvas.addEventListener('pointerup', function (ev) { endDrag(ev, false); });
+    canvas.addEventListener('pointercancel', function (ev) { endDrag(ev, true); });
+    canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+    function selectKey(i) { if (running && tray[i]) { selected = selected === i ? -1 : i; draw(); } }
+    H.keys({ '1': function () { selectKey(0); }, '2': function () { selectKey(1); }, '3': function () { selectKey(2); } });
+
+    // ---------- 終了・開始 ----------
+    function gameOver() {
+      if (!running) return;
+      running = false;
+      store.remove('state');
+      H.audio.bad();
+      var isBest = score >= best && score > 0;
+      H.overlay({
+        title: isBest ? 'ベスト更新!' : '置ける所がない',
+        big: score + ' 点',
+        html: 'ベスト ' + best + ' 点',
+        buttons: [
+          { label: 'もう一度', onClick: newGame },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+    function showStart() {
+      H.overlay({
+        title: 'ブロックパズル',
+        html: '下のピースを盤へ運ぼう。<br>縦か横に 1 列そろうと消える。',
+        buttons: [{ label: 'スタート', onClick: newGame }]
+      });
+    }
+    window.resetGame = function () {
+      drag = null; activeId = null; selected = -1;
+      if (running) {
+        running = false;
+        H.overlay({ title: '新しく始める?', html: '今の盤面は消えます', buttons: [
+          { label: '新しく始める', onClick: function () { store.remove('state'); newGame(); } },
+          { label: 'つづける', secondary: true, onClick: function () { running = true; draw(); } }
+        ] });
+      } else {
+        store.remove('state'); newGame();
+      }
+    };
+    H.pauseWhenHidden(function () { if (running) save(); });
+
+    if (restore()) {
+      running = true; hud(); draw();
+      if (C.isGameOver(board, tray)) gameOver();
+      else H.toast('前回の続きから');
+    } else {
+      board = C.emptyBoard(); tray = [null, null, null]; score = 0; streak = 0;
+      hud(); draw(); showStart();
+    }
+  })();
+  </script>
+</body>
+</html>

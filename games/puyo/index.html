@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ぷよぷよ - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-controls .ctl-btn { min-width: 64px; font-size: 20px; }
+    .app-controls .ctl-btn.wide { min-width: 84px; font-size: 16px; }
+    .app-controls .ctl-btn.drop { background: rgba(231, 76, 60, 0.35); border-color: rgba(231, 76, 60, 0.6); }
+    .app-controls .ctl-btn.small { min-width: 48px; font-size: 16px; color: var(--muted); }
+    @media (max-width: 400px) {
+      .app-controls { gap: 6px; padding: 6px 4px 8px; }
+      .app-controls .ctl-btn { min-width: 58px; padding: 0 8px; }
+      .app-controls .ctl-btn.wide { min-width: 72px; }
+      .app-controls .ctl-btn.small { min-width: 44px; }
+    }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ぷよぷよ" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item accent">連鎖<b id="chain">0</b></span>
+      <span class="hud-item">レベル<b id="level">1</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>2 つ組のぷよが落ちてくる。同じ色を縦横に 4 つ以上つなげると消える。</li>
+            <li>消えた後に落ちたぷよがまた消えると「連鎖」。連鎖が続くほど点が大きく伸びる。</li>
+            <li>消した数が増えるとレベルが上がり、落ちる速さが増す。</li>
+            <li>左から 3 列目の一番上まで積み上がるとゲームオーバー。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下のボタン（◀ ▶ 回転 落下）。盤面を左右にスワイプで移動、タップで回転、下にスワイプで一気に落下。</li>
+            <li>PC: ← → 移動、↑ / スペース 回転、↓ 速く落とす、Enter 一気に落下、P 一時停止。</li>
+          </ul>
+          <h3>点の計算</h3>
+          <ul>
+            <li>消した数 × 10 × (連鎖ボーナス + 色ボーナス + 同時消しボーナス)。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn" id="btn-left" aria-label="左へ">◀</button>
+      <button type="button" class="ctl-btn" id="btn-right" aria-label="右へ">▶</button>
+      <button type="button" class="ctl-btn wide" id="btn-rotate">回転</button>
+      <button type="button" class="ctl-btn wide drop" id="btn-drop">落下</button>
+      <button type="button" class="ctl-btn small" id="btn-pause" aria-label="一時停止">II</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /* LOGIC-START */
+  // 盤面ロジック(描画・DOM に依存しない。node でテストできる)
+  var PuyoLogic = (function () {
+    'use strict';
+    var COLS = 6, ROWS = 13; // 行 0 は天井の上(薄く描く)
+    var ROT = [{ dx: 0, dy: -1 }, { dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }];
+    var CHAIN_POWER = [0, 8, 16, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512];
+    var COLOR_BONUS = [0, 0, 3, 6, 12, 24];
+    var GROUP_BONUS = [0, 0, 0, 0, 0, 2, 3, 4, 5, 6, 7, 10];
+
+    function newBoard() {
+      var b = [];
+      for (var r = 0; r < ROWS; r++) { var row = []; for (var c = 0; c < COLS; c++) row.push(0); b.push(row); }
+      return b;
+    }
+
+    function cellFree(board, x, y) {
+      if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return false;
+      return board[y][x] === 0;
+    }
+
+    function canPlace(board, x, y, rot) {
+      var sx = x + ROT[rot].dx, sy = y + ROT[rot].dy;
+      return cellFree(board, x, y) && cellFree(board, sx, sy);
+    }
+
+    // 浮いているぷよを 1 段だけ下げる。動いたら true
+    function gravityStep(board) {
+      var moved = false;
+      for (var c = 0; c < COLS; c++) {
+        for (var r = ROWS - 2; r >= 0; r--) {
+          if (board[r][c] !== 0 && board[r + 1][c] === 0) {
+            board[r + 1][c] = board[r][c];
+            board[r][c] = 0;
+            moved = true;
+          }
+        }
+      }
+      return moved;
+    }
+
+    // 一気に落とす(テスト・手数計算用)
+    function gravityAll(board) {
+      var n = 0;
+      while (gravityStep(board)) n++;
+      return n;
+    }
+
+    // 4 つ以上つながった同色の組を返す。{groups:[[{r,c}...]], cells:[{r,c}], colors:Set 相当の数}
+    function findMatches(board) {
+      var visited = [], r, c;
+      for (r = 0; r < ROWS; r++) { visited.push([]); for (c = 0; c < COLS; c++) visited[r].push(false); }
+      var groups = [], cells = [], colorSeen = {}, colorCount = 0;
+      for (r = 0; r < ROWS; r++) {
+        for (c = 0; c < COLS; c++) {
+          var color = board[r][c];
+          if (color === 0 || visited[r][c]) continue;
+          visited[r][c] = true;
+          var group = [], queue = [{ r: r, c: c }];
+          while (queue.length) {
+            var cur = queue.shift();
+            group.push(cur);
+            var ns = [[cur.r - 1, cur.c], [cur.r + 1, cur.c], [cur.r, cur.c - 1], [cur.r, cur.c + 1]];
+            for (var i = 0; i < ns.length; i++) {
+              var nr = ns[i][0], nc = ns[i][1];
+              if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+              if (visited[nr][nc] || board[nr][nc] !== color) continue;
+              visited[nr][nc] = true;
+              queue.push({ r: nr, c: nc });
+            }
+          }
+          if (group.length >= 4) {
+            groups.push(group);
+            for (var k = 0; k < group.length; k++) cells.push(group[k]);
+            if (!colorSeen[color]) { colorSeen[color] = true; colorCount++; }
+          }
+        }
+      }
+      return { groups: groups, cells: cells, colorCount: colorCount };
+    }
+
+    function eraseCells(board, cells) {
+      for (var i = 0; i < cells.length; i++) board[cells[i].r][cells[i].c] = 0;
+    }
+
+    // 連鎖 n 回目(1 始まり)で消した結果の点
+    function scoreFor(match, chain) {
+      var cp = CHAIN_POWER[Math.max(0, Math.min(chain - 1, CHAIN_POWER.length - 1))];
+      var cb = COLOR_BONUS[Math.min(match.colorCount, COLOR_BONUS.length - 1)];
+      var gb = 0;
+      for (var i = 0; i < match.groups.length; i++) {
+        gb += GROUP_BONUS[Math.min(match.groups[i].length, GROUP_BONUS.length - 1)];
+      }
+      var bonus = cp + cb + gb;
+      if (bonus < 1) bonus = 1;
+      if (bonus > 999) bonus = 999;
+      return match.cells.length * 10 * bonus;
+    }
+
+    // 盤面を一気に解決(テスト用): 連鎖数・総得点・消した個数
+    function resolveAll(board) {
+      var chain = 0, score = 0, cleared = 0;
+      for (;;) {
+        gravityAll(board);
+        var m = findMatches(board);
+        if (m.cells.length === 0) break;
+        chain++;
+        score += scoreFor(m, chain);
+        cleared += m.cells.length;
+        eraseCells(board, m.cells);
+        if (chain > 50) break; // 保険
+      }
+      return { chain: chain, score: score, cleared: cleared };
+    }
+
+    function levelFor(cleared) {
+      var lv = 1 + Math.floor(cleared / 16);
+      return lv > 15 ? 15 : lv;
+    }
+    function dropIntervalFor(level) {
+      return Math.max(0.14, 0.8 - (level - 1) * 0.048);
+    }
+
+    return {
+      COLS: COLS, ROWS: ROWS, ROT: ROT,
+      newBoard: newBoard, cellFree: cellFree, canPlace: canPlace,
+      gravityStep: gravityStep, gravityAll: gravityAll,
+      findMatches: findMatches, eraseCells: eraseCells, scoreFor: scoreFor,
+      resolveAll: resolveAll, levelFor: levelFor, dropIntervalFor: dropIntervalFor
+    };
+  })();
+  /* LOGIC-END */
+
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var L = PuyoLogic;
+    var COLS = L.COLS, ROWS = L.ROWS, ROT = L.ROT;
+    var CELL = 36;
+    var PAD = 6;
+    var BOARD_W = COLS * CELL, BOARD_H = ROWS * CELL;
+    var SIDE_W = 78;
+    var BASE_W = PAD + BOARD_W + PAD + SIDE_W + PAD;
+    var BASE_H = PAD + BOARD_H + PAD;
+    var BX = PAD, BY = PAD;
+    var SPAWN_X = 2, SPAWN_Y = 1;
+
+    var COLORS = {
+      1: { bg: '#ff5a5a', dark: '#b3261e', eye: '#5a0f0f' },
+      2: { bg: '#4d8dff', dark: '#1f4fc2', eye: '#0c215e' },
+      3: { bg: '#4ad66d', dark: '#1f8f3d', eye: '#0d4a1e' },
+      4: { bg: '#ffd23f', dark: '#c29a0a', eye: '#5c4600' }
+    };
+
+    var store = H.store('puyo');
+    var best = store.get('best', 0);
+
+    // ---- 状態 ----
+    var board, pair, queue, score, chainNow, maxChain, cleared, level;
+    var phase = 'idle'; // idle | fall | settle | flash | erase | over | pause
+    var prevPhase = 'fall';
+    var timer = 0;      // 現在のフェーズの経過秒
+    var dropInterval = 0.8;
+    var flashCells = [];
+    var flashMatch = null;
+    var fx = [];        // 浮かぶ文字 {text, t, dur, color, size}
+    var softDrop = false;
+    var overlayEl = null;
+    var shake = 0;
+
+    var FLASH_T = 0.42, ERASE_T = 0.12, SETTLE_T = 0.055, LAND_T = 0.08;
+
+    var canvas = document.getElementById('cv');
+    var viewScale = 1, viewCtx = null;
+    H.canvasStage(canvas, BASE_W, BASE_H, function (w, h, ctx, s) { viewScale = s; viewCtx = ctx; draw(); });
+
+    function randColor() { return 1 + Math.floor(Math.random() * 4); }
+    function makePair() { return { c1: randColor(), c2: randColor() }; }
+
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('chain').textContent = maxChain;
+      document.getElementById('level').textContent = level;
+      document.getElementById('best').textContent = best;
+    }
+
+    function closeOverlay() {
+      if (overlayEl) { overlayEl.close(); overlayEl = null; }
+    }
+
+    function initState() {
+      board = L.newBoard();
+      queue = [makePair(), makePair()];
+      pair = null;
+      score = 0; chainNow = 0; maxChain = 0; cleared = 0; level = 1;
+      dropInterval = L.dropIntervalFor(1);
+      fx = []; flashCells = []; flashMatch = null; shake = 0;
+      timer = 0; softDrop = false;
+      phase = 'idle';
+      hud();
+    }
+
+    function spawn() {
+      var np = queue.shift();
+      queue.push(makePair());
+      pair = { x: SPAWN_X, y: SPAWN_Y, rot: 0, c1: np.c1, c2: np.c2 };
+      timer = 0;
+      softDrop = false;
+      if (!L.canPlace(board, pair.x, pair.y, pair.rot)) {
+        gameOver();
+        return;
+      }
+      phase = 'fall';
+    }
+
+    // ---- 操作 ----
+    function tryMove(dx) {
+      if (phase !== 'fall' || !pair) return;
+      if (L.canPlace(board, pair.x + dx, pair.y, pair.rot)) {
+        pair.x += dx;
+        H.audio.beep(520, 0.03, 'square', 0.02);
+      }
+    }
+    function tryRotate() {
+      if (phase !== 'fall' || !pair) return;
+      var nr = (pair.rot + 1) % 4;
+      var kicks = [[0, 0], [-1, 0], [1, 0], [0, 1], [0, -1]];
+      for (var i = 0; i < kicks.length; i++) {
+        var nx = pair.x + kicks[i][0], ny = pair.y + kicks[i][1];
+        if (L.canPlace(board, nx, ny, nr)) {
+          pair.x = nx; pair.y = ny; pair.rot = nr;
+          H.audio.click();
+          return;
+        }
+      }
+      // 左右が埋まった縦の筒: 2 回回して反転だけさせる
+      var nr2 = (pair.rot + 2) % 4;
+      if (L.canPlace(board, pair.x, pair.y, nr2)) { pair.rot = nr2; H.audio.click(); }
+    }
+    function stepDown() {
+      // 1 段下げる。下がれなければ固定
+      if (phase !== 'fall' || !pair) return false;
+      if (L.canPlace(board, pair.x, pair.y + 1, pair.rot)) {
+        pair.y += 1;
+        timer = 0;
+        return true;
+      }
+      lockPair();
+      return false;
+    }
+    function hardDrop() {
+      if (phase !== 'fall' || !pair) return;
+      var n = 0;
+      while (L.canPlace(board, pair.x, pair.y + 1, pair.rot)) { pair.y += 1; n++; }
+      if (n > 0) { score += n; shake = 0.12; }
+      H.audio.beep(220, 0.08, 'triangle', 0.06);
+      lockPair();
+    }
+    function lockPair() {
+      var sx = pair.x + ROT[pair.rot].dx, sy = pair.y + ROT[pair.rot].dy;
+      board[pair.y][pair.x] = pair.c1;
+      if (sy >= 0 && sy < ROWS) board[sy][sx] = pair.c2;
+      pair = null;
+      chainNow = 0;
+      phase = 'settle';
+      timer = -LAND_T; // 着地の間を少し置く
+      hud();
+    }
+
+    // ---- 進行 ----
+    function update(dt) {
+      for (var i = fx.length - 1; i >= 0; i--) { fx[i].t += dt; if (fx[i].t > fx[i].dur) fx.splice(i, 1); }
+      if (shake > 0) shake -= dt;
+      if (phase === 'fall') {
+        timer += dt;
+        var iv = softDrop ? Math.min(dropInterval, 0.05) : dropInterval;
+        if (timer >= iv) {
+          if (stepDown() && softDrop) score += 1;
+        }
+      } else if (phase === 'settle') {
+        timer += dt;
+        if (timer >= SETTLE_T) {
+          timer = 0;
+          if (!L.gravityStep(board)) {
+            var m = L.findMatches(board);
+            if (m.cells.length) {
+              chainNow++;
+              if (chainNow > maxChain) maxChain = chainNow;
+              flashCells = m.cells; flashMatch = m;
+              phase = 'flash'; timer = 0;
+              var pts = L.scoreFor(m, chainNow);
+              fx.push({ text: chainNow + ' 連鎖!', t: 0, dur: 1.1, color: chainNow >= 3 ? '#ffd23f' : '#ffffff', size: 26 + Math.min(chainNow, 6) * 3 });
+              fx.push({ text: '+' + pts, t: -0.15, dur: 1.0, color: '#56b4e9', size: 20, dy: 42 });
+              H.audio.beep(420 + chainNow * 90, 0.18, 'sine', 0.07);
+              if (chainNow >= 2) setTimeout(function () { H.audio.beep(640 + chainNow * 90, 0.2, 'sine', 0.06); }, 110);
+              hud();
+            } else {
+              afterChain();
+            }
+          }
+        }
+      } else if (phase === 'flash') {
+        timer += dt;
+        if (timer >= FLASH_T) {
+          score += L.scoreFor(flashMatch, chainNow);
+          cleared += flashCells.length;
+          L.eraseCells(board, flashCells);
+          flashCells = []; flashMatch = null;
+          var nl = L.levelFor(cleared);
+          if (nl !== level) { level = nl; dropInterval = L.dropIntervalFor(level); H.toast('レベル ' + level); H.audio.good(); }
+          if (score > best) { best = score; store.set('best', best); }
+          hud();
+          phase = 'erase'; timer = 0;
+        }
+      } else if (phase === 'erase') {
+        timer += dt;
+        if (timer >= ERASE_T) { phase = 'settle'; timer = 0; }
+      }
+    }
+
+    function afterChain() {
+      if (chainNow >= 4) H.toast(chainNow + ' 連鎖! すごい!');
+      if (board[SPAWN_Y][SPAWN_X] !== 0) { gameOver(); return; }
+      spawn();
+    }
+
+    function gameOver() {
+      phase = 'over';
+      pair = null;
+      if (score > best) { best = score; store.set('best', best); }
+      hud();
+      H.audio.bad();
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: 'ゲームオーバー',
+        big: score + ' 点',
+        html: '最大 ' + maxChain + ' 連鎖 / 消した数 ' + cleared + '<br>ベスト ' + best + ' 点',
+        buttons: [
+          { label: 'もう一度', onClick: function () { overlayEl = null; startGame(); } },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+
+    function showStart() {
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: 'ぷよぷよ',
+        html: '同じ色を 4 つつなげて消そう<br>連鎖で高得点!' + (best ? '<br>ベスト ' + best + ' 点' : ''),
+        buttons: [{ label: 'スタート', onClick: function () { overlayEl = null; startGame(); } }]
+      });
+    }
+
+    function startGame() {
+      closeOverlay();
+      initState();
+      spawn();
+      loop.pause(false);
+      draw();
+    }
+
+    function pauseGame() {
+      if (phase === 'idle' || phase === 'over' || phase === 'pause') return;
+      prevPhase = phase;
+      phase = 'pause';
+      softDrop = false;
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: '一時停止',
+        big: score + ' 点',
+        buttons: [
+          { label: '再開', onClick: function () { overlayEl = null; resumeGame(); } },
+          { label: '最初から', secondary: true, onClick: function () { overlayEl = null; window.resetGame(); } }
+        ]
+      });
+    }
+    function resumeGame() {
+      if (phase !== 'pause') return;
+      phase = prevPhase;
+      loop.pause(false);
+    }
+
+    window.resetGame = function () {
+      closeOverlay();
+      initState();
+      draw();
+      showStart();
+    };
+
+    // ---- 描画 ----
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawPuyo(ctx, cx, cy, color, radius, opt) {
+      var col = COLORS[color];
+      if (!col) return;
+      opt = opt || {};
+      var r = radius * (opt.scale || 1);
+      ctx.save();
+      if (opt.alpha !== undefined) ctx.globalAlpha = opt.alpha;
+      var g = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.15, cx, cy, r);
+      g.addColorStop(0, opt.white ? '#ffffff' : '#ffffff');
+      g.addColorStop(0.25, opt.white ? '#ffffff' : col.bg);
+      g.addColorStop(1, opt.white ? '#e8e8ff' : col.dark);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = opt.white ? '#ffffff' : col.dark;
+      ctx.stroke();
+      if (!opt.white) {
+        var ex = r * 0.32, ey = -r * 0.08, er = r * 0.22;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(cx - ex, cy + ey, er, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + ex, cy + ey, er, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = col.eye;
+        ctx.beginPath(); ctx.arc(cx - ex + er * 0.2, cy + ey + er * 0.15, er * 0.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + ex + er * 0.2, cy + ey + er * 0.15, er * 0.5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function draw() {
+      var ctx = viewCtx;
+      if (!ctx || !board) return;
+      ctx.save();
+      ctx.scale(viewScale, viewScale);
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+
+      ctx.save();
+      if (shake > 0) ctx.translate(0, Math.sin(shake * 90) * 3);
+
+      // 盤面の枠
+      ctx.fillStyle = '#0c0c1c';
+      rr(ctx, BX - 2, BY - 2, BOARD_W + 4, BOARD_H + 4, 8);
+      ctx.fill();
+      // 行 1 以下(見える盤面)を少し明るく。行 0 は天井の上
+      ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      ctx.fillRect(BX, BY + CELL, BOARD_W, BOARD_H - CELL);
+      // 格子
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      var r, c;
+      for (r = 1; r <= ROWS; r++) { ctx.beginPath(); ctx.moveTo(BX, BY + r * CELL + 0.5); ctx.lineTo(BX + BOARD_W, BY + r * CELL + 0.5); ctx.stroke(); }
+      for (c = 0; c <= COLS; c++) { ctx.beginPath(); ctx.moveTo(BX + c * CELL + 0.5, BY + CELL); ctx.lineTo(BX + c * CELL + 0.5, BY + BOARD_H); ctx.stroke(); }
+      // 天井線とバツ印(ゲームオーバー判定列)
+      ctx.strokeStyle = 'rgba(245,176,65,0.5)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(BX, BY + CELL + 0.5); ctx.lineTo(BX + BOARD_W, BY + CELL + 0.5); ctx.stroke();
+      ctx.setLineDash([]);
+      if (board[SPAWN_Y][SPAWN_X] === 0 && !(pair && pair.x === SPAWN_X && pair.y === SPAWN_Y)) {
+        ctx.strokeStyle = 'rgba(231,76,60,0.45)';
+        ctx.lineWidth = 3;
+        var mx = BX + SPAWN_X * CELL + CELL / 2, my = BY + SPAWN_Y * CELL + CELL / 2, ms = CELL * 0.22;
+        ctx.beginPath(); ctx.moveTo(mx - ms, my - ms); ctx.lineTo(mx + ms, my + ms); ctx.moveTo(mx + ms, my - ms); ctx.lineTo(mx - ms, my + ms); ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+
+      // 置かれたぷよ
+      var flashSet = {};
+      var i;
+      for (i = 0; i < flashCells.length; i++) flashSet[flashCells[i].r + ',' + flashCells[i].c] = true;
+      var flashT = phase === 'flash' ? timer / FLASH_T : 0;
+      var radius = CELL / 2 - 2;
+      for (r = 0; r < ROWS; r++) {
+        for (c = 0; c < COLS; c++) {
+          var col = board[r][c];
+          if (!col) continue;
+          var cx = BX + c * CELL + CELL / 2, cy = BY + r * CELL + CELL / 2;
+          var opt = {};
+          if (r === 0) opt.alpha = 0.35;
+          if (flashSet[r + ',' + c]) {
+            var pulse = Math.sin(flashT * Math.PI * 6);
+            opt.white = pulse > 0;
+            opt.scale = 1 + 0.15 * Math.abs(pulse) + flashT * 0.2;
+            if (flashT > 0.7) opt.alpha = Math.max(0, 1 - (flashT - 0.7) / 0.3);
+          }
+          drawPuyo(ctx, cx, cy, col, radius, opt);
+        }
+      }
+
+      // 落下中のペア(次の段へ滑らかに)
+      if (pair && (phase === 'fall' || phase === 'pause')) {
+        var sx = pair.x + ROT[pair.rot].dx, sy = pair.y + ROT[pair.rot].dy;
+        var off = 0;
+        if (phase === 'fall' && L.canPlace(board, pair.x, pair.y + 1, pair.rot)) {
+          var iv = softDrop ? Math.min(dropInterval, 0.05) : dropInterval;
+          off = Math.min(1, Math.max(0, timer / iv)) * CELL * 0.85;
+        }
+        // 落下位置のガイド
+        var gy = pair.y;
+        while (L.canPlace(board, pair.x, gy + 1, pair.rot)) gy++;
+        if (gy !== pair.y) {
+          ctx.save();
+          ctx.globalAlpha = 0.18;
+          ctx.fillStyle = COLORS[pair.c1].bg;
+          ctx.beginPath(); ctx.arc(BX + pair.x * CELL + CELL / 2, BY + gy * CELL + CELL / 2, radius * 0.8, 0, Math.PI * 2); ctx.fill();
+          var gsy = gy + ROT[pair.rot].dy, gsx = pair.x + ROT[pair.rot].dx;
+          ctx.fillStyle = COLORS[pair.c2].bg;
+          ctx.beginPath(); ctx.arc(BX + gsx * CELL + CELL / 2, BY + gsy * CELL + CELL / 2, radius * 0.8, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        }
+        drawPuyo(ctx, BX + pair.x * CELL + CELL / 2, BY + pair.y * CELL + CELL / 2 + off, pair.c1, radius, pair.y === 0 ? { alpha: 0.6 } : {});
+        drawPuyo(ctx, BX + sx * CELL + CELL / 2, BY + sy * CELL + CELL / 2 + off, pair.c2, radius, sy === 0 ? { alpha: 0.6 } : {});
+      }
+      ctx.restore();
+
+      // 右側: NEXT
+      var px = BX + BOARD_W + PAD, pw = SIDE_W;
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      rr(ctx, px, BY, pw, 150, 8);
+      ctx.fill();
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('NEXT', px + pw / 2, BY + 14);
+      if (queue && queue.length) {
+        var nr0 = CELL / 2 - 4;
+        drawPuyo(ctx, px + pw / 2, BY + 38 + nr0, queue[0].c2, nr0);
+        drawPuyo(ctx, px + pw / 2, BY + 38 + nr0 * 3, queue[0].c1, nr0);
+        var nr1 = nr0 * 0.72;
+        drawPuyo(ctx, px + pw / 2, BY + 104 + nr1, queue[1].c2, nr1, { alpha: 0.7 });
+        drawPuyo(ctx, px + pw / 2, BY + 104 + nr1 * 3, queue[1].c1, nr1, { alpha: 0.7 });
+      }
+      // 右側: 現在の連鎖
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      rr(ctx, px, BY + 162, pw, 64, 8);
+      ctx.fill();
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.fillText('れんさ', px + pw / 2, BY + 176);
+      ctx.fillStyle = chainNow > 0 ? '#f5b041' : '#f4f4ff';
+      ctx.font = 'bold 26px system-ui, sans-serif';
+      ctx.fillText(String(chainNow), px + pw / 2, BY + 204);
+      // 右側: 速さ
+      ctx.fillStyle = '#a9a9c9';
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.fillText('はやさ', px + pw / 2, BY + 246);
+      for (i = 0; i < 15; i++) {
+        ctx.fillStyle = i < level ? (i < 5 ? '#2ecc71' : i < 10 ? '#f5b041' : '#e74c3c') : 'rgba(255,255,255,0.08)';
+        ctx.fillRect(px + 10, BY + 262 + (14 - i) * 7, pw - 20, 5);
+      }
+
+      // 浮かぶ文字
+      for (i = 0; i < fx.length; i++) {
+        var f = fx[i];
+        if (f.t < 0) continue;
+        var p = f.t / f.dur;
+        var sc = p < 0.15 ? 0.6 + p / 0.15 * 0.6 : 1.2 - (p - 0.15) * 0.15;
+        var a = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, a);
+        ctx.translate(BX + BOARD_W / 2, BY + BOARD_H * 0.42 + (f.dy || 0) - p * 30);
+        ctx.scale(sc, sc);
+        ctx.font = 'bold ' + f.size + 'px system-ui, sans-serif';
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.strokeText(f.text, 0, 0);
+        ctx.fillStyle = f.color;
+        ctx.fillText(f.text, 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    // ---- ループ ----
+    var loop = H.loop(update, draw);
+
+    // ---- 入力 ----
+    H.holdButton(document.getElementById('btn-left'), function () { tryMove(-1); }, null, 110);
+    H.holdButton(document.getElementById('btn-right'), function () { tryMove(1); }, null, 110);
+    H.holdButton(document.getElementById('btn-rotate'), function () { tryRotate(); }, null, 0);
+    H.holdButton(document.getElementById('btn-drop'), function () { hardDrop(); }, null, 0);
+    H.holdButton(document.getElementById('btn-pause'), function () {
+      if (phase === 'pause') resumeGame(); else pauseGame();
+    }, null, 0);
+
+    H.swipe(canvas, function (dir) {
+      if (dir === 'left') tryMove(-1);
+      else if (dir === 'right') tryMove(1);
+      else if (dir === 'down') hardDrop();
+      else if (dir === 'up') tryRotate();
+    }, function () { tryRotate(); }, 28);
+
+    var keyMap = {
+      ArrowLeft: function () { tryMove(-1); },
+      ArrowRight: function () { tryMove(1); },
+      ArrowUp: function (e) { if (!e.repeat) tryRotate(); },
+      ' ': function (e) { if (!e.repeat) tryRotate(); },
+      ArrowDown: function () { if (phase === 'fall') softDrop = true; },
+      Enter: function (e) { if (!e.repeat) hardDrop(); },
+      p: function (e) { if (!e.repeat) { if (phase === 'pause') resumeGame(); else pauseGame(); } },
+      P: function (e) { if (!e.repeat) { if (phase === 'pause') resumeGame(); else pauseGame(); } },
+      Escape: function (e) { if (!e.repeat) { if (phase === 'pause') resumeGame(); else pauseGame(); } }
+    };
+    keyMap.__repeat = true;
+    H.keys(keyMap, function (k) { if (k === 'ArrowDown') softDrop = false; });
+
+    H.pauseWhenHidden(function () { pauseGame(); });
+
+    // ---- 開始 ----
+    initState();
+    draw();
+    loop.start();
+    showStart();
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>スネーク - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.bonus b { color: var(--warn); }
+    .hud-item.bonus.hidden { display: none !important; }
+    .opt-group { display: flex; flex-direction: column; gap: 6px; justify-content: center; align-items: stretch; }
+    .opt-group .seg { justify-content: center; }
+    .opt-group .seg button { min-height: 44px; padding: 0 10px; font-size: 14px; }
+    .opt-label { font-size: 11px; color: var(--muted); text-align: center; line-height: 1; margin-bottom: -2px; }
+    .dpad .ctl-btn.center { font-size: 15px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="スネーク" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item">長さ<b id="len">3</b></span>
+      <span class="hud-item bonus hidden" id="hud-bonus">ボーナス<b id="bonus-left">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>ヘビを動かしてエサ(赤い実)を食べると体が伸びて得点。</li>
+            <li>ときどき出る金色の大きなエサは時間制限つきの大得点。輪が消える前に食べよう。</li>
+            <li>自分の体に当たるとゲームオーバー。「壁あり」では壁に当たっても終わり、「壁抜け」では反対側から出てくる。</li>
+            <li>速さが速いほど 1 個あたりの点が高い。ベストは速さ・壁の組み合わせごとに保存。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 盤面をスワイプ、または下の十字キー。中央の ⏸ で一時停止。</li>
+            <li>PC: 矢印キー / WASD。スペースか P で一時停止。</li>
+            <li>↻ でいつでも最初から。速さと壁は下で切り替え(次のゲームから)。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+      <div class="opt-group">
+        <div class="opt-label">速さ</div>
+        <div class="seg" id="seg-speed">
+          <button type="button" data-v="0">遅い</button><button type="button" data-v="1">普通</button><button type="button" data-v="2">速い</button>
+        </div>
+        <div class="opt-label">壁</div>
+        <div class="seg" id="seg-wall">
+          <button type="button" data-v="1">壁あり</button><button type="button" data-v="0">壁抜け</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /* CORE-BEGIN */
+  // 盤面ロジック(DOM なし。node で検証できる)
+  function createSnakeCore(cfg) {
+    cfg = cfg || {};
+    var N = cfg.grid || 20;
+    var rng = cfg.rng || Math.random;
+    var DIRS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+    var OPP = { up: 'down', down: 'up', left: 'right', right: 'left' };
+    var s = {};
+
+    function reset(opts) {
+      opts = opts || {};
+      s.wall = opts.wall !== false;
+      s.pointsPer = opts.pointsPer || 10;
+      s.bonusEvery = opts.bonusEvery || 4;
+      s.bonusTtl = opts.bonusTtl || 40;   // ティック数
+      s.snake = [];
+      var cy = Math.floor(N / 2), cx = Math.max(2, Math.floor(N / 2) - 3);
+      for (var i = 0; i < 3; i++) s.snake.push({ x: cx - i, y: cy });
+      s.dir = 'right';
+      s.queue = [];
+      s.score = 0;
+      s.eaten = 0;
+      s.alive = true;
+      s.won = false;
+      s.food = null;
+      s.bonus = null;      // {x,y,ttl}
+      spawnFood();
+    }
+
+    function occupied(x, y) {
+      for (var i = 0; i < s.snake.length; i++) if (s.snake[i].x === x && s.snake[i].y === y) return true;
+      if (s.food && s.food.x === x && s.food.y === y) return true;
+      if (s.bonus && s.bonus.x === x && s.bonus.y === y) return true;
+      return false;
+    }
+    function freeCells() {
+      var list = [];
+      for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) if (!occupied(x, y)) list.push({ x: x, y: y });
+      return list;
+    }
+    function spawnFood() {
+      var free = freeCells();
+      if (!free.length) { s.food = null; return false; }
+      s.food = free[Math.floor(rng() * free.length)];
+      return true;
+    }
+    function spawnBonus() {
+      var free = freeCells();
+      if (free.length < 8) return false;
+      var c = free[Math.floor(rng() * free.length)];
+      s.bonus = { x: c.x, y: c.y, ttl: s.bonusTtl };
+      return true;
+    }
+
+    // 入力はキューへ。連続する同じ向きは捨てる。最大 3 つ
+    function queueDir(d) {
+      if (!DIRS[d]) return;
+      var last = s.queue.length ? s.queue[s.queue.length - 1] : s.dir;
+      if (d === last) return;
+      if (s.queue.length >= 3) return;
+      s.queue.push(d);
+    }
+
+    // 1 ティック進める。戻り値: 'move' | 'eat' | 'bonus' | 'die' | 'win' | 'none'
+    function tick() {
+      if (!s.alive || s.won) return 'none';
+      // 1 ティックに反映する方向転換は 1 回だけ。逆走は捨てる
+      while (s.queue.length) {
+        var d = s.queue.shift();
+        if (d !== s.dir && d !== OPP[s.dir]) { s.dir = d; break; }
+      }
+      var v = DIRS[s.dir];
+      var head = s.snake[0];
+      var nx = head.x + v.x, ny = head.y + v.y;
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) {
+        if (s.wall) { s.alive = false; return 'die'; }
+        nx = (nx + N) % N; ny = (ny + N) % N;
+      }
+      var eat = !!(s.food && s.food.x === nx && s.food.y === ny);
+      var eatBonus = !!(s.bonus && s.bonus.x === nx && s.bonus.y === ny);
+      // 尾は進むと空くので、エサを食べない場合は尾との衝突は無視する
+      var tail = s.snake[s.snake.length - 1];
+      for (var i = 0; i < s.snake.length; i++) {
+        var seg = s.snake[i];
+        if (seg.x === nx && seg.y === ny) {
+          if (!eat && !eatBonus && seg === tail && i === s.snake.length - 1) continue;
+          s.alive = false; return 'die';
+        }
+      }
+      s.snake.unshift({ x: nx, y: ny });
+      var result = 'move';
+      if (eat) {
+        s.score += s.pointsPer;
+        s.eaten++;
+        s.food = null;
+        result = 'eat';
+        if (!spawnFood()) { s.won = true; return 'win'; }
+        if (!s.bonus && s.eaten % s.bonusEvery === 0) spawnBonus();
+      } else if (eatBonus) {
+        s.score += s.pointsPer * 5;
+        s.bonus = null;
+        result = 'bonus';
+      } else {
+        s.snake.pop();
+      }
+      if (s.bonus && result !== 'bonus') {
+        s.bonus.ttl--;
+        if (s.bonus.ttl <= 0) s.bonus = null;
+      }
+      return result;
+    }
+
+    reset();
+    return { N: N, state: s, reset: reset, tick: tick, queueDir: queueDir, DIRS: DIRS };
+  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = createSnakeCore;
+  /* CORE-END */
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var N = 20, CELL = 20, BASE = N * CELL;
+    var SPEEDS = [
+      { name: '遅い', interval: 0.22, pts: 10 },
+      { name: '普通', interval: 0.14, pts: 15 },
+      { name: '速い', interval: 0.09, pts: 20 }
+    ];
+    var store = H.store('snake');
+    var speedIdx = Math.min(2, Math.max(0, parseInt(store.get('speed', 1), 10) || 0));
+    var wall = store.get('wall', true) !== false;
+    var core = createSnakeCore({ grid: N });
+    var mode = 'idle';     // idle | running | paused | over
+    var acc = 0, interval = SPEEDS[speedIdx].interval;
+    var best = 0;
+    var ov = null;
+    var particles = [];
+    var flash = 0, time = 0, pulse = 0;
+    var deathAt = -1;
+
+    var canvas = document.getElementById('cv');
+    var elScore = document.getElementById('score'), elBest = document.getElementById('best'),
+        elLen = document.getElementById('len'), elBonus = document.getElementById('hud-bonus'),
+        elBonusLeft = document.getElementById('bonus-left');
+    var viewScale = 1;
+    // common.js の canvasStage は DPR だけ合わせ、ctx は CSS px 座標のまま。論理座標 BASE に合わせて自分で拡大する
+    var st = H.canvasStage(canvas, BASE, BASE, function (cssW) { viewScale = cssW / BASE; draw(); });
+
+    function bestKey() { return 'best:' + speedIdx + ':' + (wall ? 'w' : 'o'); }
+    function loadBest() { best = store.get(bestKey(), 0) || 0; }
+    function hud() {
+      var s = core.state;
+      elScore.textContent = s.score;
+      elBest.textContent = best;
+      elLen.textContent = s.snake.length;
+      if (s.bonus && mode === 'running') {
+        elBonus.classList.remove('hidden');
+        elBonusLeft.textContent = Math.ceil(s.bonus.ttl * interval) + '秒';
+      } else elBonus.classList.add('hidden');
+    }
+
+    // ---------- 描画 ----------
+    function rrect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function draw() {
+      if (!st) return;
+      var ctx = st.ctx();
+      if (!ctx) return;
+      var s = core.state;
+      ctx.save();
+      ctx.scale(viewScale, viewScale);
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE, BASE);
+      // 市松
+      ctx.fillStyle = 'rgba(255,255,255,0.025)';
+      for (var y = 0; y < N; y++) for (var x = (y % 2); x < N; x += 2) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+      // 壁
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = wall ? 'rgba(231,76,60,0.55)' : 'rgba(86,180,233,0.35)';
+      if (!wall) ctx.setLineDash([6, 6]);
+      ctx.strokeRect(1, 1, BASE - 2, BASE - 2);
+      ctx.setLineDash([]);
+      // エサ
+      if (s.food) {
+        var fx = s.food.x * CELL + CELL / 2, fy = s.food.y * CELL + CELL / 2;
+        var r = CELL / 2 - 3 + Math.sin(pulse * 6) * 1;
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath(); ctx.arc(fx, fy, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#2ecc71';
+        ctx.fillRect(fx - 1, fy - r - 3, 2, 4);
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.beginPath(); ctx.arc(fx - r / 3, fy - r / 3, r / 4, 0, Math.PI * 2); ctx.fill();
+      }
+      // ボーナス
+      if (s.bonus) {
+        var bx = s.bonus.x * CELL + CELL / 2, by = s.bonus.y * CELL + CELL / 2;
+        var frac = s.bonus.ttl / core.state.bonusTtl;
+        var br = CELL / 2 - 1 + Math.sin(pulse * 10) * 1.5;
+        ctx.fillStyle = '#f5b041';
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(bx, by, br + 3, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); ctx.stroke();
+        ctx.fillStyle = '#7a4a00'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('★', bx, by + 0.5);
+      }
+      // ヘビ
+      var len = s.snake.length;
+      for (var i = len - 1; i >= 0; i--) {
+        var seg = s.snake[i];
+        var t = i / Math.max(1, len - 1);
+        var g = Math.round(200 - t * 90), b2 = Math.round(90 + t * 40);
+        ctx.fillStyle = i === 0 ? '#5dff8a' : 'rgb(' + Math.round(40 + t * 20) + ',' + g + ',' + b2 + ')';
+        if (!s.alive && deathAt >= 0 && Math.floor((time - deathAt) * 8) % 2 === 0) ctx.fillStyle = '#e74c3c';
+        rrect(ctx, seg.x * CELL + 1.5, seg.y * CELL + 1.5, CELL - 3, CELL - 3, i === 0 ? 7 : 5);
+        ctx.fill();
+      }
+      // 目
+      var hd = s.snake[0], v = core.DIRS[s.dir];
+      var ex = hd.x * CELL + CELL / 2 + v.x * 4, ey = hd.y * CELL + CELL / 2 + v.y * 4;
+      var px = -v.y * 4, py = v.x * 4;
+      ctx.fillStyle = '#10203a';
+      ctx.beginPath(); ctx.arc(ex + px, ey + py, 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(ex - px, ey - py, 2.2, 0, Math.PI * 2); ctx.fill();
+      // 粒
+      for (var p = 0; p < particles.length; p++) {
+        var q = particles[p];
+        ctx.globalAlpha = Math.max(0, q.life / q.max);
+        ctx.fillStyle = q.color;
+        ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      if (flash > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,' + (flash * 0.25) + ')';
+        ctx.fillRect(0, 0, BASE, BASE);
+      }
+      ctx.restore();
+    }
+    function burst(cx, cy, color, n) {
+      for (var i = 0; i < n; i++) {
+        var a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 90;
+        particles.push({ x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 1.5 + Math.random() * 2, life: 0.5, max: 0.5, color: color });
+      }
+    }
+
+    // ---------- 進行 ----------
+    function update(dt) {
+      time += dt; pulse += dt;
+      if (flash > 0) flash = Math.max(0, flash - dt * 4);
+      for (var i = particles.length - 1; i >= 0; i--) {
+        var q = particles[i];
+        q.life -= dt; q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 60 * dt;
+        if (q.life <= 0) particles.splice(i, 1);
+      }
+      if (mode !== 'running') return;
+      acc += dt;
+      var guard = 0;
+      while (acc >= interval && mode === 'running' && guard++ < 5) {
+        acc -= interval;
+        step();
+      }
+    }
+    function step() {
+      var s = core.state;
+      var prevHead = s.snake[0];
+      var r = core.tick();
+      var hd = s.snake[0];
+      if (r === 'eat' || r === 'bonus' || r === 'win') {
+        var cx = hd.x * CELL + CELL / 2, cy = hd.y * CELL + CELL / 2;
+        if (r === 'bonus') { burst(cx, cy, '#f5b041', 22); flash = 1; H.audio.win(); H.toast('ボーナス +' + (SPEEDS[speedIdx].pts * 5)); }
+        else { burst(cx, cy, '#ff6b5b', 10); flash = 0.4; H.audio.good(); }
+        if (s.score > best) { best = s.score; store.set(bestKey(), best); }
+      }
+      if (r === 'die') {
+        burst(prevHead.x * CELL + CELL / 2, prevHead.y * CELL + CELL / 2, '#e74c3c', 18);
+        H.audio.bad();
+        deathAt = time;
+        mode = 'over';
+        setTimeout(showOver, 500);
+      } else if (r === 'win') {
+        mode = 'over';
+        H.audio.win();
+        setTimeout(showOver, 500);
+      }
+      hud();
+    }
+    var loop = H.loop(update, draw);
+
+    // ---------- 画面 ----------
+    function closeOv() { if (ov) { ov.close(); ov = null; } }
+    function showStart() {
+      closeOv();
+      mode = 'idle';
+      ov = H.overlay({
+        title: 'スネーク',
+        html: '速さ「' + SPEEDS[speedIdx].name + '」 / ' + (wall ? '壁あり' : '壁抜け') + '<br>エサ 1 個 ' + SPEEDS[speedIdx].pts + ' 点、金のエサは 5 倍',
+        buttons: [{ label: 'スタート', onClick: start }]
+      });
+    }
+    function start() {
+      closeOv();
+      interval = SPEEDS[speedIdx].interval;
+      core.reset({ wall: wall, pointsPer: SPEEDS[speedIdx].pts, bonusTtl: Math.round(6 / interval) });
+      acc = 0; particles = []; flash = 0; deathAt = -1;
+      loadBest();
+      mode = 'running';
+      loop.start();
+      hud(); draw();
+    }
+    function pauseGame() {
+      if (mode !== 'running') return;
+      mode = 'paused';
+      closeOv();
+      ov = H.overlay({ title: '一時停止', html: 'スコア ' + core.state.score, buttons: [
+        { label: 'つづける', onClick: resume },
+        { label: '最初から', secondary: true, onClick: showStart }
+      ] });
+      hud();
+    }
+    function resume() {
+      if (mode !== 'paused') return;
+      closeOv();
+      core.state.queue.length = 0;
+      acc = 0;
+      mode = 'running';
+      loop.pause(false);
+      hud();
+    }
+    function togglePause() {
+      if (mode === 'running') pauseGame();
+      else if (mode === 'paused') resume();
+    }
+    function showOver() {
+      if (mode !== 'over') return;
+      closeOv();
+      var s = core.state;
+      ov = H.overlay({
+        title: s.won ? '全部うめた!' : 'ゲームオーバー',
+        big: s.score + ' 点',
+        html: '長さ ' + s.snake.length + ' / ベスト ' + best + ' 点' + (s.score >= best && s.score > 0 ? '　新記録!' : ''),
+        buttons: [
+          { label: 'もう一度', onClick: start },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+    window.resetGame = function () {
+      core.reset({ wall: wall, pointsPer: SPEEDS[speedIdx].pts });
+      particles = []; flash = 0; deathAt = -1;
+      loadBest(); hud(); draw();
+      showStart();
+    };
+
+    // ---------- 入力 ----------
+    function input(dir) {
+      if (mode !== 'running') return;
+      core.queueDir(dir);
+    }
+    H.swipe(canvas, input);
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) input(dir); },
+      { center: { label: '⏸', onPress: togglePause } });
+    var km = {
+      ArrowUp: function () { input('up'); }, ArrowDown: function () { input('down'); },
+      ArrowLeft: function () { input('left'); }, ArrowRight: function () { input('right'); },
+      w: function () { input('up'); }, s: function () { input('down'); }, a: function () { input('left'); }, d: function () { input('right'); },
+      W: function () { input('up'); }, S: function () { input('down'); }, A: function () { input('left'); }, D: function () { input('right'); },
+      ' ': function () { if (mode === 'idle') start(); else togglePause(); },
+      p: togglePause, P: togglePause,
+      Enter: function () { if (mode === 'idle') start(); else if (mode === 'paused') resume(); }
+    };
+    H.keys(km);
+
+    // 設定(次のゲームから)
+    function bindSeg(id, cur, onPick) {
+      var seg = document.getElementById(id);
+      var btns = seg.querySelectorAll('button');
+      function paint(v) { for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('on', btns[i].getAttribute('data-v') === String(v)); }
+      for (var i = 0; i < btns.length; i++) {
+        (function (b) {
+          b.addEventListener('click', function () {
+            H.audio.click();
+            var v = b.getAttribute('data-v');
+            paint(v); onPick(v);
+          });
+        })(btns[i]);
+      }
+      paint(cur);
+    }
+    bindSeg('seg-speed', speedIdx, function (v) {
+      speedIdx = parseInt(v, 10); store.set('speed', speedIdx);
+      loadBest(); hud();
+      if (mode === 'running' || mode === 'paused') H.toast('次のゲームから「' + SPEEDS[speedIdx].name + '」');
+      else if (mode === 'idle') showStart();
+    });
+    bindSeg('seg-wall', wall ? 1 : 0, function (v) {
+      wall = v === '1'; store.set('wall', wall);
+      loadBest(); hud(); draw();
+      if (mode === 'running' || mode === 'paused') H.toast('次のゲームから「' + (wall ? '壁あり' : '壁抜け') + '」');
+      else if (mode === 'idle') showStart();
+    });
+
+    H.pauseWhenHidden(function () { pauseGame(); });
+    window.onHelpOpen = function () { pauseGame(); };
+
+    // 初期化: 盤面を先に描く
+    core.reset({ wall: wall, pointsPer: SPEEDS[speedIdx].pts });
+    loadBest(); hud(); draw();
+    loop.start();
+    showStart();
+  })();
+  </script>
+</body>
+</html>

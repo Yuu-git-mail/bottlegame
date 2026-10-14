@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>テンプレート - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    /* このゲームだけの追加スタイルはここ */
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="テンプレート" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>光る的をタップすると 1 点。</li>
+            <li>十字キーで的を動かせる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 画面タップ・下の十字キー</li>
+            <li>PC: クリック・矢印キー</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn wide" id="btn-action">アクション</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var BASE_W = 360, BASE_H = 480;          // 盤面の論理サイズ(縦長)。横長ゲームなら 480x360 など
+    var store = H.store('template');
+    var score = 0, best = store.get('best', 0);
+    var target = { x: 180, y: 240, r: 28 };
+    var running = false;
+
+    var canvas = document.getElementById('cv');
+    // ctx は DPR 補正のみ。論理座標(BASE_W×BASE_H)で描くので倍率を自分で掛ける
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function (cssW, cssH, ctx, scale) {
+      ctx.scale(scale, scale);
+      draw();
+    });
+
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+    }
+
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, target.r, 0, Math.PI * 2);
+      ctx.fillStyle = '#f5b041';
+      ctx.fill();
+    }
+
+    function move(dir) {
+      if (!running) return;
+      if (dir === 'left') target.x -= 20;
+      if (dir === 'right') target.x += 20;
+      if (dir === 'up') target.y -= 20;
+      if (dir === 'down') target.y += 20;
+      target.x = Math.max(target.r, Math.min(BASE_W - target.r, target.x));
+      target.y = Math.max(target.r, Math.min(BASE_H - target.r, target.y));
+      draw();
+    }
+
+    function hit() {
+      score += 1;
+      if (score > best) { best = score; store.set('best', best); }
+      H.audio.good();
+      target.x = target.r + Math.random() * (BASE_W - target.r * 2);
+      target.y = target.r + Math.random() * (BASE_H - target.r * 2);
+      hud();
+      draw();
+      if (score >= 10) gameOver();
+    }
+
+    H.onTap(canvas, function (cx, cy) {
+      if (!running) return;
+      var p = st.toBase(cx, cy);
+      var dx = p.x - target.x, dy = p.y - target.y;
+      if (dx * dx + dy * dy <= target.r * target.r) hit();
+      else H.audio.bad();
+    });
+
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) move(dir); }, { repeatMs: 120 });
+    H.holdButton(document.getElementById('btn-action'), function () { if (running) hit(); });
+    H.keys({ ArrowLeft: function () { move('left'); }, ArrowRight: function () { move('right'); },
+             ArrowUp: function () { move('up'); }, ArrowDown: function () { move('down'); },
+             ' ': function () { if (running) hit(); } });
+
+    function showStart() {
+      H.overlay({
+        title: 'テンプレート',
+        html: '的をタップして 10 点取ろう',
+        buttons: [{ label: 'スタート', onClick: start }]
+      });
+    }
+    function start() {
+      score = 0; running = true; hud(); draw();
+    }
+    function gameOver() {
+      running = false;
+      H.audio.win();
+      H.overlay({ title: 'クリア!', big: score + ' 点', html: 'ベスト ' + best + ' 点',
+        buttons: [{ label: 'もう一度', onClick: start }, { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }] });
+    }
+    window.resetGame = function () { running = false; score = 0; hud(); draw(); showStart(); };
+    H.pauseWhenHidden(function () { /* アクション系ならここで loop.pause(true) */ });
+
+    hud(); draw(); showStart();
+  })();
+  </script>
+</body>
+</html>
