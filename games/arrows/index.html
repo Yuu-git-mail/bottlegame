@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>矢印ぬき - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    canvas.stage-canvas { background: #ffffff; }
+    .hud-item.tappable { cursor: pointer; }
+    .hud-item.tappable b::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
+    .hud-item.hearts b { color: #e8505b; letter-spacing: 2px; font-size: 19px; }
+    .hud-item.hearts b.off { color: var(--muted); font-size: 15px; letter-spacing: 0; }
+    .ctl-btn.sm { min-width: 78px; font-size: 14px; padding: 0 8px; }
+    .ctl-btn.sm.undo { color: var(--warn); }
+    .ctl-btn.sm.hint { color: var(--info); }
+    .lv-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 44px);
+      gap: 6px;
+      justify-content: center;
+      padding: 2px;
+    }
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-btn {
+      width: 44px; height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.25); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 2px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="矢印ぬき" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item tappable" id="hud-level">面<b id="level">1/60</b></span>
+      <span class="hud-item">残り<b id="remain">0</b></span>
+      <span class="hud-item hearts"><b id="hearts">♥♥♥</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>矢印の線をタップすると、先端の向きへまっすぐ滑って盤の外へ抜ける。</li>
+            <li>進む先に他の線があると抜けられず、ぶつかって戻る（ミス 1、ハートが 1 つ減る）。</li>
+            <li>全部の線を抜いたらクリア。どの面も必ず全部抜ける。</li>
+            <li>ハートが 0 で失敗。「♥ なし」にすればミスを数えるだけで終わらない。</li>
+            <li>全 60 面。6×6 の小さな盤から 20×20 の大きな盤まで。クリアした面には ✓ が付く。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 線をタップ。下のボタンで「戻す」「ヒント」「面一覧」。</li>
+            <li>PC: クリック。Z = 戻す、H = ヒント、L = 面一覧。</li>
+            <li>↻ でその面をやり直し。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-group"><button type="button" class="ctl-btn sm undo" id="btn-undo">戻す</button></div>
+      <div class="ctl-group"><button type="button" class="ctl-btn sm hint" id="btn-hint">ヒント</button></div>
+      <div class="ctl-group"><button type="button" class="ctl-btn sm" id="btn-list">面一覧</button></div>
+      <div class="ctl-group"><button type="button" class="ctl-btn sm" id="btn-hearts">♥ あり</button></div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script id="arrows-gen">
+  // 面の生成と検証。node でも同じコードを読み込んで全面を確認する。
+  (function (root) {
+    'use strict';
+    var LEVEL_COUNT = 60;
+    var DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // 上, 右, 下, 左 (dx, dy)
+
+    function mulberry32(a) {
+      return function () {
+        a = (a + 0x6D2B79F5) | 0;
+        var t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // 面番号(0 始まり) → 盤の大きさと線の本数
+    function params(n) {
+      var size = 6 + Math.floor(n * 14 / (LEVEL_COUNT - 1));          // 6..20
+      var lines = 5 + Math.round(n * 57 / (LEVEL_COUNT - 1));          // 5..62
+      var maxLen = 3 + Math.floor(size / 5);                            // 4..7
+      var maxBends = n < 8 ? 1 : (n < 25 ? 2 : 3);
+      return { size: size, lines: lines, minLen: 2, maxLen: maxLen, maxBends: maxBends };
+    }
+
+    // 線 line (cells: [{x,y}] 尾→先端, dir) が grid 上で抜けられるか。
+    // 形全体がそのまま dir に滑るので、各マスから dir へ盤外までの帯に他の線が無いこと。
+    function canExit(grid, size, line, skipId) {
+      var d = DIRS[line.dir];
+      for (var i = 0; i < line.cells.length; i++) {
+        var x = line.cells[i].x + d[0], y = line.cells[i].y + d[1];
+        while (x >= 0 && y >= 0 && x < size && y < size) {
+          var g = grid[y * size + x];
+          if (g !== -1 && g !== skipId) return false;
+          x += d[0]; y += d[1];
+        }
+      }
+      return true;
+    }
+
+    // 逆順生成: 空の盤に「最後に抜ける線」から置く。置く線は、その時点の盤で抜けられる形だけ選ぶ。
+    function makeLevel(n) {
+      // 乱数の種を変えて何回か作り、本数が目標に届いたものか、いちばん多く置けたものを使う(種付きなので毎回同じ面)
+      var best = null;
+      for (var s = 0; s < 12; s++) {
+        var lv = makeOnce(n, s);
+        if (!best || lv.lines.length > best.lines.length) best = lv;
+        if (best.lines.length >= best.target) break;
+      }
+      return best;
+    }
+    function makeOnce(n, seedNo) {
+      var p = params(n);
+      var size = p.size;
+      var rnd = mulberry32(1000003 * (n + 1) + 7 + seedNo * 7919);
+      var grid = new Array(size * size);
+      var i, j;
+      for (i = 0; i < grid.length; i++) grid[i] = -1;
+      var lines = [];
+      var attempts = 0, maxAttempts = p.lines * 120;
+
+      function inb(x, y) { return x >= 0 && y >= 0 && x < size && y < size; }
+      function free(x, y) { return inb(x, y) && grid[y * size + x] === -1; }
+      // (x,y) から dir へ盤外まで他の線が無いか
+      function rayClear(x, y, dir) {
+        var d = DIRS[dir];
+        x += d[0]; y += d[1];
+        while (inb(x, y)) {
+          if (grid[y * size + x] !== -1) return false;
+          x += d[0]; y += d[1];
+        }
+        return true;
+      }
+
+      while (lines.length < p.lines && attempts < maxAttempts) {
+        attempts++;
+        // 置ける(先端, 向き)を全部数えて 1 つ選ぶ。先端の 1 つ手前は必ず真後ろ(矢印の軸がまっすぐ見えるように)
+        var heads = [];
+        for (var yy = 0; yy < size; yy++) for (var xx = 0; xx < size; xx++) {
+          if (grid[yy * size + xx] !== -1) continue;
+          for (var dd = 0; dd < 4; dd++) {
+            var qx = xx - DIRS[dd][0], qy = yy - DIRS[dd][1];
+            if (free(qx, qy) && rayClear(xx, yy, dd) && rayClear(qx, qy, dd)) heads.push([xx, yy, dd]);
+          }
+        }
+        if (!heads.length) break;
+        var hp = heads[Math.floor(rnd() * heads.length)];
+        var hx = hp[0], hy = hp[1], dir = hp[2];
+        var d = DIRS[dir];
+        var back = (dir + 2) % 4;
+        var bx = hx - d[0], by = hy - d[1];
+        var cells = [{ x: hx, y: hy }, { x: bx, y: by }]; // 先端→尾 の順で伸ばす
+        var inLine = {};
+        inLine[hy * size + hx] = true; inLine[by * size + bx] = true;
+        // 自分の前方の帯(ここに体を置くと U 字になるので禁止)
+        var ahead = {};
+        function markAhead(x, y) {
+          var ax = x + d[0], ay = y + d[1];
+          while (inb(ax, ay)) { ahead[ay * size + ax] = true; ax += d[0]; ay += d[1]; }
+        }
+        markAhead(hx, hy); markAhead(bx, by);
+        var len = p.minLen + Math.floor(rnd() * (p.maxLen - p.minLen + 1));
+        var curDir = back, bends = 0;
+        var cx = bx, cy = by;
+        while (cells.length < len) {
+          var cand = [];
+          for (var k = 0; k < 4; k++) {
+            if (k === (curDir + 2) % 4) continue;
+            var nx = cx + DIRS[k][0], ny = cy + DIRS[k][1];
+            if (!free(nx, ny)) continue;
+            var key = ny * size + nx;
+            if (inLine[key] || ahead[key]) continue;
+            if (!rayClear(nx, ny, dir)) continue;
+            if (k !== curDir && bends >= p.maxBends) continue;
+            // 自分の体と(直前のマス以外で)隣り合わない: 形が一本道に見えるように
+            var touch = false;
+            for (var m = 0; m < 4; m++) {
+              var tx = nx + DIRS[m][0], ty = ny + DIRS[m][1];
+              if (tx === cx && ty === cy) continue;
+              if (inLine[ty * size + tx]) { touch = true; break; }
+            }
+            if (touch) continue;
+            cand.push(k);
+          }
+          if (!cand.length) break;
+          var pick;
+          if (cand.indexOf(curDir) >= 0 && rnd() < 0.6) pick = curDir;
+          else pick = cand[Math.floor(rnd() * cand.length)];
+          if (pick !== curDir) bends++;
+          curDir = pick;
+          cx += DIRS[pick][0]; cy += DIRS[pick][1];
+          cells.push({ x: cx, y: cy });
+          inLine[cy * size + cx] = true;
+          markAhead(cx, cy);
+        }
+        var id = lines.length;
+        cells.reverse(); // 尾→先端
+        for (j = 0; j < cells.length; j++) grid[cells[j].y * size + cells[j].x] = id;
+        lines.push({ id: id, dir: dir, cells: cells });
+      }
+      return { n: n, size: size, lines: lines, target: p.lines };
+    }
+
+    // 検証: 抜ける線を順に消して全部消えるか(抜く順は何でもよい。消しても他が塞がれることは無い)
+    function solve(level) {
+      var size = level.size;
+      var grid = new Array(size * size);
+      var i;
+      for (i = 0; i < grid.length; i++) grid[i] = -1;
+      for (i = 0; i < level.lines.length; i++) {
+        var L = level.lines[i];
+        for (var j = 0; j < L.cells.length; j++) grid[L.cells[j].y * size + L.cells[j].x] = L.id;
+      }
+      var alive = {};
+      for (i = 0; i < level.lines.length; i++) alive[i] = true;
+      var order = [];
+      var progress = true;
+      while (progress) {
+        progress = false;
+        for (i = 0; i < level.lines.length; i++) {
+          if (!alive[i]) continue;
+          if (canExit(grid, size, level.lines[i], i)) {
+            var c = level.lines[i].cells;
+            for (var k = 0; k < c.length; k++) grid[c[k].y * size + c[k].x] = -1;
+            alive[i] = false;
+            order.push(i);
+            progress = true;
+          }
+        }
+      }
+      return { ok: order.length === level.lines.length, order: order };
+    }
+
+    root.ArrowsGen = { LEVEL_COUNT: LEVEL_COUNT, DIRS: DIRS, params: params, makeLevel: makeLevel, canExit: canExit, solve: solve };
+  })(typeof window !== 'undefined' ? window : globalThis);
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var G = window.ArrowsGen;
+    var BASE = 600;
+    var DIRS = G.DIRS;
+    var store = H.store('arrows');
+    var LEVEL_COUNT = G.LEVEL_COUNT;
+    var cleared = store.get('cleared', []);
+    var heartsOn = store.get('hearts', true);
+    var lvIndex = Math.max(0, Math.min(LEVEL_COUNT - 1, store.get('level', 0)));
+
+    var size = 6, cells = 0, CS = BASE / 6;
+    var lines = [];          // 面の線(固定)
+    var alive = [];          // 残っているか
+    var grid = [];           // マス → 線 id / -1
+    var remain = 0, misses = 0;
+    var history = [];        // 抜いた線 id の順
+    var hintId = -1;
+    var anims = [];          // {id, kind:'slide'|'bump', t0, dur, dist}
+    var over = false;        // クリア/失敗で入力停止
+    var overlayEl = null;
+    var raf = 0;
+
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, BASE, BASE, function (cssW, cssH, ctx, scale) {
+      ctx.scale(scale, scale);
+      draw();
+    });
+
+    // ---------- 面の読み込み ----------
+    function loadLevel(idx) {
+      if (idx < 0 || idx >= LEVEL_COUNT) return;
+      closeOverlay();
+      lvIndex = idx;
+      store.set('level', idx);
+      var lv = G.makeLevel(idx);
+      size = lv.size; CS = BASE / size; cells = size * size;
+      lines = lv.lines;
+      grid = new Array(cells);
+      var i, j;
+      for (i = 0; i < cells; i++) grid[i] = -1;
+      alive = [];
+      for (i = 0; i < lines.length; i++) {
+        alive.push(true);
+        for (j = 0; j < lines[i].cells.length; j++) grid[lines[i].cells[j].y * size + lines[i].cells[j].x] = i;
+      }
+      remain = lines.length; misses = 0; history = []; hintId = -1; anims = []; over = false;
+      hud(); draw();
+    }
+
+    function hud() {
+      document.getElementById('level').textContent = (lvIndex + 1) + '/' + LEVEL_COUNT + (cleared[lvIndex] ? ' ✓' : '');
+      document.getElementById('remain').textContent = remain;
+      var he = document.getElementById('hearts');
+      if (heartsOn) {
+        var s = '';
+        for (var i = 0; i < 3; i++) s += i < 3 - misses ? '♥' : '♡';
+        he.textContent = s; he.className = '';
+      } else {
+        he.textContent = 'ミス ' + misses; he.className = 'off';
+      }
+      document.getElementById('btn-hearts').textContent = heartsOn ? '♥ あり' : '♥ なし';
+    }
+
+    // ---------- 描画 ----------
+    function cc(v) { return (v + 0.5) * CS; }
+    function strokeLine(ctx, L, off, color, width) {
+      var d = DIRS[L.dir];
+      var ox = d[0] * off * CS, oy = d[1] * off * CS;
+      var c = L.cells, i;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      var hx = cc(c[c.length - 1].x) + ox, hy = cc(c[c.length - 1].y) + oy;
+      // 軸: 尾 → 先端マスの中心の少し手前
+      var tipBack = 0.28 * CS;
+      ctx.moveTo(cc(c[0].x) + ox, cc(c[0].y) + oy);
+      for (i = 1; i < c.length - 1; i++) ctx.lineTo(cc(c[i].x) + ox, cc(c[i].y) + oy);
+      ctx.lineTo(hx - d[0] * tipBack, hy - d[1] * tipBack);
+      ctx.stroke();
+      // 矢じり: 先端マスの中心を頂点にした山形
+      var a = 0.3 * CS, px = -d[1], py = d[0];
+      ctx.beginPath();
+      ctx.moveTo(hx - d[0] * a + px * a, hy - d[1] * a + py * a);
+      ctx.lineTo(hx + d[0] * 0.12 * CS, hy + d[1] * 0.12 * CS);
+      ctx.lineTo(hx - d[0] * a - px * a, hy - d[1] * a - py * a);
+      ctx.stroke();
+    }
+
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, BASE, BASE);
+      // 薄い格子(大きい盤では消す)
+      if (size <= 12) {
+        ctx.strokeStyle = '#eeeef4';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (var g = 1; g < size; g++) {
+          ctx.moveTo(g * CS, 0); ctx.lineTo(g * CS, BASE);
+          ctx.moveTo(0, g * CS); ctx.lineTo(BASE, g * CS);
+        }
+        ctx.stroke();
+      }
+      var w = Math.max(5, Math.min(CS * 0.26, 13));
+      var now = Date.now();
+      var animOf = {};
+      for (var k = 0; k < anims.length; k++) animOf[anims[k].id] = anims[k];
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, BASE, BASE); ctx.clip();
+      for (var i = 0; i < lines.length; i++) {
+        var A = animOf[i];
+        if (!alive[i] && !A) continue;
+        var off = 0, color = '#1c1c30';
+        if (A) {
+          var t = Math.min(1, (now - A.t0) / A.dur);
+          if (A.kind === 'slide') { off = A.dist * (t * t); }
+          else { off = 0.3 * Math.sin(Math.PI * t); color = '#e74c3c'; }
+        } else if (i === hintId) {
+          color = '#8a2be2';
+          strokeLine(ctx, lines[i], 0, 'rgba(138,43,226,0.3)', w * 2.6);
+        }
+        strokeLine(ctx, lines[i], off, color, w);
+      }
+      ctx.restore();
+    }
+
+    function tick() {
+      raf = 0;
+      var now = Date.now(), keep = [];
+      for (var i = 0; i < anims.length; i++) if (now - anims[i].t0 < anims[i].dur) keep.push(anims[i]);
+      anims = keep;
+      draw();
+      if (anims.length) raf = requestAnimationFrame(tick);
+    }
+    function startAnim(a) { anims.push(a); if (!raf) raf = requestAnimationFrame(tick); }
+
+    // ---------- ゲーム ----------
+    function exitDist(L) {
+      var d = DIRS[L.dir], m = 0;
+      for (var i = 0; i < L.cells.length; i++) {
+        var c = L.cells[i];
+        var s = d[0] > 0 ? size - c.x : d[0] < 0 ? c.x + 1 : d[1] > 0 ? size - c.y : c.y + 1;
+        if (s > m) m = s;
+      }
+      return m + 0.5;
+    }
+    function tapLine(id) {
+      if (over || id < 0 || !alive[id]) return;
+      for (var k = 0; k < anims.length; k++) if (anims[k].id === id) return;
+      var L = lines[id];
+      hintId = -1;
+      if (G.canExit(grid, size, L, id)) {
+        alive[id] = false;
+        for (var j = 0; j < L.cells.length; j++) grid[L.cells[j].y * size + L.cells[j].x] = -1;
+        remain--; history.push(id);
+        H.audio.good();
+        var dist = exitDist(L);
+        startAnim({ id: id, kind: 'slide', t0: Date.now(), dur: 180 + dist * 25, dist: dist });
+        hud();
+        if (remain === 0) setTimeout(win, 350);
+      } else {
+        misses++;
+        H.audio.bad();
+        startAnim({ id: id, kind: 'bump', t0: Date.now(), dur: 320 });
+        hud();
+        if (heartsOn && misses >= 3) { over = true; setTimeout(fail, 400); }
+        else H.toast('ぶつかった');
+      }
+    }
+    function undo() {
+      if (over || !history.length) return;
+      var id = history.pop();
+      var L = lines[id];
+      alive[id] = true;
+      for (var j = 0; j < L.cells.length; j++) grid[L.cells[j].y * size + L.cells[j].x] = id;
+      remain++; hintId = -1;
+      anims = anims.filter(function (a) { return a.id !== id; });
+      H.audio.click();
+      hud(); draw();
+    }
+    function hint() {
+      if (over) return;
+      var ok = [];
+      for (var i = 0; i < lines.length; i++) if (alive[i] && G.canExit(grid, size, lines[i], i)) ok.push(i);
+      if (!ok.length) return;
+      // 同じ線を続けて出さない
+      var pos = ok.indexOf(hintId);
+      hintId = ok[(pos + 1) % ok.length];
+      H.audio.click();
+      draw();
+    }
+    function win() {
+      over = true;
+      H.audio.win();
+      cleared[lvIndex] = true;
+      store.set('cleared', cleared);
+      hud();
+      var last = lvIndex >= LEVEL_COUNT - 1;
+      var buttons = [];
+      if (!last) buttons.push({ label: '次の面', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: '面を選ぶ', secondary: !last, onClick: function () { overlayEl = null; showLevels(); } });
+      buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; loadLevel(lvIndex); } });
+      overlayEl = H.overlay({ title: last ? '最終面クリア!' : 'クリア!', big: 'ミス ' + misses,
+        html: lines.length + ' 本 全部抜けた' + (misses === 0 ? '　ノーミス!' : ''), buttons: buttons });
+    }
+    function fail() {
+      closeOverlay();
+      overlayEl = H.overlay({ title: 'ハートが 0', html: '3 回ぶつかった。もう一度か、ハート無しで続けられる',
+        buttons: [
+          { label: 'もう一度', onClick: function () { overlayEl = null; loadLevel(lvIndex); } },
+          { label: '♥ なしで続ける', secondary: true, onClick: function () { overlayEl = null; heartsOn = false; store.set('hearts', false); over = false; hud(); } },
+          { label: '面を選ぶ', secondary: true, onClick: function () { overlayEl = null; showLevels(); } }
+        ] });
+    }
+
+    // ---------- 面一覧 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function showLevels() {
+      closeOverlay();
+      var n = 0, i;
+      for (i = 0; i < LEVEL_COUNT; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVEL_COUNT + ' 面　✓ はクリア済み</span><br>';
+      html += '<span class="lv-grid">';
+      for (i = 0; i < LEVEL_COUNT; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+
+    // ---------- 入力 ----------
+    H.onTap(canvas, function (cx, cy) {
+      var p = st.toBase(cx, cy);
+      var x = Math.floor(p.x / CS), y = Math.floor(p.y / CS);
+      if (x < 0 || y < 0 || x >= size || y >= size) return;
+      var id = grid[y * size + x];
+      if (id < 0) {
+        // 空マスなら、近い隣のマスの線を拾う(細い線の押し間違い対策)
+        var fx = p.x / CS - x - 0.5, fy = p.y / CS - y - 0.5;
+        var nx = x + (Math.abs(fx) > Math.abs(fy) ? (fx > 0 ? 1 : -1) : 0);
+        var ny = y + (Math.abs(fx) > Math.abs(fy) ? 0 : (fy > 0 ? 1 : -1));
+        if (nx >= 0 && ny >= 0 && nx < size && ny < size && Math.max(Math.abs(fx), Math.abs(fy)) > 0.3) id = grid[ny * size + nx];
+      }
+      if (id >= 0) tapLine(id);
+    });
+    H.holdButton(document.getElementById('btn-undo'), undo, null, 220);
+    H.holdButton(document.getElementById('btn-hint'), hint);
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); if (overlayEl) closeOverlay(); else showLevels(); });
+    H.holdButton(document.getElementById('btn-hearts'), function () {
+      heartsOn = !heartsOn; store.set('hearts', heartsOn); H.audio.click();
+      if (heartsOn && misses >= 3) misses = 2; // 付け直したときは残り 1 から
+      hud();
+    });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+    H.keys({
+      z: undo, Z: undo, h: hint, H: hint,
+      l: function () { if (overlayEl) closeOverlay(); else showLevels(); },
+      n: function () { if (cleared[lvIndex]) loadLevel(lvIndex + 1); }
+    });
+
+    window.resetGame = function () { loadLevel(lvIndex); };
+    window.__arrows = { state: function () { return { size: size, grid: grid, alive: alive, remain: remain, misses: misses, lines: lines, lv: lvIndex }; } };
+    H.pauseWhenHidden(function () {});
+
+    loadLevel(lvIndex);
+  })();
+  </script>
+</body>
+</html>

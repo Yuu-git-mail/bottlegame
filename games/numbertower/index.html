@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>数字の塔 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-grid { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 312px; }
+    .lv-btn {
+      width: 46px; height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.25); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 2px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .lv-btn.maze { border-bottom: 3px solid var(--info); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .overlay .lose-num { color: var(--danger); font-weight: 800; font-size: 22px; }
+    .overlay .me-num { color: var(--ok); font-weight: 800; font-size: 22px; }
+    .hud-item.me b { color: var(--warn); font-size: 20px; }
+    #hud-level { cursor: pointer; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="数字の塔" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item" id="hud-level">面<b id="level">1</b></span>
+      <span class="hud-item me">自分<b id="power">0</b></span>
+      <span class="hud-item">敵のこり<b id="left">0</b></span>
+      <span class="hud-item">鍵<b id="keys">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>自分の数字が強さ。部屋をタップして入る。</li>
+            <li>敵の数字が自分より小さければ倒せて、その数字が自分に足される。大きいと負け。</li>
+            <li>宝箱「×2」は数字が 2 倍、「+50」は足す。罠「−30」は引かれる（0 以下になるなら入れない）。</li>
+            <li>鍵 🔑 を取ると扉 🚪 を 1 つ開けられる。</li>
+            <li>全部の敵を倒すか、ドラゴン 🐉 を倒せばクリア。</li>
+            <li>塔の面: どの塔でも、いちばん下の部屋から順に入れる。</li>
+            <li>迷宮の面: 今いる部屋のとなりにしか行けない。空いた部屋は通れる。</li>
+            <li>小さい敵から倒して育てる。×2 は大きくなってから取る方が得。罠は後回し。</li>
+            <li>負けても「戻す」で 1 手前へ、何度でも。「ヒント」はクリアできる次の部屋を光らせる。</li>
+            <li>全 <span id="help-n">36</span> 面。クリアした面には ✓ が付く。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 部屋をタップ。下のボタンで戻す・ヒント・面を選ぶ</li>
+            <li>PC: クリック。Z = 戻す、H = ヒント、R = やり直し</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-row">
+        <button type="button" class="ctl-btn wide" id="btn-undo">戻す</button>
+        <button type="button" class="ctl-btn wide" id="btn-hint">ヒント</button>
+        <button type="button" class="ctl-btn wide" id="btn-list">面を選ぶ</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*ENGINE-START*/
+  var NT = (function () {
+    'use strict';
+    // 部屋の表記: e12=敵12 B100=ボス100 x2=×2 +50=+50 -30=罠30 k=鍵 d=扉 ''=床 s=開始(迷宮)
+    function parseRoom(s) {
+      if (!s || s === 's') return null;
+      var c = s.charAt(0), v = parseInt(s.slice(1), 10);
+      if (c === 'e') return { k: 'e', v: v };
+      if (c === 'B') return { k: 'B', v: v };
+      if (c === 'x') return { k: 'x', v: v };
+      if (c === '+') return { k: '+', v: v };
+      if (c === '-') return { k: '-', v: v };
+      if (c === 'k') return { k: 'k', v: 0 };
+      if (c === 'd') return { k: 'd', v: 0 };
+      return null;
+    }
+    // L: {t:'T', p, c:[[...],...]} または {t:'M', p, w, h, g:[...]}
+    function build(L) {
+      var lv = { type: L.t, p0: L.p, rooms: [], bossIdx: -1, nEnemy: 0 };
+      var i, j, r;
+      if (L.t === 'T') {
+        lv.cols = L.c.length;
+        lv.colRooms = [];
+        for (i = 0; i < L.c.length; i++) {
+          var col = [];
+          for (j = 0; j < L.c[i].length; j++) {
+            r = parseRoom(L.c[i][j]);
+            r.col = i; r.row = j; r.id = lv.rooms.length;
+            lv.rooms.push(r); col.push(r.id);
+          }
+          lv.colRooms.push(col);
+        }
+      } else {
+        lv.w = L.w; lv.h = L.h;
+        lv.cells = [];
+        lv.start = -1;
+        for (i = 0; i < L.g.length; i++) {
+          var s = L.g[i];
+          if (s === null || s === undefined) { lv.cells.push({ v: true, r: -1 }); continue; }
+          if (s === 's') lv.start = i;
+          r = parseRoom(s);
+          if (r) { r.cell = i; r.id = lv.rooms.length; lv.rooms.push(r); lv.cells.push({ v: false, r: r.id }); }
+          else lv.cells.push({ v: false, r: -1 });
+        }
+      }
+      for (i = 0; i < lv.rooms.length; i++) {
+        if (lv.rooms[i].k === 'B') lv.bossIdx = i;
+        if (lv.rooms[i].k === 'e' || lv.rooms[i].k === 'B') lv.nEnemy++;
+      }
+      return lv;
+    }
+    function initState(lv) { return { p: lv.p0, mask: 0, pos: lv.type === 'M' ? lv.start : -1, keys: 0 }; }
+    function isCleared(st, id) { return (st.mask & (1 << id)) !== 0; }
+    // 迷宮: 今いる所から空いた部屋を通って届く床の集合
+    function reach(lv, st) {
+      var seen = {}, q = [st.pos], out = [];
+      seen[st.pos] = true;
+      while (q.length) {
+        var c = q.shift(); out.push(c);
+        var x = c % lv.w, y = (c - x) / lv.w;
+        var nb = [];
+        if (x > 0) nb.push(c - 1);
+        if (x < lv.w - 1) nb.push(c + 1);
+        if (y > 0) nb.push(c - lv.w);
+        if (y < lv.h - 1) nb.push(c + lv.w);
+        for (var i = 0; i < nb.length; i++) {
+          var n = nb[i];
+          if (seen[n]) continue;
+          var cell = lv.cells[n];
+          if (cell.v) continue;
+          if (cell.r >= 0 && !isCleared(st, cell.r)) continue;
+          seen[n] = true; q.push(n);
+        }
+      }
+      return out;
+    }
+    // 入れる候補(強さは見ない)
+    function candidates(lv, st) {
+      var out = [], i;
+      if (lv.type === 'T') {
+        for (i = 0; i < lv.colRooms.length; i++) {
+          var col = lv.colRooms[i];
+          for (var j = 0; j < col.length; j++) {
+            if (!isCleared(st, col[j])) { out.push(col[j]); break; }
+          }
+        }
+      } else {
+        var rs = reach(lv, st), seen = {};
+        for (i = 0; i < rs.length; i++) {
+          var c = rs[i], x = c % lv.w, y = (c - x) / lv.w;
+          var nb = [];
+          if (x > 0) nb.push(c - 1);
+          if (x < lv.w - 1) nb.push(c + 1);
+          if (y > 0) nb.push(c - lv.w);
+          if (y < lv.h - 1) nb.push(c + lv.w);
+          for (var k = 0; k < nb.length; k++) {
+            var cell = lv.cells[nb[k]];
+            if (cell.v || cell.r < 0 || isCleared(st, cell.r) || seen[cell.r]) continue;
+            seen[cell.r] = true; out.push(cell.r);
+          }
+        }
+      }
+      return out;
+    }
+    // 部屋に入る。ok なら新しい状態、だめなら理由
+    function enter(lv, st, id) {
+      var r = lv.rooms[id];
+      var n = { p: st.p, mask: st.mask | (1 << id), pos: lv.type === 'M' ? r.cell : id, keys: st.keys };
+      if (r.k === 'e' || r.k === 'B') {
+        if (st.p <= r.v) return { ok: false, why: 'enemy', v: r.v };
+        n.p = st.p + r.v;
+      } else if (r.k === 'x') n.p = st.p * r.v;
+      else if (r.k === '+') n.p = st.p + r.v;
+      else if (r.k === '-') {
+        if (st.p - r.v <= 0) return { ok: false, why: 'trap', v: r.v };
+        n.p = st.p - r.v;
+      } else if (r.k === 'k') n.keys = st.keys + 1;
+      else if (r.k === 'd') {
+        if (st.keys <= 0) return { ok: false, why: 'door' };
+        n.keys = st.keys - 1;
+      }
+      return { ok: true, st: n };
+    }
+    function isWin(lv, st) {
+      if (lv.bossIdx >= 0 && isCleared(st, lv.bossIdx)) return true;
+      for (var i = 0; i < lv.rooms.length; i++) {
+        var r = lv.rooms[i];
+        if ((r.k === 'e' || r.k === 'B') && !isCleared(st, i)) return false;
+      }
+      return true;
+    }
+    function enemiesLeft(lv, st) {
+      var n = 0;
+      for (var i = 0; i < lv.rooms.length; i++) {
+        var r = lv.rooms[i];
+        if ((r.k === 'e' || r.k === 'B') && !isCleared(st, i)) n++;
+      }
+      return n;
+    }
+    // 全探索(倒す順の DFS＋メモ)。クリアできる順があれば true
+    function solvable(lv, st, memo) {
+      if (isWin(lv, st)) return true;
+      var key = st.mask + '|' + st.p + '|' + st.pos + '|' + st.keys;
+      if (memo[key] !== undefined) return memo[key];
+      memo[key] = false;
+      var cs = candidates(lv, st);
+      for (var i = 0; i < cs.length; i++) {
+        var e = enter(lv, st, cs[i]);
+        if (e.ok && solvable(lv, e.st, memo)) { memo[key] = true; return true; }
+      }
+      return false;
+    }
+    // クリアに繋がる次の部屋
+    function goodMoves(lv, st) {
+      var memo = {}, out = [], cs = candidates(lv, st);
+      for (var i = 0; i < cs.length; i++) {
+        var e = enter(lv, st, cs[i]);
+        if (e.ok && solvable(lv, e.st, memo)) out.push(cs[i]);
+      }
+      return out;
+    }
+    // 入れる部屋が 1 つも無い(詰み)か
+    function stuck(lv, st) {
+      if (isWin(lv, st)) return false;
+      var cs = candidates(lv, st);
+      for (var i = 0; i < cs.length; i++) if (enter(lv, st, cs[i]).ok) return false;
+      return true;
+    }
+    return { parseRoom: parseRoom, build: build, initState: initState, isCleared: isCleared, reach: reach,
+             candidates: candidates, enter: enter, isWin: isWin, enemiesLeft: enemiesLeft,
+             solvable: solvable, goodMoves: goodMoves, stuck: stuck };
+  })();
+  /*ENGINE-END*/
+
+  /*LEVELS-START*/
+  var LEVELS = [
+    {"t":"T","p":10,"c":[["e5","e6"],["e15"]]},
+    {"t":"T","p":10,"c":[["e11"],["e7","e18"]]},
+    {"t":"T","p":10,"c":[["e9","e17"],["e26"]]},
+    {"t":"M","p":10,"w":3,"h":3,"g":[null,null,"","e15","e14","","","e6","s"]},
+    {"t":"T","p":10,"c":[["e5"],["e14","e9","e31"]]},
+    {"t":"M","p":10,"w":3,"h":3,"g":["e23","","s","","e12","e8","","e50",null]},
+    {"t":"T","p":15,"c":[["e23","x2"],["e14"],["-20","-35","e6"]]},
+    {"t":"T","p":10,"c":[["e25","e7"],["x2","-35"],["e18"]]},
+    {"t":"M","p":20,"w":3,"h":3,"g":["","e23","e14","","x2","e45","s","","-30"]},
+    {"t":"T","p":15,"c":[["+10"],["e9","e23","e83"],["e50","-65"]]},
+    {"t":"T","p":10,"c":[["-15","e15","e15"],["e12","e14"],["e5"]]},
+    {"t":"M","p":10,"w":3,"h":3,"g":["s","e5","x2","e12","","-35","","e30",null]},
+    {"t":"M","p":20,"w":3,"h":3,"g":["e102","e14",null,"","e13","e33","s","x2",""]},
+    {"t":"M","p":20,"w":4,"h":3,"g":["-55","","","","+10","","e16","x2","s","e95","e21",null]},
+    {"t":"M","p":25,"w":4,"h":3,"g":["x2","e46","","-30","e10","B150","d","k","s","e26","",null]},
+    {"t":"T","p":20,"c":[["e59"],["-40","e75"],["x2","-180","e120"],["+20","+100"]]},
+    {"t":"T","p":25,"c":[["e26","e42","e16"],["e105","B465"],["+50","x2"]]},
+    {"t":"M","p":25,"w":4,"h":4,"g":["e20","k","e14","e46","d","x2","","B395","+10","","","","e135","e35","","s"]},
+    {"t":"T","p":10,"c":[["e18","+10"],["x2","e55","-55"],["e40"],["-80","e16"]]},
+    {"t":"T","p":10,"c":[["e5","e10"],["x2","-10","e63","+10"],["e45"],["B120","e30"]]},
+    {"t":"M","p":10,"w":4,"h":3,"g":["+10","e14","d","s","","e25","x2","+30","B175","","k",""]},
+    {"t":"M","p":10,"w":4,"h":4,"g":["s","","-10","","","+10","e7","e35","-10","","","e5","-25","x2","-25",""]},
+    {"t":"T","p":10,"c":[["e11","e7"],["-15","e45","B35"],["x2"],["e4","-60","+10"]]},
+    {"t":"M","p":25,"w":4,"h":4,"g":["e19","+20","",null,"e11","e208","","e22","x2","-45","","","s","e57",null,"e35"]},
+    {"t":"M","p":20,"w":4,"h":4,"g":["+20","B270","d","","-15","","","","k","x2","e18","x2","s","e13","","e20"]},
+    {"t":"T","p":30,"c":[["-125","d"],["x2","k","e25","e104","+50"],["e65"],["-155","e101","-90","x2"]]},
+    {"t":"T","p":10,"c":[["x2","+10","e8","-110","+100"],["e59","-40","d","k"],["+10","-55","e71"],["e29"]]},
+    {"t":"M","p":15,"w":5,"h":4,"g":["k",null,"e50","B440","","","","e25","e15",null,"-20","e6","","x2","d","s","+10",null,"x2","e105"]},
+    {"t":"M","p":15,"w":4,"h":4,"g":["","-20",null,"x2","","e12",null,"e12","e6",null,"","-10","s","e25","-30","B25"]},
+    {"t":"M","p":30,"w":5,"h":4,"g":["","x2",null,"e60","e188","","e34",null,"k",null,"B885","e404","e30","","+20","","-80","d","x2","s"]},
+    {"t":"M","p":30,"w":5,"h":4,"g":["e70","+30","d","","k","x2","","e16","","e95","e285","","","-230","B810","s","x2","e21","","+20"]},
+    {"t":"T","p":30,"c":[["x2"],["-160","e41","B95"],["+30"],["e50","+20","+10","-75"]]},
+    {"t":"M","p":20,"w":5,"h":4,"g":["s","","","","k","e85","e19","+10","x2","+10","+20","d","","e12","e49","","","B525","e40",""]},
+    {"t":"T","p":30,"c":[["+10","-65","B95","e80"],["x2","-60"],["e40","e20","k","d"],["e90","-100"]]},
+    {"t":"T","p":15,"c":[["e9","d","e25","-110"],["+20"],["x2","e74","e19"],["k","-160","e50"]]},
+    {"t":"T","p":15,"c":[["e8","-70","e7"],["e60","e24"],["x2","e37","-95","B360","e46"],["e68","x2"]]}
+  ];
+  /*LEVELS-END*/
+
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var BASE_W = 400, BASE_H = 480;
+    var store = H.store('numbertower');
+    var cleared = store.get('cleared', {});
+    var lvIndex = 0, lv = null, st = null, history = [], hint = -1, overlayEl = null;
+    var anim = null, animStart = 0, pulse = 0;
+    var ended = false;
+
+    var canvas = document.getElementById('cv');
+    var stage = H.canvasStage(canvas, BASE_W, BASE_H, function (cssW, cssH, ctx, scale) {
+      ctx.scale(scale, scale);
+      draw();
+    });
+    document.getElementById('help-n').textContent = LEVELS.length;
+
+    // ---------- 進行 ----------
+    function loadLevel(i) {
+      if (i < 0 || i >= LEVELS.length) return;
+      closeOverlay();
+      lvIndex = i;
+      lv = NT.build(LEVELS[i]);
+      st = NT.initState(lv);
+      history = []; hint = -1; anim = null; ended = false;
+      store.set('last', lvIndex);
+      hud(); draw();
+    }
+    function restart() { loadLevel(lvIndex); }
+    function hud() {
+      document.getElementById('level').textContent = (lvIndex + 1) + '/' + LEVELS.length + (cleared[lvIndex] ? ' ✓' : '');
+      document.getElementById('power').textContent = st ? st.p : 0;
+      document.getElementById('left').textContent = st ? NT.enemiesLeft(lv, st) : 0;
+      document.getElementById('keys').textContent = st ? st.keys : 0;
+    }
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+
+    function tapRoom(id) {
+      if (!st || anim || overlayEl || ended) return;
+      var cs = NT.candidates(lv, st);
+      if (cs.indexOf(id) < 0) { H.audio.click(); H.toast(lv.type === 'T' ? '下の部屋から順に' : 'となりの部屋にしか行けない'); return; }
+      var e = NT.enter(lv, st, id);
+      var r = lv.rooms[id];
+      hint = -1;
+      if (!e.ok) {
+        startAnim({ kind: 'lose', id: id, from: heroPos(), to: roomCenter(r) }, function () { showLose(e, r); });
+        return;
+      }
+      history.push(st);
+      var prev = st;
+      startAnim({ kind: r.k === 'e' || r.k === 'B' ? 'fight' : 'take', id: id, from: heroPos(), to: roomCenter(r), gain: e.st.p - prev.p },
+        function () {
+          st = e.st;
+          hud(); draw();
+          if (NT.isWin(lv, st)) { win(); return; }
+          if (NT.stuck(lv, st)) { showStuck(); }
+        });
+    }
+    function undo() {
+      if (overlayEl) closeOverlay();
+      if (!history.length || anim) { H.audio.click(); return; }
+      st = history.pop(); hint = -1; ended = false;
+      H.audio.click(); hud(); draw();
+    }
+    function showHint() {
+      if (!st || anim || overlayEl || ended) return;
+      var g = NT.goodMoves(lv, st);
+      if (!g.length) { H.audio.bad(); H.toast('ここからはクリアできない。戻そう'); return; }
+      hint = g[0]; H.audio.good(); draw();
+    }
+    function showLose(e, r) {
+      var html;
+      if (e.why === 'enemy') html = 'この部屋の数字は <span class="lose-num">' + r.v + '</span>。<br>今の自分は <span class="me-num">' + st.p + '</span>。<br>自分の方が大きくないと勝てない。';
+      else if (e.why === 'trap') html = 'この罠は <span class="lose-num">−' + r.v + '</span>。<br>今の自分は <span class="me-num">' + st.p + '</span>。<br>0 以下になってしまう。';
+      else html = 'この扉には鍵がいる。<br>今の鍵は <span class="me-num">0</span>。先に 🔑 を取ろう。';
+      H.audio.bad();
+      overlayEl = H.overlay({ title: 'まけた…', html: html, buttons: [
+        { label: '戻す', onClick: function () { overlayEl = null; draw(); } },
+        { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+    }
+    function showStuck() {
+      H.audio.bad();
+      overlayEl = H.overlay({ title: '手がありません', html: '入れる部屋が無い。戻して順番を変えよう。', buttons: [
+        { label: '戻す', onClick: function () { overlayEl = null; undo(); } },
+        { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+    }
+    function win() {
+      ended = true;
+      var first = !cleared[lvIndex];
+      cleared[lvIndex] = true; store.set('cleared', cleared);
+      H.audio.win(); hud();
+      var last = lvIndex === LEVELS.length - 1;
+      var n = 0;
+      for (var i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var html = (first ? '初クリア!　' : '') + 'クリア ' + n + ' / ' + LEVELS.length + ' 面';
+      var buttons = [];
+      if (!last) buttons.push({ label: '次の面へ', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; restart(); } });
+      buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+      startAnim({ kind: 'win' }, function () {
+        overlayEl = H.overlay({ title: last ? '全面クリア!' : 'クリア!', big: '強さ ' + st.p, html: html, buttons: buttons });
+      });
+    }
+    function showLevels() {
+      closeOverlay();
+      var n = 0, i;
+      for (i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVELS.length + ' 面　✓ はクリア済み　下線は迷宮</span><br>';
+      html += '<span class="lv-grid">';
+      for (i = 0; i < LEVELS.length; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + (LEVELS[i].t === 'M' ? ' maze' : '') + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; if (!lv) showStart(); } }] });
+      overlayEl.className += ' lv';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+    function showStart() {
+      var startIdx = store.get('last', 0);
+      if (startIdx >= LEVELS.length) startIdx = 0;
+      var buttons = [{ label: (startIdx > 0 || cleared[0] ? '続きから 面 ' : '面 ') + (startIdx + 1), onClick: function () { overlayEl = null; loadLevel(startIdx); } },
+                     { label: '面を選ぶ', secondary: true, onClick: function () { overlayEl = null; showLevels(); } }];
+      overlayEl = H.overlay({ title: '数字の塔', html: '自分より小さい数字の敵を倒して<br>数字を育て、塔を制覇しよう', buttons: buttons });
+    }
+
+    // ---------- 配置 ----------
+    var geo = null; // 描画に使う座標
+    function layoutTower() {
+      var nCols = lv.cols + 1;
+      var gap = 10, margin = 14;
+      var rw = Math.min(120, Math.floor((BASE_W - margin * 2 - gap * (nCols - 1)) / nCols));
+      var maxRows = 1;
+      for (var i = 0; i < lv.colRooms.length; i++) maxRows = Math.max(maxRows, lv.colRooms[i].length);
+      var ground = BASE_H - 40;
+      var rh = Math.min(96, Math.floor((ground - 60) / maxRows));
+      var total = nCols * rw + (nCols - 1) * gap;
+      var x0 = Math.floor((BASE_W - total) / 2);
+      geo = { rw: rw, rh: rh, gap: gap, x0: x0, ground: ground, nCols: nCols };
+    }
+    function roomRect(r) {
+      var x = geo.x0 + (r.col + 1) * (geo.rw + geo.gap);
+      var y = geo.ground - (r.row + 1) * geo.rh;
+      return { x: x, y: y, w: geo.rw, h: geo.rh };
+    }
+    function heroTowerRect() { return { x: geo.x0, y: geo.ground - geo.rh, w: geo.rw, h: geo.rh }; }
+    function layoutMaze() {
+      var n = lv.w + lv.h;
+      var tw = Math.min(70, Math.floor((BASE_W - 24) / n));
+      var th = Math.floor(tw * 0.58);
+      var totalH = n * th + 40;
+      var top = Math.max(50, Math.floor((BASE_H - totalH) / 2) + 20);
+      geo = { tw: tw, th: th, cx: BASE_W / 2 + (lv.h - lv.w) * tw / 2, top: top, wall: Math.floor(th * 0.55) };
+    }
+    function cellCenter(c) {
+      var x = c % lv.w, y = (c - x) / lv.w;
+      return { x: geo.cx + (x - y) * geo.tw, y: geo.top + (x + y) * geo.th + geo.th };
+    }
+    function roomCenter(r) {
+      if (lv.type === 'T') { var q = roomRect(r); return { x: q.x + q.w / 2, y: q.y + q.h - 10 }; }
+      return cellCenter(r.cell);
+    }
+    function heroPos() {
+      if (lv.type === 'T') {
+        if (st.pos < 0) { var q = heroTowerRect(); return { x: q.x + q.w / 2, y: q.y + q.h - 10 }; }
+        return roomCenter(lv.rooms[st.pos]);
+      }
+      return cellCenter(st.pos);
+    }
+    function hitTest(bx, by) {
+      var i;
+      if (lv.type === 'T') {
+        for (i = 0; i < lv.rooms.length; i++) {
+          var q = roomRect(lv.rooms[i]);
+          if (bx >= q.x && bx <= q.x + q.w && by >= q.y && by <= q.y + q.h) return { room: i };
+        }
+        return null;
+      }
+      var xp = (bx - geo.cx) / geo.tw, yp = (by - geo.top - geo.th) / geo.th;
+      var x = Math.floor((xp + yp) / 2 + 0.5), y = Math.floor((yp - xp) / 2 + 0.5);
+      if (x < 0 || y < 0 || x >= lv.w || y >= lv.h) return null;
+      var c = y * lv.w + x;
+      if (lv.cells[c].v) return null;
+      return { cell: c, room: lv.cells[c].r };
+    }
+
+    // ---------- 描画 ----------
+    function draw() {
+      var ctx = stage.ctx();
+      if (!ctx || !lv) { if (ctx) { ctx.fillStyle = '#141428'; ctx.fillRect(0, 0, BASE_W, BASE_H); } return; }
+      if (lv.type === 'T') { layoutTower(); drawTower(ctx); } else { layoutMaze(); drawMaze(ctx); }
+    }
+    function sky(ctx) {
+      var g = ctx.createLinearGradient(0, 0, 0, BASE_H);
+      g.addColorStop(0, '#1b2350'); g.addColorStop(0.7, '#3a3f7a'); g.addColorStop(1, '#5b4b7a');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      var seeds = [23, 71, 130, 188, 240, 301, 355, 60, 170, 290, 380, 110];
+      for (var i = 0; i < seeds.length; i++) { ctx.fillRect(seeds[i], (seeds[i] * 7) % 160 + 10, 2, 2); }
+      ctx.fillStyle = '#f3e9b0'; ctx.beginPath(); ctx.arc(BASE_W - 52, 48, 18, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#1b2350'; ctx.beginPath(); ctx.arc(BASE_W - 44, 42, 15, 0, Math.PI * 2); ctx.fill();
+    }
+    function num(ctx, text, x, y, size, color, stroke) {
+      ctx.font = '800 ' + size + 'px ' + 'system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = Math.max(2, size / 7); ctx.strokeStyle = stroke || 'rgba(0,0,0,0.75)';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = color; ctx.fillText(text, x, y);
+    }
+    function emoji(ctx, ch, x, y, size) {
+      ctx.font = size + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(ch, x, y);
+    }
+    function drawHero(ctx, x, y, s, swing) {
+      // x,y = 足元。s = 高さの目安
+      ctx.save();
+      ctx.strokeStyle = '#f4f4ff'; ctx.lineWidth = Math.max(2, s / 10); ctx.lineCap = 'round';
+      var head = s * 0.17, top = y - s;
+      ctx.beginPath(); ctx.arc(x, top + head, head, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, top + head * 2); ctx.lineTo(x, y - s * 0.35); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y - s * 0.35); ctx.lineTo(x - s * 0.2, y); ctx.moveTo(x, y - s * 0.35); ctx.lineTo(x + s * 0.2, y); ctx.stroke();
+      var ax = x, ay = top + head * 2.6;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(x - s * 0.22, ay + s * 0.22); ctx.stroke();
+      var a = swing ? -1.1 + swing * 1.6 : -0.6;
+      var hx = x + Math.cos(a) * s * 0.3, hy = ay + Math.sin(a) * s * 0.3;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(hx, hy); ctx.stroke();
+      ctx.strokeStyle = '#9fd3ff'; ctx.lineWidth = Math.max(2, s / 9);
+      ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(a - 0.5) * s * 0.42, hy + Math.sin(a - 0.5) * s * 0.42); ctx.stroke();
+      ctx.restore();
+    }
+    function drawSlime(ctx, x, y, s, shake) {
+      ctx.save(); ctx.translate(shake || 0, 0);
+      ctx.fillStyle = '#3ddc84';
+      ctx.beginPath(); ctx.ellipse(x, y - s * 0.3, s * 0.42, s * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#8ff5b8'; ctx.beginPath(); ctx.ellipse(x - s * 0.12, y - s * 0.45, s * 0.1, s * 0.06, -0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#10301e';
+      ctx.beginPath(); ctx.arc(x - s * 0.14, y - s * 0.32, s * 0.05, 0, Math.PI * 2); ctx.arc(x + s * 0.14, y - s * 0.32, s * 0.05, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    function drawSkull(ctx, x, y, s, shake) {
+      ctx.save(); ctx.translate(shake || 0, 0);
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = Math.max(2, s / 12); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - s * 0.3, y - s * 0.05); ctx.lineTo(x + s * 0.3, y - s * 0.55);
+      ctx.moveTo(x + s * 0.3, y - s * 0.05); ctx.lineTo(x - s * 0.3, y - s * 0.55); ctx.stroke();
+      ctx.fillStyle = '#f0f0f0';
+      ctx.beginPath(); ctx.arc(x, y - s * 0.38, s * 0.26, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(x - s * 0.16, y - s * 0.26, s * 0.32, s * 0.18);
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.arc(x - s * 0.1, y - s * 0.4, s * 0.07, 0, Math.PI * 2); ctx.arc(x + s * 0.1, y - s * 0.4, s * 0.07, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(x - s * 0.1, y - s * 0.2, s * 0.04, s * 0.08); ctx.fillRect(x + s * 0.06, y - s * 0.2, s * 0.04, s * 0.08);
+      ctx.restore();
+    }
+    function drawChest(ctx, x, y, s, color) {
+      ctx.fillStyle = color; ctx.fillRect(x - s * 0.34, y - s * 0.5, s * 0.68, s * 0.46);
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - s * 0.34, y - s * 0.3, s * 0.68, s * 0.04);
+      ctx.fillStyle = '#ffe680'; ctx.fillRect(x - s * 0.06, y - s * 0.34, s * 0.12, s * 0.12);
+    }
+    function drawSpikes(ctx, x, y, s) {
+      ctx.fillStyle = '#c9c9d9';
+      for (var i = -2; i <= 2; i++) {
+        ctx.beginPath(); ctx.moveTo(x + i * s * 0.16 - s * 0.07, y - s * 0.05); ctx.lineTo(x + i * s * 0.16, y - s * 0.5); ctx.lineTo(x + i * s * 0.16 + s * 0.07, y - s * 0.05); ctx.fill();
+      }
+    }
+    // 部屋の中身。x,y = 床の中央、s = 大きさ、a = アニメ(省略可)
+    function drawContent(ctx, r, x, y, s, a) {
+      var shake = a && a.kind === 'fight' && a.t > 0.3 && a.t < 0.7 ? Math.sin(a.t * 60) * s * 0.08 : 0;
+      var scale = a && a.t > 0.7 ? Math.max(0, 1 - (a.t - 0.7) / 0.3) : 1;
+      ctx.save();
+      if (scale !== 1) { ctx.translate(x, y); ctx.scale(scale, scale); ctx.translate(-x, -y); }
+      var numY = y - s * 0.78, color = '#fff';
+      if (r.k === 'e') {
+        if (r.v < 40) drawSlime(ctx, x, y, s, shake); else drawSkull(ctx, x, y, s, shake);
+        color = '#ff8a80';
+      } else if (r.k === 'B') { emoji(ctx, '🐉', x + shake, y - s * 0.3, s * 0.62); color = '#ff5252'; }
+      else if (r.k === 'x') { drawChest(ctx, x, y, s, '#e6a817'); color = '#ffe680'; }
+      else if (r.k === '+') { drawChest(ctx, x, y, s, '#4e8df5'); color = '#9fd3ff'; }
+      else if (r.k === '-') { drawSpikes(ctx, x, y, s); color = '#c9c9d9'; }
+      else if (r.k === 'k') { emoji(ctx, '🔑', x, y - s * 0.3, s * 0.5); }
+      else if (r.k === 'd') { emoji(ctx, '🚪', x, y - s * 0.3, s * 0.55); }
+      var label = r.k === 'x' ? '×' + r.v : r.k === '+' ? '+' + r.v : r.k === '-' ? '−' + r.v : (r.k === 'e' || r.k === 'B') ? String(r.v) : '';
+      if (label) num(ctx, label, x, numY, Math.round(s * 0.34), color);
+      ctx.restore();
+    }
+    function glow(ctx, path, strong) {
+      ctx.save();
+      ctx.lineWidth = 3; ctx.strokeStyle = strong ? 'rgba(255,230,80,' + (0.6 + 0.4 * Math.sin(pulse * 6)) + ')' : 'rgba(255,255,255,0.55)';
+      path(); ctx.stroke();
+      ctx.restore();
+    }
+    function drawTower(ctx) {
+      sky(ctx);
+      ctx.fillStyle = '#2b3d2b'; ctx.fillRect(0, geo.ground, BASE_W, BASE_H - geo.ground);
+      ctx.fillStyle = '#3d5a3d'; ctx.fillRect(0, geo.ground, BASE_W, 6);
+      var cs = NT.candidates(lv, st), i;
+      // 勇者の塔
+      var ht = heroTowerRect();
+      drawBlock(ctx, ht.x, ht.y, ht.w, ht.h, true, '#6b6b86');
+      ctx.fillStyle = '#9a9ab8'; ctx.fillRect(ht.x - 3, ht.y - 8, ht.w + 6, 8);
+      for (i = 0; i < 4; i++) ctx.fillRect(ht.x - 3 + i * (ht.w + 6) / 3.5, ht.y - 16, (ht.w + 6) / 7, 8);
+      // 各塔
+      for (i = 0; i < lv.colRooms.length; i++) {
+        var col = lv.colRooms[i];
+        var topR = roomRect(lv.rooms[col[col.length - 1]]);
+        ctx.fillStyle = '#9a9ab8'; ctx.fillRect(topR.x - 3, topR.y - 8, topR.w + 6, 8);
+        for (var k = 0; k < 4; k++) ctx.fillRect(topR.x - 3 + k * (topR.w + 6) / 3.5, topR.y - 16, (topR.w + 6) / 7, 8);
+        for (var j = 0; j < col.length; j++) {
+          var r = lv.rooms[col[j]], q = roomRect(r);
+          var done = NT.isCleared(st, r.id);
+          var isCand = cs.indexOf(r.id) >= 0;
+          drawBlock(ctx, q.x, q.y, q.w, q.h, done, done ? '#4a4a66' : (r.k === 'B' ? '#7a2e3a' : r.k === 'd' ? '#5a4a3a' : '#6b4f9a'));
+          if (!done) {
+            var a = anim && anim.id === r.id ? anim : null;
+            drawContent(ctx, r, q.x + q.w / 2, q.y + q.h - 10, Math.min(q.w, q.h) * 0.9, a);
+            if (!isCand) { ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(q.x, q.y, q.w, q.h); }
+          }
+          if (hint === r.id) glow(ctx, (function (qq) { return function () { ctx.strokeRect(qq.x + 1.5, qq.y + 1.5, qq.w - 3, qq.h - 3); }; })(q), true);
+        }
+      }
+      drawHeroAnim(ctx);
+    }
+    function drawBlock(ctx, x, y, w, h, open, color) {
+      ctx.fillStyle = '#7d7d9c'; ctx.fillRect(x - 3, y, w + 6, h);
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      for (var yy = y + 6; yy < y + h; yy += 12) ctx.fillRect(x - 3, yy, w + 6, 1);
+      ctx.fillStyle = open ? '#2a2a44' : color;
+      ctx.fillRect(x + 4, y + 6, w - 8, h - 8);
+      if (open) { ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(x + 4, y + 6, w - 8, h - 8); }
+    }
+    function drawMaze(ctx) {
+      var g = ctx.createLinearGradient(0, 0, 0, BASE_H);
+      g.addColorStop(0, '#3a1d4e'); g.addColorStop(1, '#7a2a3a');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, BASE_W, BASE_H);
+      // 溶岩のゆらぎ
+      ctx.fillStyle = 'rgba(255,120,40,0.12)';
+      for (var i = 0; i < 6; i++) { ctx.beginPath(); ctx.ellipse(60 + i * 60, 420 + (i % 2) * 50, 40, 12, 0, 0, Math.PI * 2); ctx.fill(); }
+      var cs = NT.candidates(lv, st);
+      var reach = NT.reach(lv, st), reachSet = {};
+      for (i = 0; i < reach.length; i++) reachSet[reach[i]] = true;
+      var tw = geo.tw, th = geo.th;
+      // 奥から手前へ
+      for (var y = 0; y < lv.h; y++) for (var x = 0; x < lv.w; x++) {
+        var c = y * lv.w + x, cell = lv.cells[c];
+        if (cell.v) continue;
+        var p = cellCenter(c);
+        var r = cell.r >= 0 ? lv.rooms[cell.r] : null;
+        var done = r ? NT.isCleared(st, r.id) : true;
+        var isCand = r && cs.indexOf(r.id) >= 0;
+        var top = r && !done ? (r.k === 'B' ? '#8a3a3a' : r.k === 'd' ? '#6a5a3a' : '#5a4a8a') : (reachSet[c] ? '#6e6e94' : '#4e4e6e');
+        drawTile(ctx, p.x, p.y, tw, th, geo.wall, top);
+        if (r && !done) {
+          var a = anim && anim.id === r.id ? anim : null;
+          drawContent(ctx, r, p.x, p.y + th * 0.25, Math.min(tw * 1.1, 70), a);
+          if (!isCand) { ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.35)'; tilePath(ctx, p.x, p.y, tw, th); ctx.fill(); ctx.restore(); }
+        }
+        if (r && hint === r.id) glow(ctx, (function (pp) { return function () { tilePath(ctx, pp.x, pp.y, tw, th); }; })(p), true);
+        if (c === st.pos && !(anim && anim.kind !== 'win')) drawHero(ctx, p.x, p.y + th * 0.3, Math.min(tw * 0.9, 56));
+      }
+      drawHeroAnim(ctx);
+    }
+    function tilePath(ctx, x, y, tw, th) {
+      ctx.beginPath(); ctx.moveTo(x, y - th); ctx.lineTo(x + tw, y); ctx.lineTo(x, y + th); ctx.lineTo(x - tw, y); ctx.closePath();
+    }
+    function drawTile(ctx, x, y, tw, th, wall, top) {
+      ctx.fillStyle = '#2d2540';
+      ctx.beginPath(); ctx.moveTo(x - tw, y); ctx.lineTo(x, y + th); ctx.lineTo(x, y + th + wall); ctx.lineTo(x - tw, y + wall); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#3a3050';
+      ctx.beginPath(); ctx.moveTo(x + tw, y); ctx.lineTo(x, y + th); ctx.lineTo(x, y + th + wall); ctx.lineTo(x + tw, y + wall); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = top; tilePath(ctx, x, y, tw, th); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    function drawHeroAnim(ctx) {
+      var s = lv.type === 'T' ? Math.min(geo.rw, geo.rh) * 0.8 : Math.min(geo.tw * 0.9, 56);
+      if (!anim || anim.kind === 'win') {
+        if (lv.type === 'T') { var p = heroPos(); drawHero(ctx, p.x, p.y, s, anim ? 0.5 + 0.5 * Math.sin(pulse * 10) : 0); }
+        if (anim && anim.kind === 'win') {
+          var p2 = heroPos();
+          for (var i = 0; i < 10; i++) {
+            var ang = i / 10 * Math.PI * 2, rad = 20 + anim.t * 90;
+            ctx.fillStyle = ['#ffe680', '#ff8a80', '#9fd3ff', '#3ddc84'][i % 4];
+            ctx.beginPath(); ctx.arc(p2.x + Math.cos(ang) * rad, p2.y - s * 0.5 + Math.sin(ang) * rad, 4, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+        return;
+      }
+      var t = anim.t, f = anim.from, to = anim.to;
+      var mv = Math.min(1, t / 0.3);
+      var hx = f.x + (to.x - f.x) * mv, hy = f.y + (to.y - f.y) * mv - Math.sin(mv * Math.PI) * 40;
+      var swing = anim.kind === 'fight' && t > 0.3 && t < 0.7 ? (t - 0.3) / 0.4 : 0;
+      drawHero(ctx, hx - (t < 0.7 && anim.kind !== 'take' ? s * 0.35 : 0), hy, s, swing);
+      if (anim.kind === 'fight' && t > 0.4 && t < 0.6) {
+        ctx.fillStyle = 'rgba(255,255,200,' + (0.9 - (t - 0.4) * 4) + ')';
+        ctx.beginPath(); ctx.arc(to.x, to.y - s * 0.4, s * (0.2 + (t - 0.4) * 2), 0, Math.PI * 2); ctx.fill();
+      }
+      if (anim.kind === 'lose' && t > 0.4) {
+        ctx.fillStyle = 'rgba(231,76,60,' + Math.min(0.5, (t - 0.4)) + ')'; ctx.fillRect(0, 0, BASE_W, BASE_H);
+        num(ctx, '×', to.x, to.y - s * 0.5, 44, '#ff5252');
+      }
+      if (anim.kind !== 'lose' && t > 0.6 && anim.gain !== 0) {
+        var gy = to.y - s - (t - 0.6) * 60;
+        var txt = anim.gain > 0 ? '+' + anim.gain : '−' + (-anim.gain);
+        num(ctx, txt, to.x, gy, 26, anim.gain > 0 ? '#ffe680' : '#ff8a80');
+      }
+    }
+
+    // ---------- アニメ ----------
+    var loop = H.loop(function (dt) {
+      pulse += dt;
+      if (anim) {
+        anim.t = Math.min(1, (performance.now() - animStart) / anim.dur);
+        if (anim.t >= 1) { var cb = anim.cb; anim = null; if (cb) cb(); }
+      }
+    }, draw);
+    function startAnim(a, cb) {
+      a.t = 0; a.cb = cb; a.dur = a.kind === 'win' ? 700 : a.kind === 'take' ? 480 : 620;
+      anim = a; animStart = performance.now();
+      if (a.kind === 'fight') { H.audio.beep(300, 0.08, 'square', 0.05); setTimeout(function () { H.audio.good(); }, 300); }
+      else if (a.kind === 'take') setTimeout(function () { H.audio.good(); }, 200);
+    }
+
+    // ---------- 入力 ----------
+    H.onTap(canvas, function (cx, cy) {
+      if (!lv) return;
+      if (overlayEl) return;
+      var p = stage.toBase(cx, cy);
+      var h = hitTest(p.x, p.y);
+      if (!h) return;
+      if (h.room >= 0) { tapRoom(h.room); return; }
+      if (lv.type === 'M' && h.cell !== undefined && !anim && !ended) {
+        var rs = NT.reach(lv, st);
+        if (rs.indexOf(h.cell) >= 0 && h.cell !== st.pos) {
+          st = { p: st.p, mask: st.mask, pos: h.cell, keys: st.keys };
+          H.audio.click(); draw();
+        }
+      }
+    });
+    H.holdButton(document.getElementById('btn-undo'), undo, null, 250);
+    H.holdButton(document.getElementById('btn-hint'), showHint);
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); showLevels(); });
+    H.keys({ z: undo, Z: undo, h: showHint, H: showHint, r: function () { if (lv) restart(); }, R: function () { if (lv) restart(); } });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+    window.resetGame = function () { if (lv) restart(); else showStart(); };
+    // 画面を見ないデバッグ用(selenium の確認にも使う)
+    window.__dbg = { lv: function () { return lv; }, st: function () { return st; },
+      center: function (id) { draw(); return roomCenter(lv.rooms[id]); } };
+    H.pauseWhenHidden(function () { /* ターン制なので止めるものは無い */ });
+
+    // 開始前にも塔を見せる(続きの面を裏に出しておく)
+    loadLevel(Math.min(store.get('last', 0), LEVELS.length - 1));
+    loop.start(); showStart();
+  })();
+  </script>
+</body>
+</html>
