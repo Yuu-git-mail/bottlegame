@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>コラムス風 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-controls { gap: 6px; }
+    .app-controls .ctl-btn { min-width: 56px; padding: 0 8px; white-space: nowrap; }
+    .app-controls .ctl-btn.wide { min-width: 80px; font-size: 15px; }
+    .app-controls .ctl-btn.small { min-width: 44px; font-size: 14px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="コラムス風" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item">レベル<b id="level">1</b></span>
+      <span class="hud-item accent">最大連鎖<b id="chain">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>縦 3 個の宝石が落ちてくる。中の並び順を入れ替えて置く。</li>
+            <li>同じ宝石が縦・横・斜めに 3 つ以上並ぶと消える。</li>
+            <li>消えた後に落ちてまた並ぶと連鎖。連鎖が続くほど点が大きく伸びる。</li>
+            <li>一番上まで積み上がるとゲームオーバー。</li>
+            <li>宝石を 30 個消すごとにレベルが上がり、落ちる速さが増す。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下のボタン ◀ ▶ で移動、「並べ替え」で順を回す、「落下」を押している間は速く落ちる。盤面を左右にスワイプで移動、下スワイプで一気に落下、タップで並べ替え。</li>
+            <li>PC: ← → 移動、↑ / スペース 並べ替え、↓ 速く落とす、Enter 一気に落下、P 一時停止。</li>
+          </ul>
+          <h3>得点</h3>
+          <ul>
+            <li>宝石 1 個 10 点 × 連鎖数。4 個以上同時に消すとおまけ。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn" id="btn-left" aria-label="左">◀</button>
+      <button type="button" class="ctl-btn" id="btn-right" aria-label="右">▶</button>
+      <button type="button" class="ctl-btn wide" id="btn-rotate">並べ替え</button>
+      <button type="button" class="ctl-btn wide" id="btn-drop">落下</button>
+      <button type="button" class="ctl-btn small" id="btn-pause" aria-label="一時停止">❙❙</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ===== ロジック(node で検証できるよう DOM に触らない) =====
+    // @logic-start
+    var COLS = 6, ROWS = 13, KINDS = 6;
+    var SPAWN_X = 2, SPAWN_Y = 2; // y は一番下の宝石の行
+
+    function newBoard() {
+      var b = [];
+      for (var r = 0; r < ROWS; r++) { var row = []; for (var c = 0; c < COLS; c++) row.push(0); b.push(row); }
+      return b;
+    }
+    function randGem() { return Math.floor(Math.random() * KINDS) + 1; }
+    function randomPiece() { return { x: SPAWN_X, y: SPAWN_Y, gems: [randGem(), randGem(), randGem()] }; }
+
+    // 柱 (x, y) が盤に置けるか。y-2..y の 3 マスが空で、x が盤内
+    function canPlace(board, x, y) {
+      if (x < 0 || x >= COLS || y >= ROWS) return false;
+      for (var i = 0; i < 3; i++) {
+        var r = y - i;
+        if (r >= 0 && board[r][x] !== 0) return false;
+      }
+      return true;
+    }
+    function lockPiece(board, p) {
+      for (var i = 0; i < 3; i++) {
+        var r = p.y - i;
+        if (r >= 0 && r < ROWS) board[r][p.x] = p.gems[2 - i]; // gems[0]=上, [2]=下
+      }
+    }
+    function cycle(p) { var g = p.gems; p.gems = [g[2], g[0], g[1]]; }
+
+    // 縦横斜め 3 つ以上。戻り値: {r,c} の配列(重複なし)
+    function findMatches(board) {
+      var hit = {}, out = [];
+      var dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+      for (var r = 0; r < ROWS; r++) {
+        for (var c = 0; c < COLS; c++) {
+          var g = board[r][c];
+          if (!g) continue;
+          for (var d = 0; d < dirs.length; d++) {
+            var dr = dirs[d][0], dc = dirs[d][1];
+            // 線の先頭だけ数える(手前が同じ色なら飛ばす)
+            var pr = r - dr, pc = c - dc;
+            if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS && board[pr][pc] === g) continue;
+            var n = 1, rr = r + dr, cc = c + dc;
+            while (rr >= 0 && rr < ROWS && cc >= 0 && cc < COLS && board[rr][cc] === g) { n++; rr += dr; cc += dc; }
+            if (n >= 3) {
+              for (var k = 0; k < n; k++) {
+                var key = (r + dr * k) + ',' + (c + dc * k);
+                if (!hit[key]) { hit[key] = true; out.push({ r: r + dr * k, c: c + dc * k }); }
+              }
+            }
+          }
+        }
+      }
+      return out;
+    }
+    function removeCells(board, cells) { for (var i = 0; i < cells.length; i++) board[cells[i].r][cells[i].c] = 0; }
+    // 落下。動いたら true
+    function applyGravity(board) {
+      var moved = false;
+      for (var c = 0; c < COLS; c++) {
+        var w = ROWS - 1;
+        for (var r = ROWS - 1; r >= 0; r--) {
+          if (board[r][c] !== 0) {
+            if (w !== r) { board[w][c] = board[r][c]; board[r][c] = 0; moved = true; }
+            w--;
+          }
+        }
+      }
+      return moved;
+    }
+    function scoreFor(count, chain) {
+      var s = count * 10 * chain;
+      if (count >= 4) s += (count - 3) * 20 * chain;
+      return s;
+    }
+    function speedFor(level) { return Math.max(0.12, 0.9 * Math.pow(0.85, level - 1)); }
+    // @logic-end
+
+    // ===== 描画と進行 =====
+    var CELL = 40, SIDE = 96;
+    var BOARD_W = COLS * CELL, BOARD_H = ROWS * CELL;
+    var BASE_W = BOARD_W + SIDE, BASE_H = BOARD_H;
+    var GEMS = {
+      1: { main: '#ef4444', light: '#fca5a5', dark: '#991b1b' },
+      2: { main: '#3b82f6', light: '#93c5fd', dark: '#1e40af' },
+      3: { main: '#22c55e', light: '#86efac', dark: '#166534' },
+      4: { main: '#eab308', light: '#fef08a', dark: '#854d0e' },
+      5: { main: '#a855f7', light: '#d8b4fe', dark: '#6b21a8' },
+      6: { main: '#06b6d4', light: '#a5f3fc', dark: '#155e75' }
+    };
+
+    var store = H.store('columns');
+    var best = store.get('best', 0);
+    var board = newBoard(), piece = null, nextPiece = null;
+    var score = 0, level = 1, cleared = 0, maxChain = 0, chain = 0;
+    var state = 'idle'; // idle | fall | flash | drop | over
+    var timer = 0, fallT = 0, softDrop = false;
+    var flashCells = [], flashOn = true, floatMsg = null;
+    var pauseOv = null, paused = false;
+
+    var canvas = document.getElementById('cv');
+    var viewScale = 1, viewW = BASE_W, viewH = BASE_H, st = null;
+    st = H.canvasStage(canvas, BASE_W, BASE_H, function (w, h, c, scale) { viewScale = scale; viewW = w; viewH = h; draw(); });
+
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('level').textContent = level;
+      document.getElementById('chain').textContent = maxChain;
+    }
+    function addScore(n) { score += n; if (score > best) { best = score; store.set('best', best); } }
+
+    // ----- 進行 -----
+    function spawn() {
+      piece = nextPiece || randomPiece();
+      nextPiece = randomPiece();
+      fallT = 0;
+      if (!canPlace(board, piece.x, piece.y)) {
+        lockPiece(board, piece); // 見えるように置いてから終了
+        piece = null;
+        gameOver();
+        return;
+      }
+      state = 'fall';
+    }
+    function lockAndResolve() {
+      lockPiece(board, piece);
+      piece = null;
+      H.audio.click();
+      chain = 0;
+      resolve();
+    }
+    // 消去があれば flash 状態に、無ければ次の柱
+    function resolve() {
+      var m = findMatches(board);
+      if (m.length === 0) {
+        // 一番上の行に残っていたら終了
+        for (var c = 0; c < COLS; c++) if (board[0][c] !== 0) { gameOver(); return; }
+        spawn();
+        return;
+      }
+      chain++;
+      if (chain > maxChain) maxChain = chain;
+      addScore(scoreFor(m.length, chain));
+      cleared += m.length;
+      var newLevel = Math.floor(cleared / 30) + 1;
+      if (newLevel > level) { level = newLevel; H.toast('レベル ' + level); }
+      if (chain >= 2) { floatMsg = { text: chain + ' 連鎖!', t: 1.0 }; H.audio.win(); } else { H.audio.good(); }
+      hud();
+      flashCells = m; flashOn = true; timer = 0;
+      state = 'flash';
+    }
+    function update(dt) {
+      if (floatMsg) { floatMsg.t -= dt; if (floatMsg.t <= 0) floatMsg = null; }
+      if (state === 'fall' && piece) {
+        var iv = speedFor(level);
+        fallT += dt * (softDrop ? 10 : 1);
+        if (fallT >= iv) {
+          fallT -= iv;
+          if (canPlace(board, piece.x, piece.y + 1)) { piece.y++; if (softDrop) addScore(1); }
+          else lockAndResolve();
+        }
+      } else if (state === 'flash') {
+        timer += dt;
+        flashOn = Math.floor(timer / 0.08) % 2 === 0;
+        if (timer >= 0.4) {
+          removeCells(board, flashCells); flashCells = [];
+          timer = 0; state = 'drop';
+        }
+      } else if (state === 'drop') {
+        timer += dt;
+        if (timer >= 0.12) {
+          timer = 0;
+          applyGravity(board);
+          resolve();
+        }
+      }
+    }
+
+    // ----- 操作 -----
+    function move(dx) {
+      if (state !== 'fall' || !piece || paused) return;
+      if (canPlace(board, piece.x + dx, piece.y)) { piece.x += dx; H.audio.beep(400, 0.03, 'square', 0.02); }
+    }
+    function rotate(e) {
+      if (e && e.repeat) return;
+      if (state !== 'fall' || !piece || paused) return;
+      cycle(piece); H.audio.beep(700, 0.04, 'square', 0.03);
+    }
+    function stepDown() {
+      if (state !== 'fall' || !piece || paused) return;
+      if (canPlace(board, piece.x, piece.y + 1)) { piece.y++; addScore(1); fallT = 0; }
+      else lockAndResolve();
+    }
+    function hardDrop(e) {
+      if (e && e.repeat) return;
+      if (state !== 'fall' || !piece || paused) return;
+      var n = 0;
+      while (canPlace(board, piece.x, piece.y + 1)) { piece.y++; n++; }
+      addScore(n * 2);
+      lockAndResolve();
+    }
+
+    H.holdButton(document.getElementById('btn-left'), function () { move(-1); }, null, 130);
+    H.holdButton(document.getElementById('btn-right'), function () { move(1); }, null, 130);
+    H.holdButton(document.getElementById('btn-rotate'), rotate, null, 0);
+    H.holdButton(document.getElementById('btn-drop'), function () { softDrop = true; stepDown(); }, function () { softDrop = false; }, 0);
+    H.holdButton(document.getElementById('btn-pause'), function () { togglePause(); }, null, 0);
+    H.swipe(canvas, function (dir) {
+      if (dir === 'left') move(-1);
+      else if (dir === 'right') move(1);
+      else if (dir === 'down') hardDrop();
+      else if (dir === 'up') rotate();
+    }, function () { rotate(); });
+    var keyMap = {
+      ArrowLeft: function () { move(-1); }, ArrowRight: function () { move(1); },
+      ArrowUp: rotate, ' ': rotate, z: rotate, x: rotate,
+      ArrowDown: function () { stepDown(); }, Enter: hardDrop,
+      p: togglePause, P: togglePause, Escape: togglePause
+    };
+    keyMap.__repeat = true;
+    H.keys(keyMap);
+
+    // ----- 描画 -----
+    function drawGem(ctx, x, y, size, id, bright) {
+      var g = GEMS[id]; if (!g) return;
+      var pad = Math.max(2, size * 0.07), l = x + pad, t = y + pad, w = size - pad * 2, h = size - pad * 2;
+      var cx = l + w / 2, cy = t + h / 2;
+      if (bright) { ctx.fillStyle = '#fff'; ctx.fillRect(l, t, w, h); return; }
+      var grad = ctx.createLinearGradient(l, t, l + w, t + h);
+      grad.addColorStop(0, g.light); grad.addColorStop(0.5, g.main); grad.addColorStop(1, g.dark);
+      ctx.fillStyle = grad; ctx.fillRect(l, t, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.2; ctx.strokeRect(l, t, w, h);
+      ctx.beginPath();
+      ctx.moveTo(l, t); ctx.lineTo(cx, cy); ctx.moveTo(l + w, t); ctx.lineTo(cx, cy);
+      ctx.moveTo(l, t + h); ctx.lineTo(cx, cy); ctx.moveTo(l + w, t + h); ctx.lineTo(cx, cy);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.beginPath(); ctx.moveTo(cx, t + 3); ctx.lineTo(l + w - 3, cy); ctx.lineTo(cx, cy); ctx.fill();
+    }
+    function draw() {
+      if (!st) return;
+      var ctx = st.ctx(); if (!ctx) return;
+      ctx.clearRect(0, 0, viewW, viewH);
+      ctx.save();
+      ctx.scale(viewScale, viewScale);
+      ctx.fillStyle = '#0b0f19'; ctx.fillRect(0, 0, BOARD_W, BOARD_H);
+      ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
+      for (var r = 0; r <= ROWS; r++) { ctx.beginPath(); ctx.moveTo(0, r * CELL); ctx.lineTo(BOARD_W, r * CELL); ctx.stroke(); }
+      for (var c = 0; c <= COLS; c++) { ctx.beginPath(); ctx.moveTo(c * CELL, 0); ctx.lineTo(c * CELL, BOARD_H); ctx.stroke(); }
+      // 危険ライン
+      ctx.fillStyle = 'rgba(231,76,60,0.12)'; ctx.fillRect(0, 0, BOARD_W, CELL * 3);
+      var flash = {};
+      if (state === 'flash') for (var i = 0; i < flashCells.length; i++) flash[flashCells[i].r + ',' + flashCells[i].c] = true;
+      for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+        var id = board[r][c]; if (!id) continue;
+        var f = flash[r + ',' + c];
+        if (f && !flashOn) continue;
+        drawGem(ctx, c * CELL, r * CELL, CELL, id, f);
+      }
+      if (piece && state === 'fall') {
+        // 着地予告
+        var gy = piece.y; while (canPlace(board, piece.x, gy + 1)) gy++;
+        ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(piece.x * CELL, Math.max(0, gy - 2) * CELL, CELL, (gy - Math.max(0, gy - 2) + 1) * CELL);
+        for (i = 0; i < 3; i++) { var pr = piece.y - i; if (pr >= 0) drawGem(ctx, piece.x * CELL, pr * CELL, CELL, piece.gems[2 - i]); }
+      }
+      // サイドパネル
+      var sx = BOARD_W + 8;
+      ctx.fillStyle = '#a9a9c9'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText('NEXT', sx, 22);
+      ctx.fillStyle = '#141428'; ctx.fillRect(sx, 30, SIDE - 16, CELL * 3 + 8);
+      if (nextPiece) for (i = 0; i < 3; i++) drawGem(ctx, sx + (SIDE - 16 - CELL) / 2, 34 + i * CELL, CELL, nextPiece.gems[i]);
+      ctx.fillStyle = '#a9a9c9'; ctx.fillText('レベル', sx, 180);
+      ctx.fillStyle = '#f4f4ff'; ctx.font = 'bold 24px system-ui, sans-serif'; ctx.fillText(String(level), sx, 208);
+      ctx.fillStyle = '#a9a9c9'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.fillText('消した数', sx, 250);
+      ctx.fillStyle = '#f4f4ff'; ctx.font = 'bold 24px system-ui, sans-serif'; ctx.fillText(String(cleared), sx, 278);
+      ctx.fillStyle = '#a9a9c9'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.fillText('次のレベル', sx, 320);
+      ctx.fillStyle = '#f5b041'; ctx.font = 'bold 20px system-ui, sans-serif'; ctx.fillText((30 - cleared % 30) + ' 個', sx, 346);
+      if (chain >= 1 && state !== 'fall') {
+        ctx.fillStyle = '#a9a9c9'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.fillText('連鎖', sx, 400);
+        ctx.fillStyle = '#f5b041'; ctx.font = 'bold 30px system-ui, sans-serif'; ctx.fillText(String(chain), sx, 434);
+      }
+      if (floatMsg) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, floatMsg.t * 2);
+        ctx.fillStyle = '#f5b041'; ctx.font = 'bold 30px system-ui, sans-serif'; ctx.textAlign = 'center';
+        ctx.shadowColor = '#000'; ctx.shadowBlur = 8;
+        ctx.fillText(floatMsg.text, BOARD_W / 2, BOARD_H / 2 - (1 - floatMsg.t) * 30);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    // ----- ループ・開始・停止 -----
+    var loop = H.loop(update, draw);
+    function start() {
+      if (pauseOv) { pauseOv.close(); pauseOv = null; }
+      paused = false;
+      board = newBoard(); piece = null; nextPiece = null;
+      score = 0; level = 1; cleared = 0; maxChain = 0; chain = 0; floatMsg = null; softDrop = false;
+      flashCells = []; timer = 0; fallT = 0;
+      hud();
+      spawn();
+      loop.pause(false);
+      loop.start();
+      draw();
+    }
+    function gameOver() {
+      state = 'over';
+      loop.pause(true);
+      draw();
+      H.audio.bad();
+      hud();
+      H.overlay({ title: 'ゲームオーバー', big: score + ' 点',
+        html: 'ベスト ' + best + ' 点　最大 ' + maxChain + ' 連鎖　レベル ' + level,
+        buttons: [{ label: 'もう一度', onClick: start },
+                  { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }] });
+    }
+    function pauseGame() {
+      if (paused || state === 'idle' || state === 'over') return;
+      paused = true; softDrop = false;
+      loop.pause(true);
+      pauseOv = H.overlay({ title: '一時停止', html: 'スコア ' + score + ' 点',
+        buttons: [{ label: 'つづける', onClick: resumeGame },
+                  { label: '最初から', secondary: true, onClick: start }] });
+    }
+    function resumeGame() {
+      if (!paused) return;
+      paused = false;
+      if (pauseOv) { pauseOv.close(); pauseOv = null; }
+      loop.pause(false);
+    }
+    function togglePause(e) { if (e && e.repeat) return; if (paused) resumeGame(); else pauseGame(); }
+    function showStart() {
+      state = 'idle';
+      H.overlay({ title: 'コラムス風', html: '縦 3 個の宝石を並べ替えて<br>縦・横・斜めに 3 つそろえよう',
+        buttons: [{ label: 'スタート', onClick: start }] });
+    }
+    window.resetGame = function () {
+      loop.pause(true);
+      if (pauseOv) { pauseOv.close(); pauseOv = null; }
+      paused = false;
+      var old = document.querySelectorAll('.app-main .overlay');
+      for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+      board = newBoard(); piece = null; nextPiece = null; score = 0; level = 1; cleared = 0; maxChain = 0; chain = 0;
+      hud(); draw(); showStart();
+    };
+    window.onHelpOpen = function () { pauseGame(); };
+    H.pauseWhenHidden(function () { pauseGame(); });
+
+    hud(); draw(); showStart();
+  })();
+  </script>
+</body>
+</html>

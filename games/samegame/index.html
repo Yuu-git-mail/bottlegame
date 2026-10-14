@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>さめがめ - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-controls { flex-wrap: wrap; gap: 8px; }
+    .app-controls select.sel { min-height: 44px; font-size: 15px; }
+    .ctl-btn.sg { min-width: 0; padding: 0 12px; font-size: 15px; min-height: 44px; }
+    .ctl-btn.sg.on { background: var(--accent); border-color: var(--accent); }
+    .ctl-btn[disabled] { opacity: 0.4; }
+    .hud-item.pick b { color: var(--warn); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="さめがめ" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item">残り<b id="remain">0</b></span>
+      <span class="hud-item pick">選択<b id="pick">-</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>となり合った同じ色のブロックが 2 個以上つながっているところをタップすると消える。</li>
+            <li>消えたあと、上のブロックが落ち、空いた列は左に詰まる。</li>
+            <li>得点は (消した数 − 2)² × 10 ＋ 消した数 × 5。大きなかたまりを作ってから消すほど高得点。</li>
+            <li>消せる場所が無くなったら終了。全部消すと +1000 のボーナス。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>タップ 1 回目でかたまりが光り、得点の予告が出る。もう 1 回同じ所をタップすると消える。</li>
+            <li>下の「2タップ / 1タップ」で、1 回のタップで即消しに切り替えられる。</li>
+            <li>「戻す」で 1 手前に戻せる（何手でも）。終了画面からも戻せる。</li>
+            <li>盤面の大きさと色の数は下のメニューで選ぶ（選ぶと新しい盤面になる）。</li>
+            <li>PC: クリックで同じ操作。Z または Backspace で戻す、N で新しい盤面。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <select class="sel" id="sel-size" aria-label="盤面の大きさ">
+        <option value="8x12x4">8×12 / 4色</option>
+        <option value="10x15x5">10×15 / 5色</option>
+        <option value="12x20x6">12×20 / 6色</option>
+      </select>
+      <button type="button" class="ctl-btn sg" id="btn-mode">2タップ</button>
+      <button type="button" class="ctl-btn sg" id="btn-undo">↩ 戻す</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var BASE_W = 360, BASE_H = 600;
+    var COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#f97316'];
+    var DARK = ['#991b1b', '#1e40af', '#15803d', '#a16207', '#6b21a8', '#c2410c'];
+    var store = H.store('samegame');
+
+    var sizeKey = store.get('size', '10x15x5');
+    var oneTap = !!store.get('oneTap', false);
+    var COLS = 10, ROWS = 15, NCOL = 5, CELL = 36, OX = 0, OY = 0;
+    var board = [];          // board[r][c] = 0 (空) or 1..NCOL
+    var score = 0, best = 0;
+    var selected = null;     // {cells:[{r,c}], key:'r,c'} 選択中のかたまり
+    var undoStack = [];
+    var over = false;
+    var anim = null;         // 進行中のアニメーション
+    var overlayEl = null;
+
+    var canvas = document.getElementById('cv');
+    // canvasStage は DPR までしか面倒を見ない。論理座標 BASE → 表示サイズの拡縮はここで掛ける
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function (w, h, ctx, sc) { ctx.scale(sc, sc); draw(); });
+
+    function parseSize(k) {
+      var p = k.split('x');
+      COLS = parseInt(p[0], 10); ROWS = parseInt(p[1], 10); NCOL = parseInt(p[2], 10);
+      CELL = Math.floor(Math.min(BASE_W / COLS, BASE_H / ROWS));
+      OX = Math.floor((BASE_W - CELL * COLS) / 2);
+      OY = Math.floor((BASE_H - CELL * ROWS) / 2);
+    }
+
+    function bestKey() { return 'best:' + sizeKey; }
+
+    // ---------- 盤面ロジック ----------
+    function newBoard() {
+      var b = [], r, c;
+      for (r = 0; r < ROWS; r++) {
+        b[r] = [];
+        for (c = 0; c < COLS; c++) b[r][c] = 1 + Math.floor(Math.random() * NCOL);
+      }
+      return b;
+    }
+    function copyBoard(b) { return b.map(function (row) { return row.slice(); }); }
+
+    function group(b, r0, c0) {
+      var col = b[r0][c0];
+      if (!col) return [];
+      var seen = {}, out = [], stack = [[r0, c0]];
+      seen[r0 + ',' + c0] = true;
+      while (stack.length) {
+        var p = stack.pop(), r = p[0], c = p[1];
+        out.push({ r: r, c: c });
+        var nb = [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]];
+        for (var i = 0; i < 4; i++) {
+          var nr = nb[i][0], nc = nb[i][1];
+          if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+          var k = nr + ',' + nc;
+          if (seen[k] || b[nr][nc] !== col) continue;
+          seen[k] = true;
+          stack.push([nr, nc]);
+        }
+      }
+      return out;
+    }
+
+    function points(n) { return n < 2 ? 0 : (n - 2) * (n - 2) * 10 + n * 5; }
+
+    function countRemain(b) {
+      var n = 0;
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (b[r][c]) n++;
+      return n;
+    }
+
+    function hasMove(b) {
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+        var v = b[r][c];
+        if (!v) continue;
+        if (r + 1 < ROWS && b[r + 1][c] === v) return true;
+        if (c + 1 < COLS && b[r][c + 1] === v) return true;
+      }
+      return false;
+    }
+
+    // 消去 → 落下 → 左詰め。各ブロックの移動元/先を返す(アニメ用)
+    function collapse(b) {
+      var moves = [], r, c;
+      var colMap = [];       // 列ごとに: 残ったブロックを下から並べた配列 [{color, fromR}]
+      for (c = 0; c < COLS; c++) {
+        var stack = [];
+        for (r = ROWS - 1; r >= 0; r--) if (b[r][c]) stack.push({ color: b[r][c], fromR: r });
+        colMap.push(stack);
+      }
+      var nb = [];
+      for (r = 0; r < ROWS; r++) { nb[r] = []; for (c = 0; c < COLS; c++) nb[r][c] = 0; }
+      var toC = 0;
+      for (c = 0; c < COLS; c++) {
+        var s = colMap[c];
+        if (!s.length) continue;
+        for (var i = 0; i < s.length; i++) {
+          var toR = ROWS - 1 - i;
+          nb[toR][toC] = s[i].color;
+          moves.push({ color: s[i].color, fr: s[i].fromR, fc: c, tr: toR, tc: toC });
+        }
+        toC++;
+      }
+      return { board: nb, moves: moves };
+    }
+
+    // ---------- 表示 ----------
+    function hud() {
+      document.getElementById('score').textContent = score;
+      document.getElementById('best').textContent = best;
+      document.getElementById('remain').textContent = board.length ? countRemain(board) : 0;
+      var pick = document.getElementById('pick');
+      pick.textContent = selected ? selected.cells.length + '個 +' + points(selected.cells.length) : '-';
+      var bu = document.getElementById('btn-undo');
+      bu.disabled = undoStack.length === 0 || !!anim;
+      var bm = document.getElementById('btn-mode');
+      bm.textContent = oneTap ? '1タップ' : '2タップ';
+      bm.classList.toggle('on', oneTap);
+    }
+
+    function rrect(ctx, x, y, w, h, rad) {
+      rad = Math.min(rad, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.lineTo(x + w - rad, y); ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+      ctx.lineTo(x + w, y + h - rad); ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+      ctx.lineTo(x + rad, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+      ctx.lineTo(x, y + rad); ctx.quadraticCurveTo(x, y, x + rad, y);
+      ctx.closePath();
+    }
+
+    function drawBlock(ctx, x, y, color, scale, alpha, hi) {
+      var pad = Math.max(1.5, CELL * 0.06);
+      var w = CELL - pad * 2, h = CELL - pad * 2;
+      var cx = x + CELL / 2, cy = y + CELL / 2;
+      w *= scale; h *= scale;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = COLORS[color - 1];
+      rrect(ctx, cx - w / 2, cy - h / 2, w, h, CELL * 0.2);
+      ctx.fill();
+      // 下側の陰
+      ctx.fillStyle = DARK[color - 1];
+      ctx.globalAlpha = alpha * 0.55;
+      rrect(ctx, cx - w / 2, cy - h / 2 + h * 0.72, w, h * 0.28, CELL * 0.2);
+      ctx.fill();
+      // 上側の光
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = alpha * 0.28;
+      rrect(ctx, cx - w / 2 + w * 0.12, cy - h / 2 + h * 0.08, w * 0.76, h * 0.22, CELL * 0.14);
+      ctx.fill();
+      if (hi) {
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        rrect(ctx, cx - w / 2, cy - h / 2, w, h, CELL * 0.2);
+        ctx.fill();
+        ctx.lineWidth = Math.max(2, CELL * 0.08);
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function cellX(c) { return OX + c * CELL; }
+    function cellY(r) { return OY + r * CELL; }
+
+    function draw() {
+      if (!st) return; // 最初の layout は st 代入前に呼ばれる
+      var ctx = st.ctx();
+      if (!ctx || !board.length) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#1b1b36';
+      ctx.fillRect(OX, OY, CELL * COLS, CELL * ROWS);
+      var r, c, i;
+
+      if (anim) {
+        var now = Date.now();
+        if (anim.phase === 'pop') {
+          var t = Math.min(1, (now - anim.t0) / anim.dur);
+          for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+            var v = anim.from[r][c];
+            if (!v) continue;
+            if (anim.removeSet[r + ',' + c]) drawBlock(ctx, cellX(c), cellY(r), v, 1 - t * 0.9, 1 - t, true);
+            else drawBlock(ctx, cellX(c), cellY(r), v, 1, 1, false);
+          }
+          drawPopup(ctx, anim.popX, anim.popY - t * 30, '+' + anim.gain, 1 - t);
+        } else {
+          var u = Math.min(1, (now - anim.t0) / anim.dur);
+          var e = 1 - (1 - u) * (1 - u);
+          for (i = 0; i < anim.moves.length; i++) {
+            var m = anim.moves[i];
+            var x = cellX(m.fc) + (cellX(m.tc) - cellX(m.fc)) * e;
+            var y = cellY(m.fr) + (cellY(m.tr) - cellY(m.fr)) * e;
+            drawBlock(ctx, x, y, m.color, 1, 1, false);
+          }
+        }
+        return;
+      }
+
+      var selSet = {};
+      if (selected) for (i = 0; i < selected.cells.length; i++) selSet[selected.cells[i].r + ',' + selected.cells[i].c] = true;
+      for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+        if (!board[r][c]) continue;
+        drawBlock(ctx, cellX(c), cellY(r), board[r][c], 1, 1, !!selSet[r + ',' + c]);
+      }
+      if (selected) {
+        var sx = 0, sy = 0;
+        for (i = 0; i < selected.cells.length; i++) { sx += selected.cells[i].c; sy += selected.cells[i].r; }
+        var px = cellX(sx / selected.cells.length) + CELL / 2;
+        var py = cellY(sy / selected.cells.length) + CELL / 2;
+        drawPopup(ctx, px, py, '+' + points(selected.cells.length), 1);
+      }
+    }
+
+    function drawPopup(ctx, x, y, text, alpha) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = 'bold 20px ' + 'system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      var w = ctx.measureText(text).width + 24, h = 32;
+      x = Math.max(w / 2 + 2, Math.min(BASE_W - w / 2 - 2, x));
+      y = Math.max(h / 2 + 2, Math.min(BASE_H - h / 2 - 2, y));
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      rrect(ctx, x - w / 2, y - h / 2, w, h, 8);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#facc15';
+      ctx.fillText(text, x, y + 1);
+      ctx.restore();
+    }
+
+    // ---------- 進行 ----------
+    function animate() {
+      if (!anim) return;
+      var now = Date.now();
+      if (now - anim.t0 >= anim.dur) {
+        if (anim.phase === 'pop') {
+          anim = { phase: 'fall', t0: now, dur: anim.moves.length ? 200 : 0, moves: anim.moves, result: anim.result };
+          if (anim.dur === 0) { finishMove(); return; }
+        } else { finishMove(); return; }
+      }
+      draw();
+      requestAnimationFrame(animate);
+    }
+
+    function finishMove() {
+      board = anim.result;
+      anim = null;
+      hud();
+      draw();
+      if (!hasMove(board)) endGame();
+    }
+
+    function removeGroup(cells) {
+      undoStack.push({ board: copyBoard(board), score: score });
+      if (undoStack.length > 200) undoStack.shift();
+      var gain = points(cells.length);
+      score += gain;
+      if (score > best) { best = score; store.set(bestKey(), best); }
+      var from = copyBoard(board);
+      var set = {}, i, sx = 0, sy = 0;
+      for (i = 0; i < cells.length; i++) { set[cells[i].r + ',' + cells[i].c] = true; sx += cells[i].c; sy += cells[i].r; }
+      var work = copyBoard(board);
+      for (i = 0; i < cells.length; i++) work[cells[i].r][cells[i].c] = 0;
+      var res = collapse(work);
+      selected = null;
+      anim = {
+        phase: 'pop', t0: Date.now(), dur: 160, from: from, removeSet: set, gain: gain,
+        popX: cellX(sx / cells.length) + CELL / 2, popY: cellY(sy / cells.length) + CELL / 2,
+        moves: res.moves, result: res.board
+      };
+      if (cells.length >= 10) H.audio.good(); else H.audio.click();
+      hud();
+      requestAnimationFrame(animate);
+    }
+
+    function tapCell(r, c) {
+      if (over || anim) return;
+      if (r < 0 || r >= ROWS || c < 0 || c >= COLS || !board[r][c]) { selected = null; hud(); draw(); return; }
+      var g = group(board, r, c);
+      if (g.length < 2) { selected = null; H.audio.bad(); hud(); draw(); return; }
+      var key = g[0].r + ',' + g[0].c; // 同じかたまりなら同じ代表(探索順は決定的)
+      var cellsKey = g.map(function (p) { return p.r + ',' + p.c; }).sort().join('|');
+      if (oneTap || (selected && selected.key === cellsKey)) { removeGroup(g); return; }
+      selected = { cells: g, key: cellsKey, rep: key };
+      H.audio.beep(520, 0.05, 'triangle', 0.04);
+      hud(); draw();
+    }
+
+    function endGame() {
+      over = true;
+      var remain = countRemain(board);
+      var bonus = remain === 0 ? 1000 : 0;
+      if (bonus) {
+        score += bonus;
+        if (score > best) { best = score; store.set(bestKey(), best); }
+        H.audio.win();
+      } else {
+        H.audio.beep(330, 0.2, 'sine', 0.05);
+      }
+      hud();
+      var buttons = [{ label: 'もう一度', onClick: function () { newGame(); } }];
+      if (undoStack.length) buttons.push({ label: '1手戻す', secondary: true, onClick: function () { undo(); } });
+      buttons.push({ label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } });
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: remain === 0 ? '全消し!' : '終了',
+        big: score + ' 点',
+        html: (remain === 0 ? '<b style="color:#facc15">全消しボーナス +1000</b><br>' : '残り ' + remain + ' 個<br>') + 'ベスト ' + best + ' 点',
+        buttons: buttons
+      });
+    }
+
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+
+    function undo() {
+      if (anim || !undoStack.length) return;
+      var s = undoStack.pop();
+      board = s.board; score = s.score;
+      selected = null; over = false;
+      closeOverlay();
+      H.audio.click();
+      hud(); draw();
+    }
+
+    function newGame() {
+      closeOverlay();
+      parseSize(sizeKey);
+      best = store.get(bestKey(), 0);
+      board = newBoard();
+      // 最初から手の無い盤面は出さない
+      var guard = 0;
+      while (!hasMove(board) && guard++ < 50) board = newBoard();
+      score = 0; selected = null; undoStack = []; over = false; anim = null;
+      hud(); draw();
+    }
+
+    // ---------- 入力 ----------
+    H.onTap(canvas, function (cx, cy) {
+      var p = st.toBase(cx, cy);
+      var c = Math.floor((p.x - OX) / CELL), r = Math.floor((p.y - OY) / CELL);
+      tapCell(r, c);
+    });
+
+    var sel = document.getElementById('sel-size');
+    sel.value = sizeKey;
+    if (sel.value !== sizeKey) { sizeKey = '10x15x5'; sel.value = sizeKey; }
+    sel.addEventListener('change', function () {
+      sizeKey = sel.value;
+      store.set('size', sizeKey);
+      newGame();
+      H.toast('新しい盤面 ' + COLS + '×' + ROWS + ' / ' + NCOL + '色');
+    });
+    document.getElementById('btn-mode').addEventListener('click', function () {
+      oneTap = !oneTap;
+      store.set('oneTap', oneTap);
+      selected = null;
+      H.audio.click();
+      hud(); draw();
+      H.toast(oneTap ? '1 タップで即消し' : '1 回目で選択、2 回目で消す');
+    });
+    document.getElementById('btn-undo').addEventListener('click', undo);
+    H.keys({ z: undo, Z: undo, Backspace: undo, n: function () { window.resetGame(); }, N: function () { window.resetGame(); } });
+
+    window.resetGame = function () { newGame(); H.toast('新しい盤面'); };
+
+    newGame();
+  })();
+  </script>
+</body>
+</html>

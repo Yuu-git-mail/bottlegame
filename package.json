@@ -1,13 +1,13 @@
 {
   "name": "magic-sort-game",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && touch dist/.nojekyll",
-    "preview": "vite preview",
-    "deploy": "gh-pages -d dist"
+    "build": "tsc && vite build && node scripts/sync-root.mjs",
+    "bake": "node scripts/bake-levels.mjs",
+    "preview": "vite preview"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.6.4",

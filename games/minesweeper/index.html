@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>マインスイーパ - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-hud { gap: 4px 10px; padding: 4px 6px; }
+    .hud-item b { font-variant-numeric: tabular-nums; min-width: 2.2em; display: inline-block; text-align: left; }
+    .seg button { min-height: 34px; padding: 0 8px; font-size: 13px; }
+    .app-hud .hud-item { font-size: 13px; }
+    @media (max-width: 420px) { .seg button { padding: 0 6px; font-size: 12px; } .app-hud { gap: 4px 6px; } .hud-item b { min-width: 1.6em; } }
+    .ctl-btn.mode { min-width: 120px; font-size: 17px; }
+    .ctl-btn.mode.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .ctl-btn.mode.on.flag { background: #c0392b; border-color: #c0392b; }
+    .custom-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0; }
+    .custom-row span.lbl { width: 4.5em; text-align: right; color: var(--muted); font-size: 15px; }
+    .custom-row b { width: 2.5em; font-size: 22px; font-variant-numeric: tabular-nums; }
+    .custom-row .btn.small { min-width: 48px; min-height: 44px; font-size: 20px; padding: 0; }
+    .overlay .custom-box { display: flex; flex-direction: column; gap: 2px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="マインスイーパ" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="seg" id="diff-seg">
+        <button type="button" data-d="0" class="on">初級</button>
+        <button type="button" data-d="1">中級</button>
+        <button type="button" data-d="2">上級</button>
+        <button type="button" data-d="3">カスタム</button>
+      </span>
+      <span class="hud-item accent">💣<b id="mines">10</b></span>
+      <span class="hud-item">⏱<b id="time">0</b></span>
+      <span class="hud-item">ベスト<b id="best">-</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>地雷の無いマスを全部開けばクリア。地雷を踏むと負け。</li>
+            <li>数字は、そのマスの周り 8 マスにある地雷の数。</li>
+            <li>最初の 1 手は必ず安全（周りにも地雷なし）。</li>
+            <li>開いた数字をタップすると、周りの旗の数が数字と同じなら残りを一気に開く。</li>
+            <li>難易度は上の 初級 / 中級 / 上級 / カスタム。ベストタイムは難易度ごとに保存。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: タップで開く、長押しで旗。下の「掘る / 旗」ボタンでモードを切り替えられる。</li>
+            <li>PC: 左クリックで開く、右クリックで旗。矢印キーでカーソル、Enter/スペースで開く、F で旗。</li>
+            <li>↻ で最初から。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn mode on" id="btn-dig">⛏ 掘る</button>
+      <button type="button" class="ctl-btn mode" id="btn-flag">🚩 旗</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*LOGIC-START*/
+  // 盤面ロジック(描画・DOM に依存しない)。node のテストから読める。
+  var MSLogic = (function () {
+    'use strict';
+    function create(rows, cols, mines) {
+      rows = Math.max(4, Math.min(30, rows | 0));
+      cols = Math.max(4, Math.min(30, cols | 0));
+      var maxMines = rows * cols - 9;
+      mines = Math.max(1, Math.min(maxMines, mines | 0));
+      var cells = [];
+      for (var i = 0; i < rows * cols; i++) cells.push({ mine: false, open: false, flag: false, n: 0, dist: 0 });
+      return { rows: rows, cols: cols, mines: mines, cells: cells, started: false, over: false, won: false, opened: 0, flags: 0, hit: -1 };
+    }
+    function idx(g, r, c) { return r * g.cols + c; }
+    function neighbors(g, i) {
+      var r = (i / g.cols) | 0, c = i % g.cols, out = [];
+      for (var dr = -1; dr <= 1; dr++) for (var dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue;
+        var nr = r + dr, nc = c + dc;
+        if (nr >= 0 && nr < g.rows && nc >= 0 && nc < g.cols) out.push(idx(g, nr, nc));
+      }
+      return out;
+    }
+    // 初手 first の周囲 3x3 を避けて配置 → 初手は必ず 0
+    function place(g, first, rnd) {
+      rnd = rnd || Math.random;
+      var safe = {};
+      safe[first] = true;
+      neighbors(g, first).forEach(function (j) { safe[j] = true; });
+      var pool = [];
+      for (var i = 0; i < g.cells.length; i++) if (!safe[i]) pool.push(i);
+      for (var k = 0; k < g.mines; k++) {
+        var p = k + Math.floor(rnd() * (pool.length - k));
+        var t = pool[k]; pool[k] = pool[p]; pool[p] = t;
+        g.cells[pool[k]].mine = true;
+      }
+      for (var m = 0; m < g.cells.length; m++) {
+        if (g.cells[m].mine) continue;
+        var n = 0;
+        neighbors(g, m).forEach(function (j) { if (g.cells[j].mine) n++; });
+        g.cells[m].n = n;
+      }
+      g.started = true;
+    }
+    // マスを開く。戻り値: 開いたマスの一覧(連鎖の順、dist は起点からの波の段数)
+    function open(g, i, rnd) {
+      var cell = g.cells[i];
+      if (g.over || cell.open || cell.flag) return [];
+      if (!g.started) place(g, i, rnd);
+      var opened = [];
+      if (cell.mine) {
+        cell.open = true;
+        g.over = true; g.hit = i;
+        return [i];
+      }
+      var queue = [i];
+      cell.open = true; cell.dist = 0; g.opened++; opened.push(i);
+      while (queue.length) {
+        var cur = queue.shift();
+        if (g.cells[cur].n !== 0) continue;
+        var nb = neighbors(g, cur);
+        for (var k = 0; k < nb.length; k++) {
+          var j = nb[k], cj = g.cells[j];
+          if (cj.open || cj.flag || cj.mine) continue;
+          cj.open = true; cj.dist = g.cells[cur].dist + 1; g.opened++; opened.push(j);
+          queue.push(j);
+        }
+      }
+      if (g.opened === g.rows * g.cols - g.mines) {
+        g.over = true; g.won = true;
+        // 残りの地雷に旗を立てる
+        for (var m = 0; m < g.cells.length; m++) if (g.cells[m].mine && !g.cells[m].flag) { g.cells[m].flag = true; g.flags++; }
+      }
+      return opened;
+    }
+    function toggleFlag(g, i) {
+      var cell = g.cells[i];
+      if (g.over || cell.open) return false;
+      cell.flag = !cell.flag;
+      g.flags += cell.flag ? 1 : -1;
+      return true;
+    }
+    // 数字の上をタップ: 周囲の旗の数が一致したら残りを開く
+    function chord(g, i, rnd) {
+      var cell = g.cells[i];
+      if (g.over || !cell.open || cell.n === 0) return [];
+      var nb = neighbors(g, i), flags = 0;
+      nb.forEach(function (j) { if (g.cells[j].flag) flags++; });
+      if (flags !== cell.n) return [];
+      var all = [];
+      for (var k = 0; k < nb.length; k++) {
+        var j = nb[k];
+        if (g.cells[j].open || g.cells[j].flag) continue;
+        var got = open(g, j, rnd);
+        for (var q = 0; q < got.length; q++) all.push(got[q]);
+        if (g.over && !g.won) break;
+      }
+      return all;
+    }
+    return { create: create, idx: idx, neighbors: neighbors, place: place, open: open, toggleFlag: toggleFlag, chord: chord };
+  })();
+  /*LOGIC-END*/
+  if (typeof module !== 'undefined' && module.exports) module.exports = MSLogic;
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, L = MSLogic;
+    var CELL = 32;                       // 論理 px / マス
+    var LEVELS = [
+      { name: '初級', rows: 9, cols: 9, mines: 10 },
+      { name: '中級', rows: 12, cols: 12, mines: 24 },
+      { name: '上級', rows: 16, cols: 12, mines: 38 },
+      { name: 'カスタム', rows: 10, cols: 10, mines: 15 }
+    ];
+    var store = H.store('minesweeper');
+    var level = store.get('level', 0);
+    if (level < 0 || level > 3) level = 0;
+    var custom = store.get('custom', { rows: 10, cols: 10, mines: 15 });
+    LEVELS[3].rows = custom.rows; LEVELS[3].cols = custom.cols; LEVELS[3].mines = custom.mines;
+
+    var g = null, mode = 'dig';
+    var startAt = 0, elapsed = 0, timerId = null, paused = false;
+    var canvas = document.getElementById('cv');
+    var baseW = 1, baseH = 1;
+    var anim = { until: 0, id: 0 };
+    var pressCell = -1, pressT = 0;      // 押下中の演出
+    var cursor = -1;                     // キーボード用カーソル
+    var endOverlay = null, lastWinOpen = -1;
+
+    function levelKey() { var lv = LEVELS[level]; return level === 3 ? 'c' + lv.rows + 'x' + lv.cols + 'm' + lv.mines : 'l' + level; }
+    function bestGet() { return store.get('best:' + levelKey(), 0); }
+
+    // ---------- HUD ----------
+    function hud() {
+      document.getElementById('mines').textContent = g ? (g.mines - g.flags) : '';
+      document.getElementById('time').textContent = Math.min(999, Math.floor(elapsed / 1000));
+      var b = bestGet();
+      document.getElementById('best').textContent = b ? b + '秒' : '-';
+      var segs = document.querySelectorAll('#diff-seg button');
+      for (var i = 0; i < segs.length; i++) segs[i].classList.toggle('on', +segs[i].getAttribute('data-d') === level);
+    }
+    function setMode(m) {
+      mode = m;
+      document.getElementById('btn-dig').classList.toggle('on', m === 'dig');
+      document.getElementById('btn-flag').classList.toggle('on', m === 'flag');
+      document.getElementById('btn-flag').classList.toggle('flag', m === 'flag');
+    }
+
+    // ---------- タイマー ----------
+    function tick() { if (!paused && g && g.started && !g.over) { elapsed = Date.now() - startAt; hud(); } }
+    function timerStart() { startAt = Date.now() - elapsed; if (!timerId) timerId = setInterval(tick, 250); }
+    function timerStop() { if (timerId) clearInterval(timerId); timerId = null; }
+
+    // ---------- 盤面 ----------
+    function newGame() {
+      var lv = LEVELS[level];
+      g = L.create(lv.rows, lv.cols, lv.mines);
+      timerStop(); elapsed = 0; paused = false; cursor = -1; pressCell = -1;
+      if (endOverlay) { endOverlay.close(); endOverlay = null; }
+      baseW = g.cols * CELL; baseH = g.rows * CELL;
+      relayout(); hud();
+    }
+    // canvasStage は baseW/H を固定で受けるので、盤面サイズが変わるこのゲームでは
+    // fitStage + setupCanvas を直接使う
+    function relayout() {
+      var f = H.fitStage(document.getElementById('stage'), baseW, baseH);
+      ctx = H.setupCanvas(canvas, f.width, f.height);
+      ctx.scale(f.width / baseW, f.height / baseH);   // 以後は論理座標(baseW x baseH)で描く
+      draw();
+    }
+    var ctx = null;
+    var st = { toBase: function (x, y) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (x - r.left) / r.width * baseW, y: (y - r.top) / r.height * baseH };
+    } };
+    H.onResize(relayout);
+    window.addEventListener('resize', relayout);
+    if (window.ResizeObserver) { try { new ResizeObserver(relayout).observe(document.querySelector('.app-main')); } catch (e) { /* ignore */ } }
+
+    var NUM_COLORS = ['', '#5dade2', '#58d68d', '#f1948a', '#bb8fce', '#f5b041', '#48c9b0', '#f4f4ff', '#a9a9c9'];
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function draw() {
+      if (!ctx || !g) return;
+      var now = Date.now();
+      ctx.clearRect(0, 0, baseW, baseH);
+      ctx.fillStyle = '#141428'; ctx.fillRect(0, 0, baseW, baseH);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      var busy = false;
+      for (var i = 0; i < g.cells.length; i++) {
+        var cell = g.cells[i];
+        var r = (i / g.cols) | 0, c = i % g.cols;
+        var x = c * CELL, y = r * CELL;
+        if (cell.open) {
+          var k = 1;
+          if (cell.at) { k = Math.min(1, (now - cell.at) / 160); if (k < 1) busy = true; if (k < 0) { k = 0; } }
+          // 開いたマス: 暗い床
+          ctx.fillStyle = (g.over && cell.mine) ? (i === g.hit ? '#e74c3c' : '#5a2d2d') : '#22223a';
+          rrect(x + 1, y + 1, CELL - 2, CELL - 2, 5); ctx.fill();
+          if (k < 1) {
+            // 蓋がめくれる演出: 残りの蓋を縮めて描く
+            var s = (1 - k) * (CELL - 4);
+            ctx.fillStyle = '#3b3b66';
+            rrect(x + CELL / 2 - s / 2, y + CELL / 2 - s / 2, s, s, 4); ctx.fill();
+          } else if (cell.mine) {
+            drawMine(x, y);
+          } else if (cell.n > 0) {
+            ctx.fillStyle = NUM_COLORS[cell.n];
+            ctx.font = 'bold ' + (CELL * 0.6) + 'px ' + 'system-ui, sans-serif';
+            ctx.fillText(String(cell.n), x + CELL / 2, y + CELL / 2 + 1);
+          }
+        } else {
+          // 閉じたマス: 盛り上がったタイル
+          var pressed = (i === pressCell);
+          ctx.fillStyle = pressed ? '#2c2c4e' : '#3b3b66';
+          rrect(x + 1, y + 1, CELL - 2, CELL - 2, 5); ctx.fill();
+          if (!pressed) {
+            ctx.fillStyle = 'rgba(255,255,255,0.12)';
+            rrect(x + 2, y + 2, CELL - 4, (CELL - 4) / 2, 4); ctx.fill();
+          }
+          if (cell.flag) {
+            if (g.over && !g.won && !cell.mine) {
+              // 間違った旗
+              ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 3;
+              ctx.beginPath(); ctx.moveTo(x + 8, y + 8); ctx.lineTo(x + CELL - 8, y + CELL - 8);
+              ctx.moveTo(x + CELL - 8, y + 8); ctx.lineTo(x + 8, y + CELL - 8); ctx.stroke();
+            }
+            drawFlag(x, y);
+          } else if (g.over && !g.won && cell.mine) {
+            drawMine(x, y);
+          }
+        }
+        if (i === cursor) {
+          ctx.strokeStyle = '#f5b041'; ctx.lineWidth = 2;
+          rrect(x + 1.5, y + 1.5, CELL - 3, CELL - 3, 5); ctx.stroke();
+        }
+      }
+      if (busy && !anim.id) anim.id = requestAnimationFrame(function () { anim.id = 0; draw(); });
+    }
+    function drawMine(x, y) {
+      var cx = x + CELL / 2, cy = y + CELL / 2;
+      ctx.fillStyle = '#111';
+      ctx.beginPath(); ctx.arc(cx, cy, CELL * 0.26, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5;
+      for (var a = 0; a < 4; a++) {
+        var t = a * Math.PI / 4;
+        ctx.beginPath(); ctx.moveTo(cx - Math.cos(t) * CELL * 0.4, cy - Math.sin(t) * CELL * 0.4);
+        ctx.lineTo(cx + Math.cos(t) * CELL * 0.4, cy + Math.sin(t) * CELL * 0.4); ctx.stroke();
+      }
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx - 3, cy - 3, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    function drawFlag(x, y) {
+      ctx.strokeStyle = '#eee'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(x + CELL * 0.4, y + CELL * 0.2); ctx.lineTo(x + CELL * 0.4, y + CELL * 0.82); ctx.stroke();
+      ctx.fillStyle = '#e74c3c';
+      ctx.beginPath(); ctx.moveTo(x + CELL * 0.4, y + CELL * 0.2); ctx.lineTo(x + CELL * 0.78, y + CELL * 0.38); ctx.lineTo(x + CELL * 0.4, y + CELL * 0.56); ctx.closePath(); ctx.fill();
+    }
+
+    // ---------- 操作 ----------
+    function cellAt(clientX, clientY) {
+      var p = st.toBase(clientX, clientY);
+      var c = Math.floor(p.x / CELL), r = Math.floor(p.y / CELL);
+      if (c < 0 || r < 0 || c >= g.cols || r >= g.rows) return -1;
+      return L.idx(g, r, c);
+    }
+    function markOpened(list) {
+      var now = Date.now();
+      for (var k = 0; k < list.length; k++) { var cell = g.cells[list[k]]; cell.at = now + Math.min(cell.dist, 12) * 35; }
+    }
+    function doOpen(i) {
+      if (g.over) return;
+      var cell = g.cells[i];
+      var list;
+      if (cell.open) list = L.chord(g, i);
+      else list = L.open(g, i);
+      if (!list.length) { if (!cell.open && cell.flag) H.toast('旗があるマスは開けません'); return; }
+      if (!timerId) timerStart();
+      markOpened(list);
+      if (g.over && !g.won) { H.audio.bad(); finish(false); }
+      else { if (list.length > 3) H.audio.good(); else H.audio.click(); if (g.won) finish(true); }
+      hud(); draw();
+    }
+    function doFlag(i) {
+      if (g.over) return;
+      var cell = g.cells[i];
+      if (cell.open) { doOpen(i); return; }   // 旗モードでも数字の上ならコード
+      if (L.toggleFlag(g, i)) {
+        H.audio.beep(cell.flag ? 880 : 440, 0.06, 'triangle', 0.05);
+        if (navigator.vibrate) { try { navigator.vibrate(30); } catch (e) { /* ignore */ } }
+        hud(); draw();
+      }
+    }
+    function finish(won) {
+      timerStop();
+      elapsed = Date.now() - startAt;
+      var sec = Math.floor(elapsed / 1000);
+      var msg;
+      if (won) {
+        var b = bestGet(), isNew = !b || sec < b;
+        if (isNew) store.set('best:' + levelKey(), sec);
+        H.audio.win();
+        msg = { title: 'クリア!', big: sec + ' 秒', html: (isNew ? '🎉 ベスト更新!' : 'ベスト ' + b + ' 秒') + '<br>' + LEVELS[level].name + ' ' + g.rows + '×' + g.cols + ' / 💣' + g.mines };
+      } else {
+        msg = { title: 'ドカン…', big: '💥', html: '地雷を踏みました。' + sec + ' 秒 / 開いたマス ' + g.opened + ' / ' + (g.rows * g.cols - g.mines) };
+      }
+      hud();
+      setTimeout(function () {
+        if (!g.over) return;
+        endOverlay = H.overlay({ title: msg.title, big: msg.big, html: msg.html, buttons: [
+          { label: 'もう一度', onClick: function () { endOverlay = null; newGame(); } },
+          { label: '盤面を見る', secondary: true, onClick: function () { endOverlay = null; } },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ] });
+      }, won ? 600 : 1100);
+    }
+
+    // タップ / 長押し(400ms) / 右クリック
+    var LONG = 400;
+    var pointer = { active: false, id: null, cell: -1, timer: null, long: false, x: 0, y: 0 };
+    function pDown(x, y, id, button) {
+      if (!g || g.over || pointer.active) return;
+      var i = cellAt(x, y);
+      if (i < 0) return;
+      if (button === 2) { doFlag(i); return; }
+      pointer.active = true; pointer.id = id; pointer.cell = i; pointer.long = false; pointer.x = x; pointer.y = y;
+      cursor = -1;
+      if (!g.cells[i].open) { pressCell = i; draw(); }
+      pointer.timer = setTimeout(function () {
+        pointer.long = true; pressCell = -1;
+        doFlag(pointer.cell);
+      }, LONG);
+    }
+    function pMove(x, y, id) {
+      if (!pointer.active || id !== pointer.id) return;
+      if (Math.abs(x - pointer.x) > 12 || Math.abs(y - pointer.y) > 12) { pCancel(); }
+    }
+    function pUp(x, y, id) {
+      if (!pointer.active || id !== pointer.id) return;
+      clearTimeout(pointer.timer);
+      var i = pointer.cell, wasLong = pointer.long;
+      pointer.active = false; pressCell = -1;
+      if (wasLong) { draw(); return; }
+      if (mode === 'flag') doFlag(i); else doOpen(i);
+    }
+    function pCancel() {
+      if (!pointer.active) return;
+      clearTimeout(pointer.timer);
+      pointer.active = false; pressCell = -1; draw();
+    }
+    if (window.PointerEvent) {
+      canvas.addEventListener('pointerdown', function (e) { if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return; e.preventDefault(); pDown(e.clientX, e.clientY, e.pointerId, e.button); });
+      canvas.addEventListener('pointermove', function (e) { pMove(e.clientX, e.clientY, e.pointerId); });
+      canvas.addEventListener('pointerup', function (e) { pUp(e.clientX, e.clientY, e.pointerId); });
+      canvas.addEventListener('pointercancel', pCancel);
+      canvas.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') pCancel(); });
+    } else {
+      canvas.addEventListener('touchstart', function (e) { var t = e.changedTouches[0]; pDown(t.clientX, t.clientY, t.identifier, 0); }, { passive: true });
+      canvas.addEventListener('touchmove', function (e) { var t = e.changedTouches[0]; pMove(t.clientX, t.clientY, t.identifier); }, { passive: true });
+      canvas.addEventListener('touchend', function (e) { var t = e.changedTouches[0]; pUp(t.clientX, t.clientY, t.identifier); });
+      canvas.addEventListener('touchcancel', pCancel);
+      canvas.addEventListener('mousedown', function (e) { pDown(e.clientX, e.clientY, 'm', e.button); });
+      canvas.addEventListener('mouseup', function (e) { pUp(e.clientX, e.clientY, 'm'); });
+    }
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    canvas.addEventListener('selectstart', function (e) { e.preventDefault(); });
+
+    document.getElementById('btn-dig').addEventListener('click', function () { setMode('dig'); H.audio.click(); });
+    document.getElementById('btn-flag').addEventListener('click', function () { setMode('flag'); H.audio.click(); });
+
+    // 難易度
+    var segs = document.querySelectorAll('#diff-seg button');
+    for (var s = 0; s < segs.length; s++) {
+      segs[s].addEventListener('click', function () {
+        var d = +this.getAttribute('data-d');
+        if (d === 3) { showCustom(); return; }
+        level = d; store.set('level', level); newGame();
+      });
+    }
+    function showCustom() {
+      var v = { rows: LEVELS[3].rows, cols: LEVELS[3].cols, mines: LEVELS[3].mines };
+      var html = '<div class="custom-box">' +
+        row('rows', '縦', v.rows) + row('cols', '横', v.cols) + row('mines', '地雷', v.mines) + '</div>';
+      var ov = H.overlay({ title: 'カスタム', html: html, buttons: [
+        { label: 'この設定で開始', onClick: function () {
+          LEVELS[3].rows = v.rows; LEVELS[3].cols = v.cols; LEVELS[3].mines = Math.min(v.mines, v.rows * v.cols - 9);
+          store.set('custom', { rows: LEVELS[3].rows, cols: LEVELS[3].cols, mines: LEVELS[3].mines });
+          level = 3; store.set('level', level); newGame();
+        } },
+        { label: 'やめる', secondary: true }
+      ] });
+      function row(key, label, val) {
+        return '<span class="custom-row"><span class="lbl">' + label + '</span>' +
+          '<button type="button" class="btn small secondary" data-k="' + key + '" data-v="-1">−</button>' +
+          '<b id="cv-' + key + '">' + val + '</b>' +
+          '<button type="button" class="btn small secondary" data-k="' + key + '" data-v="1">＋</button></span>';
+      }
+      var bs = ov.querySelectorAll('.custom-row button');
+      for (var k = 0; k < bs.length; k++) {
+        H.holdButton(bs[k], (function (b) { return function () {
+          var key = b.getAttribute('data-k'), dv = +b.getAttribute('data-v');
+          var lim = key === 'mines' ? [1, v.rows * v.cols - 9] : [4, key === 'rows' ? 24 : 16];
+          v[key] = Math.max(lim[0], Math.min(lim[1], v[key] + dv));
+          if (v.mines > v.rows * v.cols - 9) v.mines = v.rows * v.cols - 9;
+          ov.querySelector('#cv-rows').textContent = v.rows;
+          ov.querySelector('#cv-cols').textContent = v.cols;
+          ov.querySelector('#cv-mines').textContent = v.mines;
+        }; })(bs[k]), null, 90);
+      }
+    }
+
+    // キーボード
+    function moveCursor(dr, dc) {
+      if (!g || g.over) return;
+      if (cursor < 0) cursor = 0;
+      var r = (cursor / g.cols) | 0, c = cursor % g.cols;
+      r = Math.max(0, Math.min(g.rows - 1, r + dr)); c = Math.max(0, Math.min(g.cols - 1, c + dc));
+      cursor = L.idx(g, r, c); draw();
+    }
+    H.keys({
+      ArrowUp: function () { moveCursor(-1, 0); }, ArrowDown: function () { moveCursor(1, 0); },
+      ArrowLeft: function () { moveCursor(0, -1); }, ArrowRight: function () { moveCursor(0, 1); },
+      Enter: function () { if (cursor >= 0 && !g.over) doOpen(cursor); },
+      ' ': function () { if (cursor >= 0 && !g.over) doOpen(cursor); },
+      f: function () { if (cursor >= 0 && !g.over) doFlag(cursor); },
+      F: function () { if (cursor >= 0 && !g.over) doFlag(cursor); }
+    });
+
+    // 中断: 時間を止める(戻ったら続きから)
+    H.pauseWhenHidden(function () {
+      if (g && g.started && !g.over && !paused) { paused = true; elapsed = Date.now() - startAt; }
+    }, function () {
+      if (paused) { paused = false; startAt = Date.now() - elapsed; }
+    });
+    // blur でも止めるので、盤面に触ったら再開
+    canvas.addEventListener('pointerdown', function () { if (paused) { paused = false; startAt = Date.now() - elapsed; } });
+
+    window.resetGame = function () { newGame(); H.audio.click(); };
+
+    newGame();
+    setTimeout(relayout, 0);
+    setTimeout(relayout, 300);
+  })();
+  </script>
+</body>
+</html>

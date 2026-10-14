@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>倉庫番 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.tappable { cursor: pointer; padding: 2px 8px; border-radius: 8px; background: var(--panel); }
+    .hud-item.tappable b::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
+    .ctl-btn.sm { min-width: 84px; font-size: 14px; padding: 0 8px; }
+    .ctl-btn.sm.undo { color: var(--warn); }
+    .lv-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 46px);
+      gap: 6px;
+      justify-content: center;
+      padding: 2px;
+    }
+    /* 面一覧は背の低い画面では中でスクロール */
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-btn {
+      width: 46px; height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.25); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 2px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .overlay .rec { color: var(--warn); font-weight: 700; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="倉庫番" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item tappable" id="hud-level" role="button" aria-label="面を選ぶ">面<b id="level">1</b></span>
+      <span class="hud-item">手数<b id="moves">0</b></span>
+      <span class="hud-item">押し<b id="pushes">0</b></span>
+      <span class="hud-item">格納<b id="stored">0/0</b></span>
+      <span class="hud-item accent">ベスト<b id="best">-</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>人を動かして、荷物（茶色の箱）を全部 目的地（丸い印）へ押し込むとクリア。</li>
+            <li>荷物は押すだけ。引けない。2 個並んだ荷物は押せない。</li>
+            <li>角に押し込むと動かせなくなる。困ったら「戻す」か「やり直す」。</li>
+            <li>目的地に乗った荷物は緑に変わる。</li>
+            <li>全 25 面。前半はやさしく、後半は本当に考える面。クリアした面には ✓ が付く。</li>
+            <li>手数(歩いた回数)が少ないほど上手。面ごとのベスト手数を記録する。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下の十字キー(押しっぱなしで連続移動)、または盤面をスワイプ</li>
+            <li>PC: 矢印キー / WASD、Z か U で 1 手戻す、R でやり直す、N / P で次・前の面</li>
+            <li>上の「面」をタップすると面一覧</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn sm undo" id="btn-undo">↩ 戻す</button>
+        <button type="button" class="ctl-btn sm" id="btn-restart">↻ やり直す</button>
+      </div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn sm" id="btn-prev">◀ 前の面</button>
+        <button type="button" class="ctl-btn sm" id="btn-next">次の面 ▶</button>
+        <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // 面データ。# 壁 / . 目的地 / $ 荷物 / * 目的地の上の荷物 / @ 人 / + 目的地の上の人
+    // 全面を BFS ソルバーで解けることを確認済み(マーカーはソルバー用。消さない)
+    /*LEVELS-START*/
+    var LEVELS = [
+    [
+    "######",
+    "#    #",
+    "# @$ #",
+    "#  . #",
+    "######"],
+    [
+    "#######",
+    "#@    #",
+    "# $ $ #",
+    "#.   .#",
+    "#######"],
+    [
+    "######",
+    "#  . #",
+    "# #$ #",
+    "# $  #",
+    "# .@ #",
+    "######"],
+    [
+    "########",
+    "#@ $ . #",
+    "# $# # #",
+    "#   .  #",
+    "########"],
+    [
+    "  ####  ",
+    "###  ###",
+    "# $  $ #",
+    "#  ..  #",
+    "## @  ##",
+    " #######"],
+    [
+    "######",
+    "#    #",
+    "# $$.#",
+    "# .@ #",
+    "# $ .#",
+    "######"],
+    [
+    "  #####",
+    "###   #",
+    "# $ # #",
+    "# #   #",
+    "#   . #",
+    "# .$@ #",
+    "#######"],
+    [
+    " ######",
+    "##    #",
+    "#  $  #",
+    "# #$# #",
+    "#.   .#",
+    "#  @  #",
+    "#######"],
+    [
+    "########",
+    "#  #   #",
+    "#.$  $.#",
+    "#  # @ #",
+    "#.$  $.#",
+    "#  #   #",
+    "########"],
+    [
+    "#######",
+    "#     #",
+    "# $ $ #",
+    "#.#@#.#",
+    "#  $  #",
+    "##.  ##",
+    " #####"],
+    [
+    "########",
+    "#   .  #",
+    "# $$ $ #",
+    "#. #@ .#",
+    "#      #",
+    "########"],
+    [
+    " ####   ",
+    "##  ####",
+    "#  $   #",
+    "# $##$ #",
+    "#.  . .#",
+    "#  @####",
+    "#####   "],
+    [
+    "########",
+    "#      #",
+    "# .$.  #",
+    "# $@$  #",
+    "# .$.  #",
+    "#      #",
+    "########"],
+    [
+    "#########",
+    "#   #   #",
+    "# $ . $ #",
+    "## .#. ##",
+    " # $@$ # ",
+    " #  .  # ",
+    " ####### "],
+    [
+    " ########",
+    " #      #",
+    "## $$$  #",
+    "#  .@.  #",
+    "#  .$.  #",
+    "#  ###  #",
+    "######## "],
+    [
+    "  ######",
+    "###    #",
+    "# $ $$ #",
+    "#  #.# #",
+    "#  ..  #",
+    "##  @  #",
+    " #######"],
+    [
+    " ######## ",
+    " #      # ",
+    "##$  $$ ##",
+    "# .##.#  #",
+    "#  . $@  #",
+    "##   .  ##",
+    " ######## "],
+    [
+    " ########",
+    " #  #   #",
+    " # $# $ #",
+    "## .#.  #",
+    "#  $ $  #",
+    "# . # . #",
+    "#  ## @ #",
+    "#########"],
+    [
+    "########",
+    "#.     #",
+    "#  $$  #",
+    "# .#@# #",
+    "#  $ $ #",
+    "#.   . #",
+    "########"],
+    [
+    "##########",
+    "#        #",
+    "#  $  $  #",
+    "## $##$ ##",
+    " # .##. # ",
+    " # .  . # ",
+    " ##  @ ## ",
+    "  ######  "],
+    [
+    "#########",
+    "#   #   #",
+    "# $   $ #",
+    "#  #.#  #",
+    "#  $ $  #",
+    "# . . . #",
+    "#   @   #",
+    "#########"],
+    [
+    " #########",
+    " #   #   #",
+    "##$  #.$ #",
+    "#  $$ .  #",
+    "# .  ## ##",
+    "### . $  #",
+    "  # @ .  #",
+    "  ########"],
+    [
+    "##########",
+    "#  .  #  #",
+    "# $$$ #  #",
+    "#  #  .. #",
+    "## # $ # #",
+    " # .@ #  #",
+    " #  $ .  #",
+    " #########"],
+    [
+    " ####### ",
+    "##  .  ##",
+    "# $$ $$ #",
+    "# . # . #",
+    "# $ . $ #",
+    "##.   .##",
+    " #  @  # ",
+    " ####### "],
+    [
+    " ########",
+    " #  #   #",
+    "##.$  $ #",
+    "# .  $$ #",
+    "# . #  ##",
+    "#  .@$ # ",
+    "####.  # ",
+    "   ##### "]
+    ];
+    /*LEVELS-END*/
+
+    var BASE = 400;                       // 盤面の論理サイズ(正方形)。面は中央に収める
+    var store = H.store('soukoban');
+    var cleared = store.get('cleared', {});   // {"3": true}
+    var bests = store.get('best', {});        // {"3": 手数}
+
+    var lvIndex = 0;
+    var W = 0, Hh = 0;
+    var wall = [], goal = [], floor = [];     // 0/1 の配列(index = y*W+x)
+    var boxes = [];                           // 荷物の index
+    var player = 0;
+    var history = [];                         // [{player, boxes, pushes}]
+    var pushes = 0;
+    var done = false;
+    var flash = {};                           // index -> 残り時間(ms)。目的地に乗った瞬間の演出
+    var flashTimer = null;
+    var overlayEl = null;
+
+    var canvas = document.getElementById('cv');
+    var st = null;
+    st = H.canvasStage(canvas, BASE, BASE, function (cssW, cssH, ctx, scale) {
+      ctx.scale(scale, scale);
+      if (st) draw();
+    });
+
+    // ---------- 面の読み込み ----------
+    function loadLevel(i) {
+      closeOverlay();
+      lvIndex = (i + LEVELS.length) % LEVELS.length;
+      store.set('last', lvIndex);
+      var rows = LEVELS[lvIndex];
+      Hh = rows.length; W = 0;
+      var y, x, k;
+      for (y = 0; y < Hh; y++) if (rows[y].length > W) W = rows[y].length;
+      wall = []; goal = []; floor = []; boxes = []; player = 0;
+      for (y = 0; y < Hh; y++) for (x = 0; x < W; x++) {
+        var c = rows[y].charAt(x) || ' ';
+        k = y * W + x;
+        wall[k] = c === '#' ? 1 : 0;
+        goal[k] = (c === '.' || c === '*' || c === '+') ? 1 : 0;
+        floor[k] = 0;
+        if (c === '$' || c === '*') boxes.push(k);
+        if (c === '@' || c === '+') player = k;
+      }
+      // 人から届く床だけを「部屋の中」として描く
+      var stack = [player]; floor[player] = 1;
+      while (stack.length) {
+        k = stack.pop();
+        var ns = [k - 1, k + 1, k - W, k + W];
+        for (var j = 0; j < 4; j++) {
+          var n = ns[j];
+          if (n < 0 || n >= W * Hh || wall[n] || floor[n]) continue;
+          if ((j < 2) && Math.floor(n / W) !== Math.floor(k / W)) continue;
+          floor[n] = 1; stack.push(n);
+        }
+      }
+      history = []; pushes = 0; done = false; flash = {};
+      hud(); draw();
+    }
+
+    function boxAt(k) { return boxes.indexOf(k); }
+    function onGoalCount() { var n = 0; for (var i = 0; i < boxes.length; i++) if (goal[boxes[i]]) n++; return n; }
+
+    function hud() {
+      document.getElementById('level').textContent = (lvIndex + 1) + '/' + LEVELS.length + (cleared[lvIndex] ? ' ✓' : '');
+      document.getElementById('moves').textContent = history.length;
+      document.getElementById('pushes').textContent = pushes;
+      document.getElementById('stored').textContent = onGoalCount() + '/' + boxes.length;
+      document.getElementById('best').textContent = bests[lvIndex] ? bests[lvIndex] : '-';
+    }
+
+    // ---------- 描画 ----------
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !W) return;
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE, BASE);
+      var cell = Math.floor(Math.min(BASE / W, BASE / Hh));
+      var ox = Math.floor((BASE - cell * W) / 2), oy = Math.floor((BASE - cell * Hh) / 2);
+      var x, y, k, px, py;
+      for (y = 0; y < Hh; y++) for (x = 0; x < W; x++) {
+        k = y * W + x; px = ox + x * cell; py = oy + y * cell;
+        if (wall[k]) {
+          // 隣に部屋がある壁だけ描く(外周の余分な壁は描かない)
+          if (!nearFloor(x, y)) continue;
+          drawWall(ctx, px, py, cell);
+        } else if (floor[k]) {
+          ctx.fillStyle = (x + y) % 2 ? '#2a2a48' : '#262642';
+          ctx.fillRect(px, py, cell, cell);
+          if (goal[k]) drawGoal(ctx, px, py, cell, boxAt(k) >= 0);
+        }
+      }
+      for (var i = 0; i < boxes.length; i++) {
+        k = boxes[i]; x = k % W; y = Math.floor(k / W);
+        drawBox(ctx, ox + x * cell, oy + y * cell, cell, goal[k], flash[k] || 0);
+      }
+      drawPlayer(ctx, ox + (player % W) * cell, oy + Math.floor(player / W) * cell, cell);
+    }
+    function nearFloor(x, y) {
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= Hh) continue;
+        if (floor[ny * W + nx]) return true;
+      }
+      return false;
+    }
+    function drawWall(ctx, px, py, s) {
+      ctx.fillStyle = '#4a4a78';
+      ctx.fillRect(px, py, s, s);
+      ctx.fillStyle = '#5c5c92';
+      var g = Math.max(2, s * 0.06), bh = (s - g * 3) / 2, bw = (s - g * 3) / 2;
+      ctx.fillRect(px + g, py + g, s - g * 2, bh);
+      ctx.fillRect(px + g, py + g * 2 + bh, bw, bh);
+      ctx.fillRect(px + g * 2 + bw, py + g * 2 + bh, bw, bh);
+    }
+    function drawGoal(ctx, px, py, s, filled) {
+      var cx = px + s / 2, cy = py + s / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, s * 0.28, 0, Math.PI * 2);
+      ctx.strokeStyle = filled ? '#2ecc71' : '#f5b041';
+      ctx.lineWidth = Math.max(2, s * 0.08);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, s * 0.1, 0, Math.PI * 2);
+      ctx.fillStyle = filled ? '#2ecc71' : '#f5b041';
+      ctx.fill();
+    }
+    function drawBox(ctx, px, py, s, onGoal, fl) {
+      var pad = s * 0.12;
+      if (fl > 0) pad -= s * 0.08 * (fl / 260);   // 乗った瞬間だけ少し大きく
+      var b = s - pad * 2;
+      ctx.fillStyle = onGoal ? '#27ae60' : '#c47a2c';
+      roundRect(ctx, px + pad, py + pad, b, b, s * 0.12);
+      ctx.fill();
+      ctx.strokeStyle = onGoal ? '#1e8449' : '#8e5a1f';
+      ctx.lineWidth = Math.max(2, s * 0.07);
+      ctx.stroke();
+      ctx.beginPath();
+      var ins = pad + s * 0.12;
+      ctx.moveTo(px + ins, py + ins); ctx.lineTo(px + s - ins, py + s - ins);
+      ctx.moveTo(px + s - ins, py + ins); ctx.lineTo(px + ins, py + s - ins);
+      ctx.lineWidth = Math.max(2, s * 0.05);
+      ctx.stroke();
+      if (fl > 0) {
+        ctx.beginPath();
+        ctx.arc(px + s / 2, py + s / 2, s * (0.45 + 0.35 * (1 - fl / 260)), 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(46, 204, 113,' + (fl / 260) + ')';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    }
+    function drawPlayer(ctx, px, py, s) {
+      var cx = px + s / 2, cy = py + s / 2;
+      // 体
+      ctx.fillStyle = '#56b4e9';
+      roundRect(ctx, cx - s * 0.22, cy - s * 0.02, s * 0.44, s * 0.42, s * 0.1);
+      ctx.fill();
+      // 頭
+      ctx.beginPath();
+      ctx.arc(cx, cy - s * 0.2, s * 0.2, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffe0bd';
+      ctx.fill();
+      // 目
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.arc(cx - s * 0.07, cy - s * 0.22, s * 0.03, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + s * 0.07, cy - s * 0.22, s * 0.03, 0, Math.PI * 2); ctx.fill();
+    }
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function startFlash(k) {
+      flash[k] = 260;
+      if (flashTimer) return;
+      var last = Date.now();
+      flashTimer = setInterval(function () {
+        var now = Date.now(), dt = now - last, any = false; last = now;
+        for (var key in flash) {
+          flash[key] -= dt;
+          if (flash[key] <= 0) delete flash[key]; else any = true;
+        }
+        draw();
+        if (!any) { clearInterval(flashTimer); flashTimer = null; }
+      }, 33);
+    }
+
+    // ---------- 移動 ----------
+    var DIR = { up: -1, down: 1, left: -1, right: 1 };
+    function move(dir) {
+      if (done || overlayEl) return;
+      var dx = (dir === 'left' || dir === 'right') ? DIR[dir] : 0;
+      var dy = (dir === 'up' || dir === 'down') ? DIR[dir] : 0;
+      var px = player % W, py = Math.floor(player / W);
+      var nx = px + dx, ny = py + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= Hh) return;
+      var n = ny * W + nx;
+      if (wall[n]) { H.audio.beep(150, 0.05, 'square', 0.03); return; }
+      var bi = boxAt(n), pushed = false;
+      if (bi >= 0) {
+        var bx = nx + dx, by = ny + dy;
+        if (bx < 0 || by < 0 || bx >= W || by >= Hh) return;
+        var nn = by * W + bx;
+        if (wall[nn] || boxAt(nn) >= 0) { H.audio.beep(150, 0.05, 'square', 0.03); return; }
+        history.push({ player: player, boxes: boxes.slice(), pushes: pushes });
+        boxes[bi] = nn; pushes++; pushed = true;
+        if (goal[nn]) { H.audio.good(); startFlash(nn); }
+        else H.audio.beep(330, 0.05, 'triangle', 0.05);
+      } else {
+        history.push({ player: player, boxes: boxes.slice(), pushes: pushes });
+        H.audio.beep(520, 0.03, 'sine', 0.02);
+      }
+      player = n;
+      hud(); draw();
+      if (pushed && onGoalCount() === boxes.length) win();
+    }
+    function undo() {
+      if (!history.length || overlayEl) return;
+      var s = history.pop();
+      player = s.player; boxes = s.boxes; pushes = s.pushes; done = false;
+      H.audio.click();
+      hud(); draw();
+    }
+    function restart() { loadLevel(lvIndex); }
+
+    // ---------- クリア ----------
+    function win() {
+      done = true;
+      var moves = history.length;
+      var rec = false;
+      if (!bests[lvIndex] || moves < bests[lvIndex]) { bests[lvIndex] = moves; store.set('best', bests); rec = true; }
+      cleared[lvIndex] = true; store.set('cleared', cleared);
+      hud();
+      H.audio.win();
+      var allDone = true;
+      for (var i = 0; i < LEVELS.length; i++) if (!cleared[i]) allDone = false;
+      setTimeout(function () {
+        var last = lvIndex === LEVELS.length - 1;
+        var html = '押した回数 ' + pushes + ' 回' + (rec ? ' <span class="rec">新記録!</span>' : ' / ベスト ' + bests[lvIndex] + ' 手');
+        if (allDone) html += '<br>全 ' + LEVELS.length + ' 面クリア、おめでとう!';
+        var buttons = [];
+        if (!last) buttons.push({ label: '次の面へ', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+        buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; restart(); } });
+        buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+        overlayEl = H.overlay({ title: last ? '最終面クリア!' : 'クリア!', big: moves + ' 手', html: html, buttons: buttons });
+      }, 350);
+    }
+
+    // ---------- 面一覧 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function showLevels() {
+      closeOverlay();
+      var n = 0;
+      for (var i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVELS.length + ' 面　✓ はクリア済み</span><br>';
+      html += '<span class="lv-grid">';
+      for (i = 0; i < LEVELS.length; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv scrollable';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+
+    // ---------- 入力 ----------
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) move(dir); }, { repeatMs: 170 });
+    H.swipe(canvas, function (dir) { move(dir); });
+    H.holdButton(document.getElementById('btn-undo'), undo, null, 220);
+    H.holdButton(document.getElementById('btn-restart'), function () { H.audio.click(); restart(); });
+    H.holdButton(document.getElementById('btn-prev'), function () { H.audio.click(); loadLevel(lvIndex - 1); });
+    H.holdButton(document.getElementById('btn-next'), function () { H.audio.click(); loadLevel(lvIndex + 1); });
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); showLevels(); });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+    H.keys({
+      ArrowUp: function () { move('up'); }, ArrowDown: function () { move('down'); },
+      ArrowLeft: function () { move('left'); }, ArrowRight: function () { move('right'); },
+      w: function () { move('up'); }, s: function () { move('down'); }, a: function () { move('left'); }, d: function () { move('right'); },
+      z: undo, u: undo, r: restart,
+      n: function () { loadLevel(lvIndex + 1); }, p: function () { loadLevel(lvIndex - 1); },
+      Escape: function () { closeOverlay(); },
+      __repeat: true
+    });
+
+    window.resetGame = function () { restart(); H.toast('最初から'); };
+
+    var startIdx = store.get('last', 0);
+    if (typeof startIdx !== 'number' || startIdx < 0 || startIdx >= LEVELS.length) startIdx = 0;
+    loadLevel(startIdx);
+  })();
+  </script>
+</body>
+</html>

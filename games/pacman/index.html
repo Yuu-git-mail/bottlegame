@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ドットイート - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.lv b { color: var(--info); }
+    .hud-item.left b { color: var(--warn); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ドットイート" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+      <span class="hud-item lv">面<b id="level">1</b></span>
+      <span class="hud-item left">残り<b id="left">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>黄色いキャラを動かして、迷路のドットを全部食べるとステージクリア。</li>
+            <li>敵(おばけ)に触れると残機が 1 減る。残機が無くなるとゲームオーバー。</li>
+            <li>大きな光るエサを食べると、しばらく敵が青くなり、食べられる(点数が倍々に増える)。</li>
+            <li>左右の端のトンネルは反対側につながっている。</li>
+            <li>敵は 4 体で性格が違う: 赤=追いかける、ピンク=先回り、水色=気分屋、オレンジ=気まぐれ。</li>
+            <li>面が進むと迷路が変わり、速くなる。10000 点ごとに残機が 1 増える。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 盤面をスワイプ、または下の十字キー。次の曲がり角で曲がる(先に入力しておける)。</li>
+            <li>PC: 矢印キー または WASD。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ---------- 迷路 ----------
+    // # 壁  . ドット  o パワーエサ  (空白) 通路(ドット無し・端はトンネル)  G 敵の巣  - 巣の扉  P 開始位置
+    var MAZES = [
+      { wall: '#2f5bd6', edge: '#7fa3ff', rows: [
+        '###############',
+        '#......#......#',
+        '#o##.#.#.#.##o#',
+        '#....#...#....#',
+        '##.#.#####.#.##',
+        ' ..#.......#.. ',
+        '##.#.##-##.#.##',
+        '#....#GGG#....#',
+        '#.##.#GGG#.##.#',
+        '#.#..#####..#.#',
+        '#.#.........#.#',
+        '#..#.#.P.#.#..#',
+        '##.#.#.#.#.#.##',
+        '#o...........o#',
+        '#...#.....#...#',
+        '###############' ] },
+      { wall: '#c2417a', edge: '#ff9ccb', rows: [
+        '###############',
+        '#o...........o#',
+        '#.###.###.###.#',
+        '#.............#',
+        '###.#.###.#.###',
+        '  ..#.....#..  ',
+        '###.###-###.###',
+        '#....#GGG#....#',
+        '#.##.#GGG#.##.#',
+        '#....#####....#',
+        '##.#.......#.##',
+        '  .#..#P#..#.  ',
+        '##.#.##.##.#.##',
+        '#.....#.#.....#',
+        '#o.##.....##.o#',
+        '###############' ] },
+      { wall: '#1f9d6a', edge: '#7fe0b4', rows: [
+        '###############',
+        '#.....#.#.....#',
+        '#o###.#.#.###o#',
+        '#.#.........#.#',
+        '#.#.##.#.##.#.#',
+        '#.............#',
+        '##.####-####.##',
+        ' ....#GGG#.... ',
+        '##.#.#GGG#.#.##',
+        '#..#.#####.#..#',
+        '#.##.......##.#',
+        '#....#.P.#....#',
+        '#.##.#####.##.#',
+        '#o.....#.....o#',
+        '#...#.....#...#',
+        '###############' ] }
+    ];
+    var COLS = 15, ROWS = 16, CELL = 24, FOOT = 28;
+    var BASE_W = COLS * CELL, BASE_H = ROWS * CELL + FOOT;
+    var DIRS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+    var DIR_LIST = ['up', 'left', 'down', 'right'];
+    var OPP = { up: 'down', down: 'up', left: 'right', right: 'left' };
+    var GHOST_DEF = [
+      { color: '#ff4d4d', ai: 'chase',  corner: { x: 13, y: 1 },  wait: 0 },
+      { color: '#ff9ddb', ai: 'ambush', corner: { x: 1, y: 1 },   wait: 2 },
+      { color: '#4fd8ff', ai: 'fickle', corner: { x: 13, y: 14 }, wait: 5 },
+      { color: '#ffb347', ai: 'random', corner: { x: 1, y: 14 },  wait: 8 }
+    ];
+
+    var store = H.store('pacman');
+    var best = store.get('best', 0);
+
+    // ---------- 状態 ----------
+    var grid, dots, dotsLeft, maze, mazeIdx;
+    var level = 1, score = 0, lives = 3, nextLifeAt = 10000;
+    var player, ghosts, door, houseCenter, start, distToDoor;
+    var state = 'idle';          // idle ready play dying clear over
+    var stateT = 0, modeT = 0, mode = 'scatter', frightT = 0, eatChain = 0, wakaAlt = false;
+    var pops = [];               // 浮かぶ得点表示
+    var overlayEl = null, pauseEl = null, pulse = 0;
+    var el = { score: document.getElementById('score'), best: document.getElementById('best'),
+               level: document.getElementById('level'), left: document.getElementById('left') };
+
+    var canvas = document.getElementById('cv');
+    var scale = 1;
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function (w, h, c, sc) { scale = sc || (w / BASE_W); if (grid) draw(); });
+
+    function hud() {
+      el.score.textContent = score; el.best.textContent = best;
+      el.level.textContent = level; el.left.textContent = dotsLeft;
+    }
+
+    // ---------- 迷路の読み込み ----------
+    function loadMaze(idx) {
+      mazeIdx = idx; maze = MAZES[idx];
+      grid = []; dots = []; dotsLeft = 0; door = null; start = null;
+      var gx = 0, gy = 0, gn = 0;
+      for (var r = 0; r < ROWS; r++) {
+        var row = maze.rows[r], g = [], d = [];
+        for (var c = 0; c < COLS; c++) {
+          var ch = row.charAt(c);
+          g.push(ch);
+          d.push(ch === '.' ? 1 : ch === 'o' ? 2 : 0);
+          if (ch === '.' || ch === 'o') dotsLeft++;
+          if (ch === '-') door = { x: c, y: r };
+          if (ch === 'P') start = { x: c, y: r };
+          if (ch === 'G') { gx += c; gy += r; gn++; }
+        }
+        grid.push(g); dots.push(d);
+      }
+      houseCenter = { x: gx / gn, y: gy / gn };
+      // 扉の上のマスまでの距離(目玉が帰る用)
+      distToDoor = bfs(door.x, door.y - 1);
+    }
+    function wrapC(c) { return ((c % COLS) + COLS) % COLS; }
+    function cellAt(c, r) {
+      if (r < 0 || r >= ROWS) return '#';
+      return grid[r][wrapC(c)];
+    }
+    // who: 'player' | 'ghost' | 'eyes'
+    function passable(c, r, who) {
+      var ch = cellAt(c, r);
+      if (ch === '#') return false;
+      if (ch === 'G' || ch === '-') return who === 'eyes';
+      return true;
+    }
+    function bfs(sc, sr) {
+      var dist = [], q = [[sc, sr]];
+      for (var r = 0; r < ROWS; r++) { dist.push([]); for (var c = 0; c < COLS; c++) dist[r].push(-1); }
+      dist[sr][sc] = 0;
+      while (q.length) {
+        var cur = q.shift();
+        for (var i = 0; i < 4; i++) {
+          var d = DIRS[DIR_LIST[i]], nc = wrapC(cur[0] + d.x), nr = cur[1] + d.y;
+          if (nr < 0 || nr >= ROWS || dist[nr][nc] >= 0 || !passable(nc, nr, 'player')) continue;
+          dist[nr][nc] = dist[cur[1]][cur[0]] + 1;
+          q.push([nc, nr]);
+        }
+      }
+      return dist;
+    }
+
+    // ---------- 速さ ----------
+    function lvF() { return Math.min(level - 1, 12); }
+    function playerSpeed() { return 5.2 + lvF() * 0.22; }
+    function ghostSpeed(g) {
+      if (g.state === 'eyes') return 10;
+      if (g.state === 'fright') return 3;
+      var s = 4.6 + lvF() * 0.25;
+      if (cellAt(Math.floor(g.x), Math.floor(g.y)) === ' ') s *= 0.55; // トンネルでは遅い
+      return s;
+    }
+    function frightDur() { return Math.max(2.5, 7 - lvF() * 0.5); }
+
+    // ---------- 配置 ----------
+    function placeActors() {
+      player = { x: start.x + 0.5, y: start.y + 0.5, dir: null, want: null, mouth: 0, dist: 0 };
+      ghosts = [];
+      for (var i = 0; i < 4; i++) {
+        var def = GHOST_DEF[i];
+        var g = { id: i, color: def.color, ai: def.ai, corner: def.corner,
+                  x: houseCenter.x + 0.5 + (i - 1.5) * 0.6, y: houseCenter.y + 0.5, dir: 'up', state: 'house',
+                  wait: def.wait, bob: i * 0.7 };
+        if (i === 0) { g.x = door.x + 0.5; g.y = door.y - 1 + 0.5; g.state = 'out'; g.dir = 'left'; }
+        ghosts.push(g);
+      }
+      mode = 'scatter'; modeT = 7; frightT = 0; eatChain = 0; pops = [];
+    }
+
+    // ---------- プレイヤー ----------
+    // 進行方向 d(-1/0/1) で次に来るマス中心の座標
+    function nextCenter(v, d) {
+      if (!d) return v;
+      var c = Math.floor(v) + 0.5;
+      if (d > 0) return v < c - 0.0005 ? c : c + 1;
+      return v > c + 0.0005 ? c : c - 1;
+    }
+    function atCenter(o, eps) {
+      return Math.abs(o.x - Math.floor(o.x) - 0.5) < eps && Math.abs(o.y - Math.floor(o.y) - 0.5) < eps;
+    }
+    function updatePlayer(dt) {
+      var p = player, left = playerSpeed() * dt;
+      // 逆向きはいつでも
+      if (p.want && p.dir && p.want === OPP[p.dir]) { p.dir = p.want; p.want = null; }
+      var guard = 0;
+      while (left > 0.00001 && guard++ < 8) {
+        var cx = Math.floor(p.x), cy = Math.floor(p.y);
+        var ccx = cx + 0.5, ccy = cy + 0.5;
+        var dcx = ccx - p.x, dcy = ccy - p.y;
+        var atC = Math.abs(dcx) < 0.001 && Math.abs(dcy) < 0.001;
+        // 曲がり角の少し手前でも先行入力を受ける(中心へ寄せて曲がる)
+        if (!atC && p.want && p.want !== p.dir && Math.abs(dcx) + Math.abs(dcy) < 0.35) {
+          var wd = DIRS[p.want];
+          if (passable(cx + wd.x, cy + wd.y, 'player')) { p.x = ccx; p.y = ccy; atC = true; }
+        }
+        if (atC) {
+          p.x = ccx; p.y = ccy;
+          if (p.want && passable(cx + DIRS[p.want].x, cy + DIRS[p.want].y, 'player')) { p.dir = p.want; p.want = null; }
+          if (!p.dir) return;
+          var d = DIRS[p.dir];
+          if (!passable(cx + d.x, cy + d.y, 'player')) { p.dir = null; return; }
+          var step = Math.min(left, 1);
+          p.x += d.x * step; p.y += d.y * step; left -= step; p.dist += step;
+        } else {
+          if (!p.dir) { p.x = ccx; p.y = ccy; return; }
+          var dd = DIRS[p.dir];
+          // 次の中心(進行方向)まで
+          var tx = nextCenter(p.x, dd.x), ty = nextCenter(p.y, dd.y);
+          var rem = Math.abs(tx - p.x) + Math.abs(ty - p.y);
+          var s2 = Math.min(left, rem);
+          p.x += dd.x * s2; p.y += dd.y * s2; left -= s2; p.dist += s2;
+          if (s2 >= rem - 0.00001) { p.x = tx; p.y = ty; }
+        }
+        if (p.x < 0) p.x += COLS; if (p.x >= COLS) p.x -= COLS;
+      }
+      p.mouth = Math.abs(Math.sin(p.dist * 3.2));
+    }
+    function eatDots() {
+      var c = Math.floor(player.x), r = Math.floor(player.y);
+      if (!atCenter(player, 0.3)) return;
+      var v = dots[r][c];
+      if (!v) return;
+      dots[r][c] = 0; dotsLeft--;
+      if (v === 1) {
+        addScore(10);
+        wakaAlt = !wakaAlt;
+        H.audio.beep(wakaAlt ? 440 : 330, 0.04, 'square', 0.03);
+      } else {
+        addScore(50);
+        H.audio.beep(220, 0.25, 'triangle', 0.06);
+        frightT = frightDur(); eatChain = 0;
+        for (var i = 0; i < ghosts.length; i++) {
+          var g = ghosts[i];
+          if (g.state === 'out') { g.state = 'fright'; g.dir = OPP[g.dir]; }
+        }
+      }
+      hud();
+      if (dotsLeft <= 0) { state = 'clear'; stateT = 2.2; H.audio.win(); }
+    }
+    function addScore(n) {
+      score += n;
+      if (score > best) { best = score; store.set('best', best); }
+      if (score >= nextLifeAt) { nextLifeAt += 10000; lives++; H.toast('残機 +1'); H.audio.good(); }
+    }
+
+    // ---------- 敵 ----------
+    function ghostTarget(g) {
+      var p = player, pd = p.dir ? DIRS[p.dir] : { x: 0, y: 0 };
+      if (mode === 'scatter' && g.ai !== 'random') return g.corner;
+      if (g.ai === 'chase') return { x: p.x, y: p.y };
+      if (g.ai === 'ambush') return { x: p.x + pd.x * 4, y: p.y + pd.y * 4 };
+      if (g.ai === 'fickle') {
+        var red = ghosts[0], ax = p.x + pd.x * 2, ay = p.y + pd.y * 2;
+        return { x: ax + (ax - red.x), y: ay + (ay - red.y) };
+      }
+      // random: 近いと追う、遠いと気まぐれ
+      var dd = Math.abs(g.x - p.x) + Math.abs(g.y - p.y);
+      if (dd < 6 && Math.random() < 0.7) return { x: p.x, y: p.y };
+      return null;
+    }
+    function chooseDir(g, cx, cy) {
+      var who = g.state === 'eyes' ? 'eyes' : 'ghost';
+      var cands = [];
+      for (var i = 0; i < 4; i++) {
+        var dn = DIR_LIST[i];
+        if (dn === OPP[g.dir]) continue;
+        var d = DIRS[dn];
+        if (passable(cx + d.x, cy + d.y, who)) cands.push(dn);
+      }
+      if (!cands.length) return OPP[g.dir];
+      if (cands.length === 1) return cands[0];
+      if (g.state === 'eyes') {
+        var bestD = null, bv = 1e9;
+        for (var k = 0; k < cands.length; k++) {
+          var e = DIRS[cands[k]], nr = cy + e.y, nc = wrapC(cx + e.x);
+          var v = (distToDoor[nr] && distToDoor[nr][nc] >= 0) ? distToDoor[nr][nc] : 999;
+          if (v < bv) { bv = v; bestD = cands[k]; }
+        }
+        return bestD;
+      }
+      var tgt = g.state === 'fright' ? null : ghostTarget(g);
+      if (!tgt) return cands[Math.floor(Math.random() * cands.length)];
+      var bd = cands[0], bdist = 1e9;
+      for (var j = 0; j < cands.length; j++) {
+        var f = DIRS[cands[j]];
+        var dx = cx + f.x + 0.5 - tgt.x, dy = cy + f.y + 0.5 - tgt.y;
+        // トンネル越しの距離も見る
+        dx = Math.min(Math.abs(dx), COLS - Math.abs(dx));
+        var dist = dx * dx + dy * dy;
+        if (dist < bdist) { bdist = dist; bd = cands[j]; }
+      }
+      return bd;
+    }
+    function moveAlongGrid(g, amount) {
+      var guard = 0;
+      while (amount > 0.00001 && guard++ < 12) {
+        var cx = Math.floor(g.x), cy = Math.floor(g.y);
+        var ccx = cx + 0.5, ccy = cy + 0.5;
+        if (Math.abs(g.x - ccx) < 0.001 && Math.abs(g.y - ccy) < 0.001) {
+          g.x = ccx; g.y = ccy;
+          if (g.state === 'eyes' && cx === door.x && cy === door.y - 1) { g.state = 'enter'; return; }
+          g.dir = chooseDir(g, cx, cy);
+          var d = DIRS[g.dir], step = Math.min(amount, 1);
+          g.x += d.x * step; g.y += d.y * step; amount -= step;
+        } else {
+          var dd = DIRS[g.dir];
+          var tx = nextCenter(g.x, dd.x), ty = nextCenter(g.y, dd.y);
+          var rem = Math.abs(tx - g.x) + Math.abs(ty - g.y);
+          var s2 = Math.min(amount, rem);
+          g.x += dd.x * s2; g.y += dd.y * s2; amount -= s2;
+          if (s2 >= rem - 0.00001) { g.x = tx; g.y = ty; }
+        }
+        if (g.x < 0) g.x += COLS; if (g.x >= COLS) g.x -= COLS;
+      }
+    }
+    function moveToward(g, tx, ty, amount) {
+      var dx = tx - g.x, dy = ty - g.y, d = Math.abs(dx) + Math.abs(dy);
+      if (d <= amount) { g.x = tx; g.y = ty; return true; }
+      if (Math.abs(dx) > 0.001) { g.x += Math.sign(dx) * Math.min(amount, Math.abs(dx)); g.dir = dx > 0 ? 'right' : 'left'; }
+      else { g.y += Math.sign(dy) * Math.min(amount, Math.abs(dy)); g.dir = dy > 0 ? 'down' : 'up'; }
+      return false;
+    }
+    function updateGhosts(dt) {
+      // scatter / chase の切り替え
+      if (frightT > 0) {
+        frightT -= dt;
+        if (frightT <= 0) for (var k = 0; k < 4; k++) if (ghosts[k].state === 'fright') ghosts[k].state = 'out';
+      } else {
+        modeT -= dt;
+        if (modeT <= 0) {
+          mode = mode === 'scatter' ? 'chase' : 'scatter';
+          modeT = mode === 'scatter' ? Math.max(3, 7 - lvF()) : 20;
+          for (var m = 0; m < 4; m++) if (ghosts[m].state === 'out') ghosts[m].dir = OPP[ghosts[m].dir];
+        }
+      }
+      var hx = houseCenter.x + 0.5, hy = houseCenter.y + 0.5;
+      for (var i = 0; i < 4; i++) {
+        var g = ghosts[i], sp = ghostSpeed(g) * dt;
+        if (g.state === 'house') {
+          g.wait -= dt; g.bob += dt * 4;
+          g.y = hy + Math.sin(g.bob) * 0.18;
+          g.dir = Math.cos(g.bob) > 0 ? 'down' : 'up';
+          if (g.wait <= 0) g.state = 'leave';
+        } else if (g.state === 'leave') {
+          if (Math.abs(g.x - (door.x + 0.5)) > 0.001) moveToward(g, door.x + 0.5, hy, sp);
+          else if (moveToward(g, door.x + 0.5, door.y - 1 + 0.5, sp)) { g.state = frightT > 0 ? 'fright' : 'out'; g.dir = Math.random() < 0.5 ? 'left' : 'right'; }
+        } else if (g.state === 'enter') {
+          if (moveToward(g, door.x + 0.5, hy, sp)) { g.state = 'house'; g.wait = 1; }
+        } else {
+          moveAlongGrid(g, sp);
+        }
+      }
+    }
+    function collide() {
+      for (var i = 0; i < 4; i++) {
+        var g = ghosts[i];
+        if (g.state !== 'out' && g.state !== 'fright') continue;
+        var dx = Math.abs(g.x - player.x); dx = Math.min(dx, COLS - dx);
+        var dy = g.y - player.y;
+        if (dx * dx + dy * dy > 0.55 * 0.55) continue;
+        if (g.state === 'fright') {
+          eatChain++;
+          var pts = 200 * Math.pow(2, Math.min(eatChain - 1, 3));
+          addScore(pts); hud();
+          pops.push({ x: g.x, y: g.y, t: 1.0, text: String(pts) });
+          g.state = 'eyes';
+          H.audio.good();
+        } else {
+          state = 'dying'; stateT = 1.4; player.want = null;
+          H.audio.bad();
+          setTimeout(function () { H.audio.beep(200, 0.3, 'sawtooth', 0.05); }, 350);
+          return;
+        }
+      }
+    }
+
+    // ---------- 進行 ----------
+    function update(dt) {
+      pulse += dt;
+      for (var i = pops.length - 1; i >= 0; i--) { pops[i].t -= dt; pops[i].y -= dt * 0.6; if (pops[i].t <= 0) pops.splice(i, 1); }
+      if (state === 'ready') {
+        stateT -= dt;
+        if (stateT <= 0) state = 'play';
+      } else if (state === 'play') {
+        updatePlayer(dt);
+        eatDots();
+        if (state !== 'play') return;
+        updateGhosts(dt);
+        collide();
+      } else if (state === 'dying') {
+        stateT -= dt;
+        if (stateT <= 0) {
+          lives--;
+          if (lives <= 0) gameOver();
+          else { placeActors(); state = 'ready'; stateT = 1.2; }
+        }
+      } else if (state === 'clear') {
+        stateT -= dt;
+        if (stateT <= 0) stageClear();
+      }
+    }
+
+    function beginLevel() {
+      loadMaze((level - 1) % MAZES.length);
+      placeActors();
+      hud();
+      state = 'ready'; stateT = 1.5;
+      loop.pause(false);
+      loop.start();
+    }
+    function stageClear() {
+      state = 'idle';
+      overlayEl = H.overlay({
+        title: 'ステージ ' + level + ' クリア!', big: score + ' 点',
+        html: '残機 ' + lives + ' / 次は迷路 ' + (((level) % MAZES.length) + 1) + ' が速くなる',
+        buttons: [{ label: '次の面へ', onClick: function () { overlayEl = null; level++; beginLevel(); } }]
+      });
+    }
+    function gameOver() {
+      state = 'over';
+      overlayEl = H.overlay({
+        title: 'ゲームオーバー', big: score + ' 点',
+        html: '到達 ' + level + ' 面 / ベスト ' + best + ' 点',
+        buttons: [{ label: 'もう一度', onClick: function () { overlayEl = null; newGame(); } },
+                  { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }]
+      });
+    }
+    function newGame() {
+      level = 1; score = 0; lives = 3; nextLifeAt = 10000;
+      beginLevel();
+    }
+    function showStart() {
+      overlayEl = H.overlay({
+        title: 'ドットイート',
+        html: 'ドットを全部食べよう。<br>スワイプ・十字キー・矢印キーで移動。',
+        buttons: [{ label: 'スタート', onClick: function () { overlayEl = null; newGame(); } }]
+      });
+    }
+    window.resetGame = function () {
+      if (overlayEl) { overlayEl.close(); overlayEl = null; }
+      if (pauseEl) { pauseEl.close(); pauseEl = null; }
+      loop.pause(false);
+      level = 1; score = 0; lives = 3; nextLifeAt = 10000;
+      loadMaze(0); placeActors(); state = 'idle'; hud(); draw();
+      showStart();
+    };
+
+    // ---------- 入力 ----------
+    function setWant(dir) {
+      if (state !== 'play' && state !== 'ready') return;
+      player.want = dir;
+      if (!player.dir && state === 'play') {
+        var c = Math.floor(player.x), r = Math.floor(player.y), d = DIRS[dir];
+        if (passable(c + d.x, r + d.y, 'player')) { player.dir = dir; player.want = null; }
+      }
+    }
+    H.swipe(canvas, setWant);
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) setWant(dir); }, { repeatMs: 0 });
+    var km = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', w: 'up', s: 'down', a: 'left', d: 'right', W: 'up', S: 'down', A: 'left', D: 'right' };
+    var keyMap = {};
+    Object.keys(km).forEach(function (k) { keyMap[k] = function () { setWant(km[k]); }; });
+    H.keys(keyMap);
+
+    // ---------- 描画 ----------
+    function drawWalls(ctx, flashOn) {
+      var wall = flashOn ? '#ffffff' : maze.wall, edge = flashOn ? '#ffffff' : maze.edge;
+      ctx.fillStyle = wall;
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+        if (grid[r][c] === '#') ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+      }
+      // 通路側の縁取り
+      ctx.strokeStyle = edge; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (var r2 = 0; r2 < ROWS; r2++) for (var c2 = 0; c2 < COLS; c2++) {
+        if (grid[r2][c2] !== '#') continue;
+        var x = c2 * CELL, y = r2 * CELL, o = 3;
+        if (r2 > 0 && grid[r2 - 1][c2] !== '#') { ctx.moveTo(x, y + o); ctx.lineTo(x + CELL, y + o); }
+        if (r2 < ROWS - 1 && grid[r2 + 1][c2] !== '#') { ctx.moveTo(x, y + CELL - o); ctx.lineTo(x + CELL, y + CELL - o); }
+        if (c2 > 0 && grid[r2][c2 - 1] !== '#') { ctx.moveTo(x + o, y); ctx.lineTo(x + o, y + CELL); }
+        if (c2 < COLS - 1 && grid[r2][c2 + 1] !== '#') { ctx.moveTo(x + CELL - o, y); ctx.lineTo(x + CELL - o, y + CELL); }
+      }
+      ctx.stroke();
+      // 扉
+      ctx.fillStyle = '#ffb6c1';
+      ctx.fillRect(door.x * CELL + 2, door.y * CELL + CELL / 2 - 2, CELL - 4, 4);
+    }
+    function drawDots(ctx) {
+      var pr = 5 + Math.sin(pulse * 6) * 1.5;
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+        var v = dots[r][c];
+        if (!v) continue;
+        var x = c * CELL + CELL / 2, y = r * CELL + CELL / 2;
+        ctx.beginPath();
+        if (v === 1) { ctx.fillStyle = '#ffe08a'; ctx.arc(x, y, 2.6, 0, Math.PI * 2); }
+        else { ctx.fillStyle = '#fff3b0'; ctx.arc(x, y, pr, 0, Math.PI * 2); }
+        ctx.fill();
+      }
+    }
+    function drawPac(ctx, x, y, r, dir, mouth) {
+      var rot = dir === 'left' ? Math.PI : dir === 'up' ? -Math.PI / 2 : dir === 'down' ? Math.PI / 2 : 0;
+      var a = mouth * 0.45 * Math.PI;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+      ctx.fillStyle = '#ffd92e';
+      ctx.beginPath();
+      if (a < 0.01) ctx.arc(0, 0, r, 0, Math.PI * 2);
+      else { ctx.moveTo(0, 0); ctx.arc(0, 0, r, a, Math.PI * 2 - a); ctx.closePath(); }
+      ctx.fill();
+      ctx.restore();
+    }
+    function drawGhost(ctx, g) {
+      var x = g.x * CELL, y = g.y * CELL, r = CELL / 2 - 2;
+      var fr = g.state === 'fright';
+      var flash = fr && frightT < 2 && Math.floor(frightT * 6) % 2 === 0;
+      var eyesOnly = g.state === 'eyes' || g.state === 'enter';
+      ctx.save(); ctx.translate(x, y);
+      if (!eyesOnly) {
+        ctx.fillStyle = fr ? (flash ? '#f2f2ff' : '#2a3cff') : g.color;
+        ctx.beginPath();
+        ctx.arc(0, -1, r, Math.PI, 0);
+        ctx.lineTo(r, r - 1);
+        var wob = Math.floor(pulse * 10) % 2 === 0 ? 2 : -2;
+        ctx.lineTo(r * 0.66, r - 4 + wob); ctx.lineTo(r * 0.33, r - 1);
+        ctx.lineTo(0, r - 4 + wob); ctx.lineTo(-r * 0.33, r - 1);
+        ctx.lineTo(-r * 0.66, r - 4 + wob); ctx.lineTo(-r, r - 1);
+        ctx.closePath(); ctx.fill();
+      }
+      if (fr && !eyesOnly) {
+        ctx.fillStyle = flash ? '#d33' : '#fff';
+        ctx.fillRect(-r / 2 - 1, -r / 3, 3, 3); ctx.fillRect(r / 2 - 2, -r / 3, 3, 3);
+        ctx.beginPath(); ctx.lineWidth = 1.5; ctx.strokeStyle = flash ? '#d33' : '#fff';
+        for (var i = -3; i <= 3; i++) ctx.lineTo(i * 2, r / 3 + (i % 2 === 0 ? 2 : 0));
+        ctx.stroke();
+      } else {
+        var d = DIRS[g.dir] || { x: 0, y: 0 };
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.ellipse(-r / 2.6, -r / 4, 3.2, 4, 0, 0, Math.PI * 2); ctx.ellipse(r / 2.6, -r / 4, 3.2, 4, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#2033aa';
+        ctx.beginPath(); ctx.arc(-r / 2.6 + d.x * 1.6, -r / 4 + d.y * 1.8, 1.8, 0, Math.PI * 2); ctx.arc(r / 2.6 + d.x * 1.6, -r / 4 + d.y * 1.8, 1.8, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx || !grid) return;
+      ctx.save();
+      ctx.scale(scale, scale);
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#0b0b1c'; ctx.fillRect(0, 0, BASE_W, BASE_H);
+      var flash = state === 'clear' && Math.floor(stateT * 5) % 2 === 0;
+      drawWalls(ctx, flash);
+      drawDots(ctx);
+      if (state !== 'clear') for (var i = 0; i < 4; i++) {
+        var g = ghosts[i];
+        if (state === 'dying') continue;
+        drawGhost(ctx, g);
+        if (g.x < 1) { ctx.save(); ctx.translate(COLS * CELL, 0); drawGhost(ctx, g); ctx.restore(); }
+        if (g.x > COLS - 1) { ctx.save(); ctx.translate(-COLS * CELL, 0); drawGhost(ctx, g); ctx.restore(); }
+      }
+      if (state !== 'over') {
+        var pr = CELL / 2 - 1, mouth = player.mouth;
+        if (state === 'dying') { var k = 1 - stateT / 1.4; mouth = Math.min(1, k * 1.6); pr = k > 0.8 ? pr * (1 - (k - 0.8) / 0.2) : pr; }
+        if (state === 'ready') mouth = 0.2;
+        if (pr > 0.5) {
+          drawPac(ctx, player.x * CELL, player.y * CELL, pr, player.dir || 'right', mouth);
+          if (player.x < 1) drawPac(ctx, (player.x + COLS) * CELL, player.y * CELL, pr, player.dir || 'right', mouth);
+          if (player.x > COLS - 1) drawPac(ctx, (player.x - COLS) * CELL, player.y * CELL, pr, player.dir || 'right', mouth);
+        }
+      }
+      for (var p = 0; p < pops.length; p++) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, pops[p].t * 1.5));
+        ctx.fillStyle = '#9ff'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(pops[p].text, pops[p].x * CELL, pops[p].y * CELL);
+        ctx.globalAlpha = 1;
+      }
+      if (state === 'ready') {
+        ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('READY!', BASE_W / 2, (houseCenter.y + 2.5) * CELL);
+      }
+      if (state === 'clear') {
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('CLEAR!', BASE_W / 2, (houseCenter.y + 2.5) * CELL);
+      }
+      // 下の帯: 残機と面
+      var fy = ROWS * CELL + FOOT / 2;
+      for (var l = 0; l < Math.min(lives - 1, 6); l++) drawPac(ctx, 16 + l * 24, fy, 9, 'right', 0.5);
+      ctx.fillStyle = '#a9a9c9'; ctx.font = '13px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText('迷路 ' + (mazeIdx + 1) + ' / 面 ' + level, BASE_W - 8, fy);
+      ctx.restore();
+    }
+
+    // ---------- ループ・中断 ----------
+    var loop = H.loop(update, draw);
+    H.pauseWhenHidden(function () {
+      if (state !== 'play' && state !== 'ready') return;
+      if (pauseEl) return;
+      loop.pause(true);
+      pauseEl = H.overlay({ title: '一時停止', html: 'タップで再開',
+        buttons: [{ label: '続ける', onClick: function () { pauseEl = null; loop.pause(false); } }] });
+    });
+
+    window.__pac = function () { return { state: state, px: player.x, py: player.y, dir: player.dir, want: player.want, lives: lives, dots: dotsLeft, ghosts: ghosts.map(function (g) { return [g.state, +g.x.toFixed(2), +g.y.toFixed(2)]; }) }; };
+    loadMaze(0); placeActors(); hud(); draw(); showStart();
+  })();
+  </script>
+</body>
+</html>

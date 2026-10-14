@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>パネル入れ替え - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.chain b { color: var(--info); }
+    #btn-push.pressed, #btn-push:active { background: var(--warn); border-color: var(--warn); color: #222; }
+    /* 横長の画面では操作を盤面の両脇へ */
+    @media (orientation: landscape) and (max-height: 700px) {
+      .app-main { padding-bottom: 6px; }
+      .app-controls {
+        position: absolute; left: 0; right: 0; bottom: var(--safe-b);
+        justify-content: space-between; padding: 0 24px 10px; pointer-events: none;
+      }
+      .app-controls > * { pointer-events: auto; }
+    }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="パネル入れ替え" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">0</b></span>
+      <span class="hud-item chain">連鎖<b id="chain">1</b></span>
+      <span class="hud-item">レベル<b id="level">1</b></span>
+      <span class="hud-item accent">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>カーソル(白い枠)の左右 2 枚を入れ替えて、同じ色を縦か横に 3 つ以上そろえると消える。</li>
+            <li>消えたあと落ちてきたパネルがまたそろうと「連鎖」。得点が連鎖数倍になる。</li>
+            <li>4 つ以上同時に消すとボーナス。</li>
+            <li>パネルは下からせり上がる。レベルが上がると速くなる。</li>
+            <li>一番上の段までパネルが積み上がり、せり上がれなくなるとゲームオーバー。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: パネルをタップでカーソル移動。カーソルの上をもう一度タップで入れ替え。パネルを左右にスワイプでも入れ替え。</li>
+            <li>下の十字キーで移動、「入れ替え」ボタンで入れ替え、「せり上げ」を押している間は速くせり上がる(1 段ごとに +1 点)。</li>
+            <li>PC: 矢印キーで移動、スペースで入れ替え、Shift でせり上げ、P で一時停止。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div id="dpad"></div>
+      <div class="ctl-group">
+        <button type="button" class="ctl-btn wide" id="btn-swap">入れ替え</button>
+        <button type="button" class="ctl-btn wide" id="btn-push">せり上げ</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ===== ENGINE-BEGIN (DOM に依存しない。node でのテスト用に切り出せる) =====
+    var COLS = 6, ROWS = 12, TYPES = 5;
+    var FALL_SPEED = 16;      // cells / sec
+    var SWAP_SPEED = 14;      // cells / sec (1 cell = 入れ替え 1 回)
+    var CLEAR_FLASH = 0.45;   // 点滅時間
+    var POP_STEP = 0.09;      // 1 枚ずつ消える間隔
+    var POP_TIME = 0.18;      // 縮んで消える時間
+    var DANGER_TIME = 2.2;    // 天井に当たってからゲームオーバーまで
+    var LEVEL_SEC = 20;       // レベルが上がる間隔
+    var MAX_LEVEL = 20;
+
+    function createEngine(rng) {
+      rng = rng || Math.random;
+      var E = {};
+
+      function cell(t) { return { t: t, fy: 0, falling: false, landed: false, clr: 0, sw: 0, chain: false }; }
+      function pick(forbid) {
+        var t;
+        do { t = 1 + Math.floor(rng() * TYPES); } while (forbid.indexOf(t) >= 0 && forbid.length < TYPES);
+        return t;
+      }
+      function sameT(a, b) { return a && b && a.t === b.t; }
+
+      function newRow() {
+        var row = [], g = E.grid, r = ROWS;
+        for (var c = 0; c < COLS; c++) {
+          var forbid = [];
+          if (c >= 2 && row[c - 1].t === row[c - 2].t) forbid.push(row[c - 1].t);
+          if (sameT(g[r - 1][c], g[r - 2][c])) forbid.push(g[r - 1][c].t);
+          row.push(cell(pick(forbid)));
+        }
+        return row;
+      }
+
+      E.reset = function () {
+        E.grid = [];
+        for (var r = 0; r <= ROWS; r++) { E.grid.push([]); for (var c = 0; c < COLS; c++) E.grid[r].push(null); }
+        // 下 5 段 + せり上がり待ちの段
+        for (var rr = ROWS - 5; rr <= ROWS; rr++) {
+          for (var cc = 0; cc < COLS; cc++) {
+            var forbid = [];
+            if (cc >= 2 && sameT(E.grid[rr][cc - 1], E.grid[rr][cc - 2])) forbid.push(E.grid[rr][cc - 1].t);
+            if (sameT(E.grid[rr - 1][cc], E.grid[rr - 2][cc])) forbid.push(E.grid[rr - 1][cc].t);
+            E.grid[rr][cc] = cell(pick(forbid));
+          }
+        }
+        E.cursor = { r: ROWS - 3, c: 2 };
+        E.riseOff = 0; E.push = false; E.danger = 0;
+        E.score = 0; E.chain = 1; E.maxChain = 1; E.level = 1; E.time = 0;
+        E.gameOver = false; E.events = []; E.fx = [];
+      };
+
+      E.speed = function () { return 0.09 + (E.level - 1) * 0.035; };
+
+      function swappable(x) { return !x || (x.clr === 0 && x.sw === 0 && x.fy === 0 && !x.falling); }
+      function anySwapping() {
+        for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) { var x = E.grid[r][c]; if (x && x.sw !== 0) return true; }
+        return false;
+      }
+      function active() {
+        for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+          var x = E.grid[r][c];
+          if (x && (x.clr > 0 || x.sw !== 0 || x.falling || x.chain)) return true;
+        }
+        return false;
+      }
+
+      E.moveCursor = function (dir) {
+        if (E.gameOver) return false;
+        var cu = E.cursor, r = cu.r, c = cu.c;
+        if (dir === 'up') r--; if (dir === 'down') r++; if (dir === 'left') c--; if (dir === 'right') c++;
+        r = Math.max(0, Math.min(ROWS - 1, r)); c = Math.max(0, Math.min(COLS - 2, c));
+        if (r === cu.r && c === cu.c) return false;
+        cu.r = r; cu.c = c; return true;
+      };
+      E.setCursor = function (r, c) {
+        E.cursor.r = Math.max(0, Math.min(ROWS - 1, r));
+        E.cursor.c = Math.max(0, Math.min(COLS - 2, c));
+      };
+
+      // カーソル位置の 2 枚を入れ替える
+      E.swap = function () {
+        if (E.gameOver) return false;
+        var r = E.cursor.r, c = E.cursor.c, g = E.grid;
+        var a = g[r][c], b = g[r][c + 1];
+        if (!a && !b) return false;
+        if (!swappable(a) || !swappable(b) || anySwapping()) return false;
+        g[r][c] = b; g[r][c + 1] = a;
+        if (a) { a.sw = -1; a.chain = false; }
+        if (b) { b.sw = 1; b.chain = false; }
+        E.events.push('swap');
+        return true;
+      };
+
+      function checkMatches() {
+        var g = E.grid, mark = [], r, c, k, n = 0, any = false, chained = false;
+        for (r = 0; r < ROWS; r++) { mark.push([]); for (c = 0; c < COLS; c++) mark[r].push(false); }
+        function idle(x) { return x && x.clr === 0 && x.sw === 0 && x.fy === 0 && !x.falling; }
+        for (r = 0; r < ROWS; r++) {
+          for (c = 0; c < COLS; ) {
+            var x = g[r][c];
+            if (!idle(x)) { c++; continue; }
+            k = c + 1;
+            while (k < COLS && idle(g[r][k]) && g[r][k].t === x.t) k++;
+            if (k - c >= 3) for (var i = c; i < k; i++) mark[r][i] = true;
+            c = k;
+          }
+        }
+        for (c = 0; c < COLS; c++) {
+          for (r = 0; r < ROWS; ) {
+            var y = g[r][c];
+            if (!idle(y)) { r++; continue; }
+            k = r + 1;
+            while (k < ROWS && idle(g[k][c]) && g[k][c].t === y.t) k++;
+            if (k - r >= 3) for (var j = r; j < k; j++) mark[j][c] = true;
+            r = k;
+          }
+        }
+        var idx = 0, sumR = 0, sumC = 0;
+        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) if (mark[r][c]) {
+          var z = g[r][c];
+          if (z.chain) chained = true;
+          z.clr = CLEAR_FLASH + idx * POP_STEP + POP_TIME;
+          idx++; n++; sumR += r; sumC += c; any = true;
+        }
+        if (any) {
+          if (chained) { E.chain++; if (E.chain > E.maxChain) E.maxChain = E.chain; }
+          var pts = (n * 10 + (n > 3 ? (n - 3) * 20 : 0)) * E.chain;
+          E.score += pts;
+          E.events.push({ type: 'match', n: n, chain: E.chain, pts: pts, r: sumR / n, c: sumC / n });
+          E.fx.push({ r: sumR / n, c: sumC / n, n: n, chain: E.chain, pts: pts, t: 1.0 });
+        }
+        // 着地して何もそろわなかったパネルは連鎖の資格を失う
+        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+          var w = g[r][c];
+          if (w && w.landed) { w.landed = false; if (!mark[r][c]) w.chain = false; }
+        }
+        return any;
+      }
+
+      function shiftUp() {
+        var g = E.grid;
+        for (var r = 0; r < ROWS; r++) g[r] = g[r + 1];
+        g[ROWS] = newRow();
+        if (E.cursor.r > 0) E.cursor.r--;
+        for (var i = 0; i < E.fx.length; i++) E.fx[i].r -= 1;
+        E.events.push('shift');
+      }
+
+      E.update = function (dt) {
+        E.events.length = 0;
+        if (E.gameOver) return;
+        if (dt > 0.1) dt = 0.1;
+        E.time += dt;
+        var lv = Math.min(MAX_LEVEL, 1 + Math.floor(E.time / LEVEL_SEC));
+        if (lv !== E.level) { E.level = lv; E.events.push('level'); }
+        var g = E.grid, r, c, x, need = false;
+
+        // 入れ替えアニメ
+        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+          x = g[r][c];
+          if (!x || x.sw === 0) continue;
+          var d = dt * SWAP_SPEED;
+          if (Math.abs(x.sw) <= d) { x.sw = 0; need = true; } else x.sw += x.sw > 0 ? -d : d;
+        }
+        // 消去
+        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+          x = g[r][c];
+          if (!x || x.clr <= 0) continue;
+          var before = x.clr;
+          x.clr -= dt;
+          if (before > POP_TIME && x.clr <= POP_TIME) E.events.push('pop');
+          if (x.clr <= 0) {
+            g[r][c] = null;
+            for (var k = r - 1; k >= 0 && g[k][c]; k--) if (g[k][c].clr === 0) g[k][c].chain = true;
+          }
+        }
+        // 落下 (下の段から)
+        for (r = ROWS - 1; r >= 0; r--) for (c = 0; c < COLS; c++) {
+          x = g[r][c];
+          if (!x || x.clr > 0 || x.sw !== 0) continue;
+          var rr = r;
+          if (x.fy < 0) x.fy += dt * FALL_SPEED;
+          else if (rr + 1 < ROWS && !g[rr + 1][c]) { x.falling = true; x.fy += dt * FALL_SPEED; }
+          else continue;
+          while (x.fy >= 0 && rr + 1 < ROWS && !g[rr + 1][c]) { g[rr + 1][c] = x; g[rr][c] = null; rr++; x.fy -= 1; }
+          if (x.fy >= 0) { x.fy = 0; if (x.falling) { x.falling = false; x.landed = true; need = true; } }
+        }
+        if (need) checkMatches();
+
+        // 連鎖の終わり
+        var busy = active();
+        if (!busy && E.chain !== 1) { E.chain = 1; E.events.push('chainEnd'); }
+
+        // せり上がり (消去・落下中は止まる)
+        if (!busy) {
+          E.riseOff += dt * (E.push ? 9 : E.speed());
+          if (E.riseOff >= 1) {
+            var top = false;
+            for (c = 0; c < COLS; c++) if (g[0][c]) { top = true; break; }
+            if (top) {
+              E.riseOff = 1;
+              E.danger += dt;
+              if (E.danger >= DANGER_TIME) { E.gameOver = true; E.events.push('gameover'); }
+            } else {
+              E.riseOff -= 1;
+              E.danger = 0;
+              if (E.push) E.score += 1;
+              shiftUp();
+              checkMatches(); // せり上がった段で揃うことがある
+            }
+          } else E.danger = 0;
+        }
+        for (var i = E.fx.length - 1; i >= 0; i--) { E.fx[i].t -= dt; if (E.fx[i].t <= 0) E.fx.splice(i, 1); }
+      };
+
+      E.topOccupied = function () { for (var c = 0; c < COLS; c++) if (E.grid[0][c]) return true; return false; };
+
+      E.reset();
+      return E;
+    }
+    // ===== ENGINE-END =====
+
+    var CELL = 40;
+    var BASE_W = COLS * CELL, BASE_H = (ROWS + 1) * CELL; // 上 1 段は危険域、下に湧き出す段が見える
+    var COLORS = [null,
+      { fill: '#ef4444', dark: '#9b1c1c', icon: '♥' },
+      { fill: '#22c55e', dark: '#15803d', icon: '▲' },
+      { fill: '#3b82f6', dark: '#1d4ed8', icon: '◆' },
+      { fill: '#eab308', dark: '#a16207', icon: '★' },
+      { fill: '#a855f7', dark: '#6b21a8', icon: '●' }];
+
+    var store = H.store('panepon');
+    var best = store.get('best', 0);
+    var eng = createEngine();
+    var state = 'start'; // start | play | pause | over
+    var pauseEl = null;
+    var shake = 0;
+
+    var canvas = document.getElementById('cv');
+    var st = null, viewScale = 1;
+    st = H.canvasStage(canvas, BASE_W, BASE_H, function (w, h, ctx, scale) { viewScale = scale || (w / BASE_W); if (st) draw(); });
+
+    function hud() {
+      document.getElementById('score').textContent = eng.score;
+      document.getElementById('chain').textContent = eng.chain > 1 ? eng.chain + ' 連鎖' : eng.maxChain + ' (最大)';
+      document.getElementById('level').textContent = eng.level;
+      document.getElementById('best').textContent = best;
+    }
+
+    function roundRect(ctx, x, y, w, h, rad) {
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rad);
+      ctx.arcTo(x + w, y + h, x, y + h, rad);
+      ctx.arcTo(x, y + h, x, y, rad);
+      ctx.arcTo(x, y, x + w, y, rad);
+      ctx.closePath();
+    }
+
+    function rowY(r) { return (r + 1 - eng.riseOff) * CELL; }
+
+    function drawPanel(ctx, x, y, cl, dim) {
+      var col = COLORS[cl.t];
+      var pad = 3, w = CELL - pad * 2, h = CELL - pad * 2;
+      var scale = 1, flash = false;
+      if (cl.clr > 0) {
+        if (cl.clr <= POP_TIME) scale = Math.max(0.05, cl.clr / POP_TIME);
+        else flash = Math.floor(cl.clr / 0.08) % 2 === 0;
+      }
+      var cx = x + CELL / 2, cy = y + CELL / 2;
+      var ww = w * scale, hh = h * scale;
+      ctx.fillStyle = dim ? col.dark : (flash ? '#ffffff' : col.fill);
+      roundRect(ctx, cx - ww / 2, cy - hh / 2, ww, hh, 7 * scale);
+      ctx.fill();
+      if (scale < 1) return;
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, x + pad + 1, y + pad + 1, w - 2, h - 2, 6);
+      ctx.stroke();
+      ctx.fillStyle = dim ? 'rgba(255,255,255,0.35)' : (flash ? col.fill : '#ffffff');
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(col.icon, cx, cy + 1);
+    }
+
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.save();
+      ctx.scale(viewScale, viewScale);
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      // 危険域
+      var top = eng.topOccupied();
+      ctx.fillStyle = top ? 'rgba(231,76,60,' + (0.18 + 0.12 * Math.sin(Date.now() / 120)) + ')' : 'rgba(255,255,255,0.03)';
+      ctx.fillRect(0, 0, BASE_W, CELL);
+      ctx.strokeStyle = top ? 'rgba(231,76,60,0.8)' : 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath(); ctx.moveTo(0, CELL); ctx.lineTo(BASE_W, CELL); ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.save();
+      if (shake > 0) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4);
+      var g = eng.grid;
+      for (var r = 0; r <= ROWS; r++) {
+        for (var c = 0; c < COLS; c++) {
+          var cl = g[r][c];
+          if (!cl) continue;
+          var x = (c + cl.sw) * CELL, y = rowY(r) + cl.fy * CELL;
+          drawPanel(ctx, x, y, cl, r === ROWS);
+        }
+      }
+      // カーソル
+      var cu = eng.cursor;
+      var cx = cu.c * CELL, cy = rowY(cu.r);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      roundRect(ctx, cx + 1, cy + 1, CELL * 2 - 2, CELL - 2, 6); ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      roundRect(ctx, cx + 2, cy + 2, CELL * 2 - 4, CELL - 4, 6); ctx.stroke();
+      ctx.restore();
+
+      // 下の湧き出し段の上に薄い影
+      var grad = ctx.createLinearGradient(0, BASE_H - CELL, 0, BASE_H);
+      grad.addColorStop(0, 'rgba(20,20,40,0)'); grad.addColorStop(1, 'rgba(20,20,40,0.55)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, BASE_H - CELL, BASE_W, CELL);
+
+      // 連鎖・コンボの演出
+      for (var i = 0; i < eng.fx.length; i++) {
+        var f = eng.fx[i];
+        var fx = (f.c + 0.5) * CELL, fy = rowY(f.r) + CELL / 2 - (1 - f.t) * 30;
+        var txt = f.chain > 1 ? f.chain + ' 連鎖!' : (f.n > 3 ? f.n + ' コンボ!' : '+' + f.pts);
+        ctx.globalAlpha = Math.min(1, f.t * 2);
+        ctx.font = 'bold ' + (f.chain > 1 ? 24 : 18) + 'px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        ctx.strokeText(txt, fx, fy);
+        ctx.fillStyle = f.chain > 1 ? '#f5b041' : '#ffffff';
+        ctx.fillText(txt, fx, fy);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    }
+
+    function handleEvents() {
+      var ev = eng.events;
+      for (var i = 0; i < ev.length; i++) {
+        var e = ev[i];
+        if (e === 'swap') H.audio.click();
+        else if (e === 'pop') H.audio.beep(900, 0.05, 'square', 0.03);
+        else if (e === 'level') H.toast('レベル ' + eng.level);
+        else if (e === 'gameover') gameOver();
+        else if (e && e.type === 'match') {
+          if (e.chain > 1) { H.audio.beep(500 + e.chain * 120, 0.12); setTimeout(function () { H.audio.good(); }, 60); shake = 0.25; }
+          else H.audio.good();
+        }
+      }
+      if (eng.score > best) { best = eng.score; store.set('best', best); }
+    }
+
+    var loop = H.loop(function (dt) {
+      eng.update(dt);
+      if (shake > 0) shake -= dt;
+      handleEvents();
+      hud();
+    }, draw);
+
+    // ---- 入力 ----
+    function move(dir) { if (state === 'play' && eng.moveCursor(dir)) draw(); }
+    function doSwap() { if (state === 'play') eng.swap(); }
+    function setPush(on) { eng.push = !!on && state === 'play'; }
+
+    H.dpad(document.getElementById('dpad'), function (dir, pressed) { if (pressed) move(dir); }, { repeatMs: 110 });
+    H.holdButton(document.getElementById('btn-swap'), doSwap, null, 0);
+    H.holdButton(document.getElementById('btn-push'), function () { setPush(true); }, function () { setPush(false); }, 0);
+    var keymap = {
+      ArrowLeft: function () { move('left'); }, ArrowRight: function () { move('right'); },
+      ArrowUp: function () { move('up'); }, ArrowDown: function () { move('down'); },
+      ' ': doSwap, Enter: doSwap,
+      Shift: function () { setPush(true); }, x: function () { setPush(true); },
+      p: togglePause, P: togglePause, Escape: togglePause
+    };
+    keymap.__repeat = true;
+    H.keys(keymap, function (k) { if (k === 'Shift' || k === 'x') setPush(false); });
+
+    // 盤面を直接タップ / スワイプ
+    (function () {
+      var sx = 0, sy = 0, down = false, cellR = 0, cellC = 0;
+      function toCell(cx, cy) {
+        var p = st.toBase(cx, cy);
+        return { r: Math.floor(p.y / CELL + eng.riseOff) - 1, c: Math.floor(p.x / CELL) };
+      }
+      function start(cx, cy) {
+        if (state !== 'play') return;
+        down = true; sx = cx; sy = cy;
+        var k = toCell(cx, cy); cellR = k.r; cellC = k.c;
+      }
+      function end(cx, cy) {
+        if (!down) return; down = false;
+        if (state !== 'play') return;
+        var dx = cx - sx, dy = cy - sy;
+        var r = Math.max(0, Math.min(ROWS - 1, cellR)), c = Math.max(0, Math.min(COLS - 1, cellC));
+        if (Math.abs(dx) >= 20 && Math.abs(dx) > Math.abs(dy)) {
+          // 触ったパネルをスワイプの向きの隣と入れ替える
+          var left = dx > 0 ? c : c - 1;
+          if (left < 0 || left > COLS - 2) return;
+          eng.setCursor(r, left);
+          if (!eng.swap()) draw();
+          return;
+        }
+        if (Math.abs(dy) >= 20) return;
+        var cu = eng.cursor;
+        if (cu.r === r && (cu.c === c || cu.c + 1 === c)) eng.swap();
+        else { eng.setCursor(r, c === COLS - 1 ? COLS - 2 : c); H.audio.beep(400, 0.03, 'square', 0.02); draw(); }
+      }
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', function (e) { if (e.button === 0 || e.pointerType !== 'mouse') start(e.clientX, e.clientY); });
+        canvas.addEventListener('pointerup', function (e) { end(e.clientX, e.clientY); });
+        canvas.addEventListener('pointercancel', function () { down = false; });
+      } else {
+        canvas.addEventListener('touchstart', function (e) { var t = e.touches[0]; if (t) start(t.clientX, t.clientY); }, { passive: true });
+        canvas.addEventListener('touchend', function (e) { var t = e.changedTouches[0]; if (t) end(t.clientX, t.clientY); });
+        canvas.addEventListener('mousedown', function (e) { start(e.clientX, e.clientY); });
+        canvas.addEventListener('mouseup', function (e) { end(e.clientX, e.clientY); });
+      }
+      canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    })();
+
+    // ---- 進行 ----
+    function showStart() {
+      H.overlay({
+        title: 'パネル入れ替え',
+        html: '左右を入れ替えて 3 つそろえよう<br>ベスト ' + best + ' 点',
+        buttons: [{ label: 'スタート', onClick: start }]
+      });
+    }
+    function start() {
+      eng.reset(); eng.push = false; shake = 0;
+      state = 'play'; hud(); draw();
+      loop.pause(false); loop.start();
+    }
+    function gameOver() {
+      state = 'over'; eng.push = false;
+      loop.pause(true);
+      H.audio.bad();
+      if (eng.score > best) { best = eng.score; store.set('best', best); }
+      hud(); draw();
+      H.overlay({ title: 'ゲームオーバー', big: eng.score + ' 点',
+        html: '最大 ' + eng.maxChain + ' 連鎖 / レベル ' + eng.level + '<br>ベスト ' + best + ' 点',
+        buttons: [{ label: 'もう一度', onClick: start },
+                  { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }] });
+    }
+    function pauseGame() {
+      if (state !== 'play') return;
+      state = 'pause'; eng.push = false; loop.pause(true);
+      pauseEl = H.overlay({ title: '一時停止', html: 'タップでつづける', tapAnywhere: resume,
+        buttons: [{ label: 'つづける', onClick: resume }] });
+    }
+    function resume() {
+      if (state !== 'pause') return;
+      if (pauseEl) { pauseEl.close(); pauseEl = null; }
+      state = 'play'; loop.pause(false);
+    }
+    function togglePause() { if (state === 'play') pauseGame(); else if (state === 'pause') resume(); }
+
+    window.resetGame = function () {
+      loop.pause(true); eng.push = false;
+      if (pauseEl) { pauseEl.close(); pauseEl = null; }
+      var ov = document.querySelectorAll('.overlay');
+      for (var i = 0; i < ov.length; i++) if (ov[i].parentNode) ov[i].parentNode.removeChild(ov[i]);
+      eng.reset(); state = 'start'; hud(); draw(); showStart();
+    };
+    window.onHelpOpen = function () { pauseGame(); };
+    H.pauseWhenHidden(function () { pauseGame(); });
+
+    hud(); draw(); showStart();
+  })();
+  </script>
+</body>
+</html>
