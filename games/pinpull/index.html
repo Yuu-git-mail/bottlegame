@@ -1,0 +1,1547 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ピン抜き - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.tappable { cursor: pointer; padding: 2px 8px; border-radius: 8px; background: var(--panel); }
+    .hud-item.tappable b::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
+    .ctl-btn.sm { min-width: 72px; font-size: 14px; padding: 0 8px; }
+    .ctl-btn.sm.undo { color: var(--warn); }
+    .ctl-btn.sm.hint { color: #ffd54a; }
+    .ctl-btn.sm.lit { box-shadow: 0 0 0 2px var(--warn), 0 0 14px var(--warn); }
+    .lv-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 44px);
+      gap: 6px;
+      justify-content: center;
+      padding: 2px;
+    }
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-btn {
+      width: 44px; height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.25); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 2px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .stage-canvas { cursor: pointer; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ピン抜き" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item tappable" id="hud-level" role="button" aria-label="面を選ぶ">面<b id="level">1</b></span>
+      <span class="hud-item accent" id="hud-gem">宝石<b id="gem">0/0</b></span>
+      <span class="hud-item" id="hud-enemy">敵<b id="enemy">0</b></span>
+      <span class="hud-item">ピン<b id="pins">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>金のピンをタップすると抜ける。上に載っていた物が落ちる。</li>
+            <li>宝石を王様の部屋へ届けるとクリア。敵がいる面は敵も全部倒す。</li>
+            <li>水と溶岩が触れると石になって固まる。溶岩が触れた敵や王様は倒れる。</li>
+            <li>岩が上から落ちると敵（王様も）はつぶれる。敵が王様の部屋に入っても負け。</li>
+            <li>抜く順番がすべて。失敗したら「戻す」で 1 本前へ。ヒントは何回でも使える。</li>
+            <li>全 32 面。クリアした面には ✓ が付き、続きから遊べる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: ピンをタップ。下のボタンで戻す・やり直し・ヒント・面一覧</li>
+            <li>PC: クリック、または 1〜6 キーで番号のピン。Z 戻す、R やり直し、H ヒント</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-row">
+        <button type="button" class="ctl-btn sm undo" id="btn-undo">戻す</button>
+        <button type="button" class="ctl-btn sm" id="btn-restart">やり直し</button>
+        <button type="button" class="ctl-btn sm hint" id="btn-hint">ヒント</button>
+        <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  // ==ENGINE-BEGIN==
+  // 粒の格子は 40x60（面データの 1 文字 = 2x2 セル）。乱数は使わない。node のソルバーと同じコード。
+  var PinEngine = (function () {
+    'use strict';
+    var EMPTY = 0, WALL = 1, WATER = 2, LAVA = 3, STONE = 4, GEM = 5, SAND = 6, PIN = 7, BODY = 8;
+    var CW = 20, CH = 30, W = CW * 2, H = CH * 2;
+    var LAT = 120;   // 横流れを許すステップ数（ピンを抜いてから）
+    var MAXS = 320;  // これ以上は強制的に静止扱い
+    var QUIET = 3;
+
+    function padMap(map) {
+      var rows = [], h = map.length, top = Math.floor((CH - h) / 2), y, x, r, left, s;
+      for (y = 0; y < CH; y++) {
+        r = (y - top >= 0 && y - top < h) ? map[y - top] : '';
+        left = Math.floor((CW - r.length) / 2);
+        s = '';
+        for (x = 0; x < CW; x++) {
+          var k = x - left;
+          s += (k >= 0 && k < r.length) ? r.charAt(k) : '#';
+        }
+        rows.push(s);
+      }
+      return rows;
+    }
+
+    function parse(lv) {
+      var cm = padMap(lv.map);
+      var grid = new Uint8Array(W * H), aux = new Uint8Array(W * H), bodyMap = new Int16Array(W * H);
+      var bodies = [], pins = [], x, y, cx, cy, c, i;
+      for (i = 0; i < W * H; i++) bodyMap[i] = -1;
+      function setq(cx, cy, t, a) {
+        for (var dy = 0; dy < 2; dy++) for (var dx = 0; dx < 2; dx++) {
+          var k = (cy * 2 + dy) * W + cx * 2 + dx;
+          grid[k] = t; aux[k] = a || 0;
+        }
+      }
+      function ch(cx, cy) { return (cx < 0 || cy < 0 || cx >= CW || cy >= CH) ? '#' : cm[cy].charAt(cx); }
+      // セル
+      var gemCol = 0;
+      for (cy = 0; cy < CH; cy++) for (cx = 0; cx < CW; cx++) {
+        c = ch(cx, cy);
+        if (c === '#') setq(cx, cy, WALL);
+        else if (c === 'w') setq(cx, cy, WATER);
+        else if (c === 'l') setq(cx, cy, LAVA);
+        else if (c === 'o') setq(cx, cy, STONE);
+        else if (c === 's') setq(cx, cy, SAND);
+        else if (c === 'g') { setq(cx, cy, GEM, gemCol % 6); gemCol++; }
+        else setq(cx, cy, EMPTY);
+      }
+      // 体（同じ文字の連結成分、長方形）
+      var seen = {};
+      for (cy = 0; cy < CH; cy++) for (cx = 0; cx < CW; cx++) {
+        c = ch(cx, cy);
+        if ((c !== 'K' && c !== 'E' && c !== 'R') || seen[cx + ',' + cy]) continue;
+        var stack = [[cx, cy]], minx = cx, maxx = cx, miny = cy, maxy = cy;
+        seen[cx + ',' + cy] = 1;
+        while (stack.length) {
+          var p = stack.pop();
+          if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0];
+          if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1];
+          var nb = [[p[0] + 1, p[1]], [p[0] - 1, p[1]], [p[0], p[1] + 1], [p[0], p[1] - 1]];
+          for (i = 0; i < 4; i++) {
+            var q = nb[i], key = q[0] + ',' + q[1];
+            if (!seen[key] && ch(q[0], q[1]) === c) { seen[key] = 1; stack.push(q); }
+          }
+        }
+        var b = { t: c, x: minx * 2, y: miny * 2, w: (maxx - minx + 1) * 2, h: (maxy - miny + 1) * 2, alive: true };
+        var id = bodies.length;
+        bodies.push(b);
+        for (y = b.y; y < b.y + b.h; y++) for (x = b.x; x < b.x + b.w; x++) { grid[y * W + x] = BODY; bodyMap[y * W + x] = id; }
+      }
+      // ピン（'-' の横並び、'/' '\' の斜め並び）。上から下、左から右の順に番号
+      function addPin(cells, seg, head) {
+        for (i = 0; i < cells.length; i++) grid[cells[i]] = PIN;
+        pins.push({ cells: cells, ax: seg[0], ay: seg[1], bx: seg[2], by: seg[3], hx: head[0], hy: head[1], pulled: false });
+      }
+      for (cy = 0; cy < CH; cy++) for (cx = 0; cx < CW; cx++) {
+        c = ch(cx, cy);
+        if (c === '-' && ch(cx - 1, cy) !== '-') {
+          var ex = cx;
+          while (ch(ex + 1, cy) === '-') ex++;
+          var cells = [];
+          for (x = cx * 2; x <= ex * 2 + 1; x++) { cells.push(cy * 2 * W + x); cells.push((cy * 2 + 1) * W + x); }
+          var headLeft = ch(cx - 1, cy) === '#' || ch(ex + 1, cy) !== '#';
+          addPin(cells, [cx * 2, cy * 2 + 1, ex * 2 + 2, cy * 2 + 1], headLeft ? [cx * 2, cy * 2 + 1] : [ex * 2 + 2, cy * 2 + 1]);
+        } else if (c === '/' && ch(cx - 1, cy + 1) !== '/') {
+          var n = 1;
+          while (ch(cx + n, cy - n) === '/') n++;
+          // 下左 (cx, cy) → 上右 (cx+n-1, cy-n+1)
+          var x0 = cx * 2, y0 = cy * 2 + 1, x1 = (cx + n - 1) * 2 + 1, y1 = (cy - n + 1) * 2, cl = [];
+          for (x = x0; x <= x1; x++) {
+            var yy = Math.round(y0 + (y1 - y0) * (x - x0) / (x1 - x0));
+            cl.push(yy * W + x); if (yy + 1 < H) cl.push((yy + 1) * W + x);
+          }
+          var hl = ch(cx - 1, cy) === '#' || ch(cx + n, cy - n) !== '#';
+          addPin(cl, [x0, y0 + 1, x1 + 1, y1], hl ? [x0, y0 + 1] : [x1 + 1, y1]);
+        } else if (c === '\\' && ch(cx - 1, cy - 1) !== '\\') {
+          var m = 1;
+          while (ch(cx + m, cy + m) === '\\') m++;
+          var X0 = cx * 2, Y0 = cy * 2, X1 = (cx + m - 1) * 2 + 1, Y1 = (cy + m - 1) * 2 + 1, cl2 = [];
+          for (x = X0; x <= X1; x++) {
+            var yy2 = Math.round(Y0 + (Y1 - Y0) * (x - X0) / (X1 - X0));
+            cl2.push(yy2 * W + x); if (yy2 + 1 < H) cl2.push((yy2 + 1) * W + x);
+          }
+          var hl2 = ch(cx - 1, cy) === '#' || ch(cx + m, cy + m) !== '#';
+          addPin(cl2, [X0, Y0, X1 + 1, Y1 + 1], hl2 ? [X0, Y0] : [X1 + 1, Y1 + 1]);
+        }
+      }
+      // 王様の部屋（ピンと壁で囲まれた領域）
+      var king = -1;
+      for (i = 0; i < bodies.length; i++) if (bodies[i].t === 'K') king = i;
+      var goal = new Uint8Array(W * H);
+      if (king >= 0) {
+        var kb = bodies[king], st = [];
+        for (y = kb.y; y < kb.y + kb.h; y++) for (x = kb.x; x < kb.x + kb.w; x++) { goal[y * W + x] = 1; st.push(y * W + x); }
+        while (st.length) {
+          var k = st.pop(), kx = k % W, ky = (k - kx) / W;
+          var nb2 = [];
+          if (kx > 0) nb2.push(k - 1); if (kx < W - 1) nb2.push(k + 1); if (ky > 0) nb2.push(k - W); if (ky < H - 1) nb2.push(k + W);
+          for (i = 0; i < nb2.length; i++) {
+            var g = grid[nb2[i]];
+            // 王様の背の高さの帯（頭より上、足より下へは広がらない）
+            if (!goal[nb2[i]] && g !== WALL && g !== PIN && nb2[i] >= kb.y * W && nb2[i] < (kb.y + kb.h) * W) { goal[nb2[i]] = 1; st.push(nb2[i]); }
+          }
+        }
+      }
+      var totalGems = 0;
+      for (i = 0; i < W * H; i++) if (grid[i] === GEM) totalGems++;
+      return {
+        grid: grid, aux: aux, bodyMap: bodyMap, bodies: bodies, pins: pins, king: king, goal: goal,
+        need: lv.need || 0, kill: !!lv.kill, totalGems: totalGems,
+        steps: 0, quiet: 0, settled: false, status: 'play', why: '', hist: [], events: [],
+        mv: new Uint8Array(W * H)
+      };
+    }
+
+    function clone(s) {
+      var bodies = [], i;
+      for (i = 0; i < s.bodies.length; i++) {
+        var b = s.bodies[i];
+        bodies.push({ t: b.t, x: b.x, y: b.y, w: b.w, h: b.h, alive: b.alive });
+      }
+      var pins = [];
+      for (i = 0; i < s.pins.length; i++) {
+        var p = s.pins[i];
+        pins.push({ cells: p.cells, ax: p.ax, ay: p.ay, bx: p.bx, by: p.by, hx: p.hx, hy: p.hy, pulled: p.pulled });
+      }
+      return {
+        grid: new Uint8Array(s.grid), aux: new Uint8Array(s.aux), bodyMap: new Int16Array(s.bodyMap),
+        bodies: bodies, pins: pins, king: s.king, goal: s.goal, need: s.need, kill: s.kill, totalGems: s.totalGems,
+        steps: s.steps, quiet: s.quiet, settled: s.settled, status: s.status, why: s.why, hist: s.hist.slice(), events: [],
+        mv: new Uint8Array(W * H)
+      };
+    }
+
+    function removeBody(s, id) {
+      var b = s.bodies[id], x, y;
+      b.alive = false;
+      for (y = b.y; y < b.y + b.h; y++) for (x = b.x; x < b.x + b.w; x++) {
+        if (s.bodyMap[y * W + x] === id) { s.grid[y * W + x] = EMPTY; s.bodyMap[y * W + x] = -1; }
+      }
+      s.events.push({ k: 'kill', t: b.t, x: b.x + b.w / 2, y: b.y + b.h / 2 });
+    }
+    function fail(s, why) { if (s.status === 'play') { s.status = 'fail'; s.why = why; } }
+
+    function gemsInGoal(s) {
+      var n = 0;
+      for (var i = 0; i < W * H; i++) if (s.goal[i] && s.grid[i] === GEM) n++;
+      return n;
+    }
+    function enemiesAlive(s) {
+      var n = 0;
+      for (var i = 0; i < s.bodies.length; i++) if (s.bodies[i].t === 'E' && s.bodies[i].alive) n++;
+      return n;
+    }
+    function pinsLeft(s) {
+      var n = 0;
+      for (var i = 0; i < s.pins.length; i++) if (!s.pins[i].pulled) n++;
+      return n;
+    }
+
+    function step(s) {
+      if (s.status !== 'play' || s.settled) return 0;
+      var grid = s.grid, bodyMap = s.bodyMap, moved = 0, i, x, y;
+      s.steps++;
+      // ---- 体の落下（下にあるものから） ----
+      var order = [];
+      for (i = 0; i < s.bodies.length; i++) if (s.bodies[i].alive) order.push(i);
+      order.sort(function (a, b) {
+        var A = s.bodies[a], B = s.bodies[b];
+        return (B.y + B.h) - (A.y + A.h) || A.x - B.x;
+      });
+      for (var oi = 0; oi < order.length; oi++) {
+        var id = order[oi], b = s.bodies[id];
+        if (!b.alive) continue;
+        var by = b.y + b.h;
+        if (by >= H) continue;
+        var can = true, lava = false, victims = [];
+        for (x = b.x; x < b.x + b.w; x++) {
+          var c = grid[by * W + x];
+          if (c === EMPTY || c === WATER) continue;
+          if (c === LAVA) { lava = true; continue; }
+          if (c === BODY && b.t === 'R') {
+            var vid = bodyMap[by * W + x];
+            if (vid >= 0 && s.bodies[vid].t !== 'R') { if (victims.indexOf(vid) < 0) victims.push(vid); continue; }
+          }
+          can = false; break;
+        }
+        if (!can) continue;
+        if (lava && b.t !== 'R') {
+          removeBody(s, id);
+          if (b.t === 'K') fail(s, 'lava');
+          moved++;
+          continue;
+        }
+        for (i = 0; i < victims.length; i++) {
+          var v = s.bodies[victims[i]];
+          removeBody(s, victims[i]);
+          if (v.t === 'K') fail(s, 'rock');
+        }
+        for (x = b.x; x < b.x + b.w; x++) {
+          var below = grid[by * W + x], top = b.y * W + x;
+          grid[by * W + x] = BODY; bodyMap[by * W + x] = id;
+          grid[top] = (below === WATER || below === LAVA) ? below : EMPTY;
+          s.aux[top] = 0;
+          bodyMap[top] = -1;
+        }
+        b.y++;
+        moved++;
+      }
+      // ---- 粒 ----
+      var mv = s.mv, lateral = s.steps <= LAT, aux = s.aux;
+      for (i = 0; i < W * H; i++) mv[i] = 0;
+      var rev = (s.steps & 1) === 1;
+      for (y = H - 2; y >= 0; y--) {
+        for (var xi = 0; xi < W; xi++) {
+          x = rev ? (W - 1 - xi) : xi;
+          i = y * W + x;
+          var t = grid[i];
+          if (t < WATER || t === PIN || t === BODY) continue;
+          if (mv[i]) continue;
+          var bl = i + W, cb = grid[bl];
+          if (cb === EMPTY) { grid[bl] = t; aux[bl] = aux[i]; grid[i] = EMPTY; aux[i] = 0; mv[bl] = 1; moved++; continue; }
+          var liquid = (t === WATER || t === LAVA);
+          if (!liquid && (cb === WATER || cb === LAVA)) {
+            // 宝石・砂・石は液体に沈む
+            grid[bl] = t; var a2 = aux[i]; aux[bl] = a2; grid[i] = cb; aux[i] = 0; mv[bl] = 1; mv[i] = 1; moved++; continue;
+          }
+          if (t === STONE) continue;
+          var d1 = ((x + y + s.steps) & 1) ? -1 : 1, dx, k, nx;
+          var done = false;
+          for (k = 0; k < 2 && !done; k++) {
+            dx = k === 0 ? d1 : -d1; nx = x + dx;
+            if (nx < 0 || nx >= W) continue;
+            if (grid[i + dx] === EMPTY && grid[bl + dx] === EMPTY) {
+              grid[bl + dx] = t; aux[bl + dx] = aux[i]; grid[i] = EMPTY; aux[i] = 0; mv[bl + dx] = 1; moved++; done = true;
+            }
+          }
+          if (done || !liquid || !lateral) continue;
+          // 横流れ: 液体は aux に向き(1=左,2=右)を覚え、塞がれるまで同じ向きへ進む（跳ね返りで往復しないため）
+          var dir = aux[i] === 1 ? -1 : (aux[i] === 2 ? 1 : d1);
+          for (k = 0; k < 2 && !done; k++) {
+            dx = k === 0 ? dir : -dir; nx = x + dx;
+            if (nx < 0 || nx >= W) continue;
+            if (grid[i + dx] === EMPTY) {
+              grid[i + dx] = t; aux[i + dx] = dx < 0 ? 1 : 2; grid[i] = EMPTY; aux[i] = 0; mv[i + dx] = 1; moved++; done = true;
+            }
+          }
+        }
+      }
+      // ---- 反応: 水+溶岩 → 石、石に触れた溶岩も固まる ----
+      var stoneEvt = 0;
+      for (i = 0; i < W * H; i++) {
+        if (grid[i] !== LAVA) continue;
+        x = i % W; y = (i - x) / W;
+        var hit = -1, cold = false;
+        if (x > 0) { if (grid[i - 1] === WATER) hit = i - 1; else if (grid[i - 1] === STONE) cold = true; }
+        if (hit < 0 && x < W - 1) { if (grid[i + 1] === WATER) hit = i + 1; else if (grid[i + 1] === STONE) cold = true; }
+        if (hit < 0 && y > 0) { if (grid[i - W] === WATER) hit = i - W; else if (grid[i - W] === STONE) cold = true; }
+        if (hit < 0 && y < H - 1) { if (grid[i + W] === WATER) hit = i + W; else if (grid[i + W] === STONE) cold = true; }
+        if (hit >= 0) { grid[i] = STONE; grid[hit] = EMPTY; moved++; stoneEvt++; if (stoneEvt <= 3) s.events.push({ k: 'steam', x: x, y: y }); }
+        else if (cold) { grid[i] = STONE; moved++; }
+      }
+      // ---- 体の判定 ----
+      var kb = s.king >= 0 ? s.bodies[s.king] : null;
+      for (i = 0; i < s.bodies.length; i++) {
+        var bd = s.bodies[i];
+        if (!bd.alive || bd.t === 'R') continue;
+        var touch = false, inGoal = false;
+        for (x = bd.x; x < bd.x + bd.w && !touch; x++) {
+          if (bd.y > 0 && grid[(bd.y - 1) * W + x] === LAVA) touch = true;
+          if (bd.y + bd.h < H && grid[(bd.y + bd.h) * W + x] === LAVA) touch = true;
+        }
+        for (y = bd.y; y < bd.y + bd.h && !touch; y++) {
+          if (bd.x > 0 && grid[y * W + bd.x - 1] === LAVA) touch = true;
+          if (bd.x + bd.w < W && grid[y * W + bd.x + bd.w] === LAVA) touch = true;
+        }
+        if (touch) {
+          removeBody(s, i); moved++;
+          if (bd.t === 'K') fail(s, 'lava');
+          continue;
+        }
+        if (bd.t === 'E' && kb && kb.alive) {
+          for (y = bd.y; y < bd.y + bd.h && !inGoal; y++) for (x = bd.x; x < bd.x + bd.w; x++) if (s.goal[y * W + x]) { inGoal = true; break; }
+          var adj = !(bd.x + bd.w < kb.x || kb.x + kb.w < bd.x || bd.y + bd.h < kb.y || kb.y + kb.h < bd.y);
+          if (inGoal || adj) fail(s, 'enemy');
+        }
+      }
+      if (s.status !== 'play') { s.settled = true; return moved; }
+      // ---- 静止判定とクリア ----
+      s.quiet = moved === 0 ? s.quiet + 1 : 0;
+      if (s.quiet >= QUIET || s.steps >= MAXS) {
+        s.settled = true;
+        var ok = (s.need === 0 || gemsInGoal(s) >= s.need) && (!s.kill || enemiesAlive(s) === 0);
+        if (ok && !(s.need === 0 && !s.kill)) s.status = 'win';
+        else if (pinsLeft(s) === 0) fail(s, 'nopins');
+      }
+      return moved;
+    }
+
+    function settle(s) {
+      var n = 0;
+      while (!s.settled && s.status === 'play' && n < MAXS + 5) { step(s); n++; }
+      return s.status;
+    }
+
+    function pull(s, idx) {
+      var p = s.pins[idx];
+      if (!p || p.pulled || s.status !== 'play') return false;
+      p.pulled = true;
+      for (var i = 0; i < p.cells.length; i++) if (s.grid[p.cells[i]] === PIN) s.grid[p.cells[i]] = EMPTY;
+      s.steps = 0; s.quiet = 0; s.settled = false;
+      s.hist.push(idx);
+      return true;
+    }
+
+    // 全順列を試して、クリアになる抜き順を全部返す（node でも使う）
+    function solve(lv) {
+      var s0 = parse(lv), sols = [], nodes = 0, maxSteps = 0;
+      settle(s0);
+      if (s0.status === 'win') return { sols: [''], nodes: 1, initial: 'win' };
+      if (s0.status === 'fail') return { sols: [], nodes: 1, initial: 'fail:' + s0.why };
+      function dfs(s, prefix) {
+        for (var i = 0; i < s.pins.length; i++) {
+          if (s.pins[i].pulled) continue;
+          var c = clone(s);
+          pull(c, i); settle(c); nodes++;
+          if (c.steps > maxSteps) maxSteps = c.steps;
+          if (c.status === 'win') sols.push(prefix + i);
+          else if (c.status === 'play') dfs(c, prefix + i);
+        }
+      }
+      dfs(s0, '');
+      return { sols: sols, nodes: nodes, initial: 'play', maxSteps: maxSteps };
+    }
+
+    return {
+      EMPTY: EMPTY, WALL: WALL, WATER: WATER, LAVA: LAVA, STONE: STONE, GEM: GEM, SAND: SAND, PIN: PIN, BODY: BODY,
+      W: W, H: H, CW: CW, CH: CH, LAT: LAT,
+      parse: parse, clone: clone, step: step, settle: settle, pull: pull, solve: solve,
+      gemsInGoal: gemsInGoal, enemiesAlive: enemiesAlive, pinsLeft: pinsLeft
+    };
+  })();
+  // ==ENGINE-END==
+
+  // ==LEVELS-BEGIN==
+  // 記号: # 壁  . 空  w 水  l 溶岩  g 宝石  s 砂利  o 石  - 横ピン  / \ 斜めピン  K 王様(2x3)  E 敵(2x3)  R 岩(2x2)
+  // 20x30 より小さい面は中央に置かれ、外は壁。need = 王様の部屋に届ける宝石の粒数（1 文字 = 4 粒）。kill = 敵を全部倒す
+  // 正本は levels.py（テスト置き場）。手で直すならこちらも。
+  var LEVELS = [
+    // 1 宝石を落とす
+    { name: "宝石を落とす", need: 24, map: [
+      "##########",
+      "#..gggg..#",
+      "#..gggg..#",
+      "#--------#",
+      "#........#",
+      "#........#",
+      "#...KK...#",
+      "#...KK...#",
+      "#...KK...#",
+      "##########"] },
+    // 2 溶岩は抜かない
+    { name: "溶岩は抜かない", need: 24, map: [
+      "##############",
+      "#..gggg.#.ll.#",
+      "#..gggg.#.ll.#",
+      "#-------#----#",
+      "#.......#....#",
+      "#.......#....#",
+      "#.......#....#",
+      "#..KK........#",
+      "#..KK........#",
+      "#..KK........#",
+      "##############"] },
+    // 3 岩で敵を
+    { name: "岩で敵を", need: 0, kill: true, map: [
+      "############",
+      "#..RR......#",
+      "#..RR......#",
+      "#----------#",
+      "#..........#",
+      "#..........#",
+      "#..EE......#",
+      "#..EE......#",
+      "#..EE......#",
+      "#######---##",
+      "#..........#",
+      "#..........#",
+      "#......KK..#",
+      "#......KK..#",
+      "#......KK..#",
+      "############"] },
+    // 4 溶岩で敵を
+    { name: "溶岩で敵を", need: 0, kill: true, map: [
+      "##############",
+      "#..lll..#....#",
+      "#..lll..#....#",
+      "#-------#....#",
+      "#.......#....#",
+      "#..EE...#....#",
+      "#..EE...#....#",
+      "#..EE...#....#",
+      "#-------#....#",
+      "#............#",
+      "#............#",
+      "#........KK..#",
+      "#........KK..#",
+      "#........KK..#",
+      "##############"] },
+    // 5 斜めのピン
+    { name: "斜めのピン", need: 24, map: [
+      "##############",
+      "#.gggg.#.....#",
+      "#.gggg.#.....#",
+      "#------#.....#",
+      "#......#.....#",
+      "#\\.....#.....#",
+      "#.\\....#.....#",
+      "#..\\...#.....#",
+      "#...\\..#.....#",
+      "#....\\.#.....#",
+      "#.....\\......#",
+      "#............#",
+      "#.........KK.#",
+      "#.........KK.#",
+      "#.........KK.#",
+      "##############"] },
+    // 6 抜かないピン
+    { name: "抜かないピン", need: 32, map: [
+      "################",
+      "#.....llll.....#",
+      "#.....------...#",
+      "#......gggg....#",
+      "#......gggg....#",
+      "#......gggg....#",
+      "#--------------#",
+      "#..............#",
+      "#...#......#...#",
+      "#...#..KK..#...#",
+      "#...#..KK..#...#",
+      "#...#..KK..#...#",
+      "################"] },
+    // 7 水で固める
+    { name: "水で固める", need: 24, map: [
+      "############",
+      "#..wwww...##",
+      "#..wwww...##",
+      "#---------##",
+      "#.........##",
+      "#.ll.gggg.##",
+      "#.ll.gggg.##",
+      "#---------##",
+      "#.........##",
+      "#.........##",
+      "#...KK....##",
+      "#...KK....##",
+      "#...KK....##",
+      "############"] },
+    // 8 宝石は水の中
+    { name: "宝石は水の中", need: 12, map: [
+      "############",
+      "#.wwgggg..##",
+      "#.wwwwww..##",
+      "#---------##",
+      "#.........##",
+      "#..llll...##",
+      "#---------##",
+      "#.........##",
+      "#.........##",
+      "#...KK....##",
+      "#...KK....##",
+      "#...KK....##",
+      "############"] },
+    // 9 石で冷ます
+    { name: "石で冷ます", need: 24, map: [
+      "############",
+      "#.oogggg..##",
+      "#.oogggg..##",
+      "#---------##",
+      "#.........##",
+      "#..llll...##",
+      "#---------##",
+      "#.........##",
+      "#.........##",
+      "#...KK....##",
+      "#...KK....##",
+      "#...KK....##",
+      "############"] },
+    // 10 滑り台
+    { name: "滑り台", need: 24, map: [
+      "################",
+      "#.gggg.#.......#",
+      "#.gggg.#.......#",
+      "#------#.......#",
+      "#......#.......#",
+      "#\\.....#.......#",
+      "#.\\....#.......#",
+      "#..\\...#.......#",
+      "#...\\..#.......#",
+      "#....\\.#.......#",
+      "#.....\\........#",
+      "#.....#........#",
+      "#.....#....KK..#",
+      "#.llll#....KK..#",
+      "#.llll#....KK..#",
+      "################"] },
+    // 11 溶岩の滑り台
+    { name: "溶岩の滑り台", need: 0, kill: true, map: [
+      "################",
+      "#.lll.#........#",
+      "#.lll.#........#",
+      "#-----#........#",
+      "#..............#",
+      "#\\.............#",
+      "#.\\............#",
+      "#..\\...........#",
+      "#...\\..........#",
+      "#....\\.........#",
+      "#.....\\........#",
+      "#......\\.......#",
+      "#.......\\......#",
+      "#........#.....#",
+      "#..KK....#..EE.#",
+      "#..KK....#..EE.#",
+      "#..KK....#..EE.#",
+      "################"] },
+    // 12 先に敵を
+    { name: "先に敵を", need: 24, kill: true, map: [
+      "##############",
+      "#..RR..#.....#",
+      "#..RR..#.....#",
+      "#------#.....#",
+      "#......#.....#",
+      "#......#.....#",
+      "#..EE..#gggg.#",
+      "#..EE..#gggg.#",
+      "#..EE..#.....#",
+      "#------#-----#",
+      "#............#",
+      "#............#",
+      "#.......KK...#",
+      "#.......KK...#",
+      "#.......KK...#",
+      "##############"] },
+    // 13 岩は当てない
+    { name: "岩は当てない", need: 24, kill: true, map: [
+      "##############",
+      "#.RR..#.gggg.#",
+      "#.RR..#.gggg.#",
+      "#-----#------#",
+      "#.....#......#",
+      "#.EE..#......#",
+      "#.EE..#......#",
+      "#.EE..#......#",
+      "#-----#......#",
+      "#............#",
+      "#......KK....#",
+      "#......KK....#",
+      "#......KK....#",
+      "##############"] },
+    // 14 三つの部屋
+    { name: "三つの部屋", need: 24, kill: true, map: [
+      "##################",
+      "#.gggg..#..RR....#",
+      "#.gggg..#..RR....#",
+      "#-------#--------#",
+      "#.......#........#",
+      "#.......#..EE....#",
+      "#.......#..EE....#",
+      "#.......#..EE....#",
+      "#.......#--------#",
+      "#.......#........#",
+      "#................#",
+      "#..KK............#",
+      "#..KK............#",
+      "#..KK............#",
+      "##################"] },
+    // 15 岩と宝石
+    { name: "岩と宝石", need: 24, kill: true, map: [
+      "################",
+      "#...RR.#.......#",
+      "#...RR.#.......#",
+      "#------#.......#",
+      "#......#.......#",
+      "#...EE.#.......#",
+      "#...EE.#.gggg..#",
+      "#...EE.#.gggg..#",
+      "#------#-------#",
+      "#..............#",
+      "#.........KK...#",
+      "#.........KK...#",
+      "#.........KK...#",
+      "################"] },
+    // 16 三段の部屋
+    { name: "三段の部屋", need: 24, map: [
+      "##########",
+      "#..gggg..#",
+      "#..gggg..#",
+      "#--------#",
+      "#........#",
+      "#..wwww..#",
+      "#--------#",
+      "#........#",
+      "#..llll..#",
+      "#--------#",
+      "#........#",
+      "#........#",
+      "#...KK...#",
+      "#...KK...#",
+      "#...KK...#",
+      "##########"] },
+    // 17 砂利の堤
+    { name: "砂利の堤", need: 24, map: [
+      "################",
+      "#.gggg.#.ssss..#",
+      "#.gggg.#.ssss..#",
+      "#------#-------#",
+      "#......#.......#",
+      "#......#.......#",
+      "#......#.......#",
+      "#......#.......#",
+      "#..llll#.......#",
+      "#------#.......#",
+      "#..............#",
+      "#..............#",
+      "#..........KK..#",
+      "#..........KK..#",
+      "#..........KK..#",
+      "################"] },
+    // 18 砂の堤
+    { name: "砂の堤", need: 24, kill: true, map: [
+      "####################",
+      "#.gggg..#.ssss#.ll.#",
+      "#.gggg..#.ssss#.ll.#",
+      "#-------#-----#----#",
+      "#.......#.....#....#",
+      "#.......#.....#.EE.#",
+      "#.......#.....#.EE.#",
+      "#.......#.....#.EE.#",
+      "#..............#.###",
+      "#..KK..............#",
+      "#..KK..............#",
+      "#..KK..............#",
+      "####################"] },
+    // 19 岩を二度
+    { name: "岩を二度", need: 0, kill: true, map: [
+      "##########",
+      "#...RR...#",
+      "#...RR...#",
+      "#--------#",
+      "#........#",
+      "#...EE...#",
+      "#...EE...#",
+      "#...EE...#",
+      "#--------#",
+      "#........#",
+      "#...EE...#",
+      "#...EE...#",
+      "#...EE...#",
+      "#--------#",
+      "#........#",
+      "#......KK#",
+      "#......KK#",
+      "#......KK#",
+      "##########"] },
+    // 20 敵の部屋
+    { name: "敵の部屋", need: 24, kill: true, map: [
+      "################",
+      "#.gggg.#.llll..#",
+      "#.gggg.#.llll..#",
+      "#------#-------#",
+      "#......#.......#",
+      "#......#..EE...#",
+      "#......#..EE...#",
+      "#......#..EE...#",
+      "#......#-------#",
+      "#..............#",
+      "#..............#",
+      "#...KK.........#",
+      "#...KK.........#",
+      "#...KK.........#",
+      "################"] },
+    // 21 水の底
+    { name: "水の底", need: 24, map: [
+      "################",
+      "#.gggg.#.RR....#",
+      "#.gggg.#.RR....#",
+      "#------#-------#",
+      "#......#.......#",
+      "#.wwww.#..EE...#",
+      "#.wwww.#..EE...#",
+      "#------#..EE...#",
+      "#......#-------#",
+      "#..............#",
+      "#..............#",
+      "#..........KK..#",
+      "#..........KK..#",
+      "#..........KK..#",
+      "################"] },
+    // 22 二匹の敵
+    { name: "二匹の敵", need: 0, kill: true, map: [
+      "################",
+      "#..RR..#..RR...#",
+      "#..RR..#..RR...#",
+      "#------#-------#",
+      "#......#.......#",
+      "#..EE..#..EE...#",
+      "#..EE..#..EE...#",
+      "#..EE..#..EE...#",
+      "#------#-------#",
+      "#..............#",
+      "#..............#",
+      "#.......KK.....#",
+      "#.......KK.....#",
+      "#.......KK.....#",
+      "################"] },
+    // 23 敵二匹と岩
+    { name: "敵二匹と岩", need: 24, kill: true, map: [
+      "##################",
+      "#..RR...#........#",
+      "#..RR...#........#",
+      "#-------#........#",
+      "#..EE...#........#",
+      "#..EE...#........#",
+      "#..EE...#........#",
+      "#-------#..gggg..#",
+      "#..EE...#..gggg..#",
+      "#..EE...#--------#",
+      "#..EE...#........#",
+      "#-------#........#",
+      "#................#",
+      "#............KK..#",
+      "#............KK..#",
+      "#............KK..#",
+      "##################"] },
+    // 24 四本
+    { name: "四本", need: 24, kill: true, map: [
+      "##################",
+      "#.RR....#..gggg..#",
+      "#.RR....#..gggg..#",
+      "#-------#--------#",
+      "#.......#........#",
+      "#.EE....#..wwww..#",
+      "#.EE....#--------#",
+      "#.EE....#........#",
+      "#-------#........#",
+      "#................#",
+      "#................#",
+      "#.KK.............#",
+      "#.KK.............#",
+      "#.KK.............#",
+      "##################"] },
+    // 25 火消し
+    { name: "火消し", need: 16, kill: true, map: [
+      "############",
+      "#..wwww...##",
+      "#..wwww...##",
+      "#---------##",
+      "#.........##",
+      "#..llll...##",
+      "#---------##",
+      "#.........##",
+      "#..EE..gg.##",
+      "#..EE..gg.##",
+      "#..EE..gg.##",
+      "#---------##",
+      "#.........##",
+      "#.........##",
+      "#...KK....##",
+      "#...KK....##",
+      "#...KK....##",
+      "############"] },
+    // 26 穴をふさぐ
+    { name: "穴をふさぐ", need: 24, map: [
+      "##################",
+      "#...#.gggg#.wwww.#",
+      "#...#.gggg#.wwww.#",
+      "#...#-----#------#",
+      "#...#.....#......#",
+      "#...#.....#.llll.#",
+      "#...#.....#------#",
+      "#...#.....#......#",
+      "#................#",
+      "#KK..............#",
+      "#KK..............#",
+      "#KK..#...........#",
+      "######....########",
+      "##################"] },
+    // 27 二度冷ます
+    { name: "二度冷ます", need: 16, kill: true, map: [
+      "############",
+      "#..wwww...##",
+      "#..wwww...##",
+      "#---------##",
+      "#.........##",
+      "#..llll...##",
+      "#---------##",
+      "#.........##",
+      "#.EE...gg.##",
+      "#.EE...gg.##",
+      "#.EE...gg.##",
+      "#---------##",
+      "#.........##",
+      "#..llll...##",
+      "#---------##",
+      "#.........##",
+      "#..wwww...##",
+      "#---------##",
+      "#.........##",
+      "#.........##",
+      "#...KK....##",
+      "#...KK....##",
+      "#...KK....##",
+      "############"] },
+    // 28 五本
+    { name: "五本", need: 24, kill: true, map: [
+      "##################",
+      "#..RR...#.gggg...#",
+      "#..RR...#.gggg...#",
+      "#-------#--------#",
+      "#.......#........#",
+      "#..EE...#........#",
+      "#..EE...#........#",
+      "#..EE...#........#",
+      "#-------#........#",
+      "#.......#........#",
+      "#..wwww.#........#",
+      "#-------#........#",
+      "#.......#........#",
+      "#..llll.#........#",
+      "#-------#........#",
+      "#................#",
+      "#................#",
+      "#.....KK.........#",
+      "#.....KK.........#",
+      "#.....KK.........#",
+      "##################"] },
+    // 29 水路と岩
+    { name: "水路と岩", need: 24, kill: true, map: [
+      "##################",
+      "#.wwww..#..RR....#",
+      "#.wwww..#..RR....#",
+      "#-------#--------#",
+      "#.......#........#",
+      "#..llll.#..EE....#",
+      "#-------#..EE....#",
+      "#.......#..EE....#",
+      "#..gggg.#--------#",
+      "#..gggg.#........#",
+      "#-------#........#",
+      "#................#",
+      "#................#",
+      "#.....KK.........#",
+      "#.....KK.........#",
+      "#.....KK.........#",
+      "##################"] },
+    // 30 三列
+    { name: "三列", need: 24, kill: true, map: [
+      "####################",
+      "#.RR..#..gggg#..RR.#",
+      "#.RR..#..gggg#..RR.#",
+      "#-----#------#-----#",
+      "#.....#......#.....#",
+      "#.EE..#......#..EE.#",
+      "#.EE..#......#..EE.#",
+      "#.EE..#......#..EE.#",
+      "#-----#......#-----#",
+      "#..................#",
+      "#..................#",
+      "#........KK........#",
+      "#........KK........#",
+      "#........KK........#",
+      "####################"] },
+    // 31 六本
+    { name: "六本", need: 24, kill: true, map: [
+      "####################",
+      "#.wwww..#..llll....#",
+      "#.wwww..#..llll....#",
+      "#-------#----------#",
+      "#.......#..........#",
+      "#.gggg..#..........#",
+      "#.gggg..#..EE......#",
+      "#-------#..EE......#",
+      "#.......#..EE......#",
+      "#.llll..############",
+      "#-------#..........#",
+      "#.......#..........#",
+      "#..RR...#..........#",
+      "#-------#..........#",
+      "#.......#..........#",
+      "#..EE...#..........#",
+      "#..EE...#..........#",
+      "#..EE...#..........#",
+      "#-------#..........#",
+      "#..................#",
+      "#..................#",
+      "#..............KK..#",
+      "#..............KK..#",
+      "#..............KK..#",
+      "####################"] },
+    // 32 王の試練
+    { name: "王の試練", need: 16, kill: true, map: [
+      "##############",
+      "#..wwww..#.RR#",
+      "#..wwww..#.RR#",
+      "#--------#---#",
+      "#........#...#",
+      "#..llll..#.EE#",
+      "#--------#.EE#",
+      "#........#.EE#",
+      "#.EE..gg.#---#",
+      "#.EE..gg.#...#",
+      "#.EE..gg.#...#",
+      "#--------#...#",
+      "#........#...#",
+      "#..llll..#...#",
+      "#--------#...#",
+      "#........#...#",
+      "#............#",
+      "#...KK.......#",
+      "#...KK.......#",
+      "#...KK.......#",
+      "##############"] }
+  ];
+  // ==LEVELS-END==
+
+  // ==SOLUTIONS-BEGIN==
+  // solve.js で生成（抜く順で勝てるもの全部。ピン番号は上→下、左→右）
+  var SOLUTIONS = [
+    /* 1 */ ["0"],
+    /* 2 */ ["0"],
+    /* 3 */ ["0","10"],
+    /* 4 */ ["0"],
+    /* 5 */ ["0","10"],
+    /* 6 */ ["01","1"],
+    /* 7 */ ["01"],
+    /* 8 */ ["01"],
+    /* 9 */ ["01"],
+    /* 10 */ ["0"],
+    /* 11 */ ["0"],
+    /* 12 */ ["012","02","20"],
+    /* 13 */ ["01","021","10"],
+    /* 14 */ ["01","10","120"],
+    /* 15 */ ["012","02","20"],
+    /* 16 */ ["012","102","120"],
+    /* 17 */ ["012","102","120"],
+    /* 18 */ ["012","02","102","120"],
+    /* 19 */ ["01","10"],
+    /* 20 */ ["01","10"],
+    /* 21 */ ["012","0132","02","102","1032","120","1230","1302","1320","20","210","2130"],
+    /* 22 */ ["01","021","10","130"],
+    /* 23 */ ["012","0132","021","102","1032","120","201","210"],
+    /* 24 */ ["012","021","102","120","201","210"],
+    /* 25 */ ["102"],
+    /* 26 */ ["210"],
+    /* 27 */ ["02134","02143","02314","0234","02413","04213","10234","10243","10324","10342","10423","12034","12043","12304","1234","12403","13024","13042","13204","1324","13402","1342","14023","14203","20134","20143","20314","2034","20413","21034","21043","21304","2134","21403","23014","2304","23104","2314","234","24013","24103","31024","31042","31204","3124","31402","3142","32104","3214","34102","3412","40213","41023","41203","42013","42103"],
+    /* 28 */ ["01","021","0231","02341","031","0321","03241","0341","03421","10","120","123","130","1320","1340","201","2031","20341","210","213","2301","23041","2310","301","3021","30241","3041","30421","310","3120","3140","3201","32041","3210","3401","34021","3410"],
+    /* 29 */ ["01234","0124","01324","0134","014","02134","0214","0241","041","0421","10234","1024","10324","1034","104","12034","1204","12304","13024","1304","13204","134","14","20134","2014","2041","21034","2104","21304","401","4021","41"],
+    /* 30 */ ["012","0132","021","0231","02341","0241","02431","0312","0321","03241","102","1032","120","1240","201","2031","20341","2041","20431","210","2140","2401","24031","2410"],
+    /* 31 */ ["012345","012435","012453","013245","013425","014235","014253","014325","014523","021345","021435","021453","023145","023415","023451","024135","024153","024315","024351","024513","024531","031245","031425","032145","032415","032451","034125","034215","034251","041235","041253","041325","041523","042135","042153","042315","042351","042513","042531","043125","043215","043251","045123","045213","045231","102345","102435","102453","103245","103425","104235","104253","104325","104523","120345","120435","120453","123045","123405","124035","124053","124305","124503","130245","130425","132045","132405","134025","134205","140235","140253","140325","140523","142035","142053","142305","142503","143025","143205","145023","145203","201345","201435","201453","203145","203415","203451","204135","204153","204315","204351","204513","204531","210345","210435","210453","213045","213405","214035","214053","214305","214503","230145","230415","230451","231045","231405","234015","234051","234105","240135","240153","240315","240351","240513","240531","241035","241053","241305","241503","243015","243051","243105","245013","245031","245103","301245","301425","302145","302415","302451","304125","304215","304251","310245","310425","312045","312405","314025","314205","320145","320415","320451","321045","321405","324015","324051","324105","340125","340215","340251","341025","341205","342015","342051","342105","401235","401253","401325","401523","402135","402153","402315","402351","402513","402531","403125","403215","403251","405123","405213","405231","410235","410253","410325","410523","412035","412053","412305","412503","413025","413205","415023","415203","420135","420153","420315","420351","420513","420531","421035","421053","421305","421503","423015","423051","423105","425013","425031","425103","430125","430215","430251","431025","431205","432015","432051","432105","450123","450213","450231","451023","451203","452013","452031","452103"],
+    /* 32 */ ["013425","014235","01425","014325","041235","04125","041325","042135","04215","04251","103425","104235","10425","104325","120345","120435","12045","123045","123405","124035","12405","124305","130425","132045","132405","134025","134205","140235","14025","140325","142035","14205","142305","143025","143205","201345","201435","20145","204135","20415","20451","210345","210435","21045","213045","213405","214035","21405","214305","240135","24015","24051","241035","24105","241305","401235","40125","401325","402135","40215","40251","410235","41025","410325","412035","41205","412305","413025","413205","420135","42015","42051","421035","42105","421305"]
+  ];
+  // ==SOLUTIONS-END==
+
+  (function () {
+    'use strict';
+    var H = window.GameHub, E = PinEngine;
+    var W = E.W, HH = E.H, CELL = 10, BASE_W = W * CELL, BASE_H = HH * CELL;
+    var store = H.store('pinpull');
+    var cleared = store.get('cleared', []);
+    var lvIndex = Math.min(store.get('level', 0), LEVELS.length - 1);
+    var state = null, undoStack = [], overlayEl = null, hintPin = -1, hintUndo = false;
+    var pullAnims = [], effects = [], tick = 0, acc = 0, firstHelp = !store.get('seen', false);
+    var view = { ox: 0, oy: 0, k: 1 };   // 面の使っている範囲だけを拡大して見せる
+    function fitView() {
+      var g = state.grid, minx = W, miny = HH, maxx = -1, maxy = -1, x, y;
+      for (y = 0; y < HH; y++) for (x = 0; x < W; x++) if (g[y * W + x] !== E.WALL) {
+        if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+      }
+      if (maxx < 0) { view = { ox: 0, oy: 0, k: 1 }; return; }
+      minx = Math.max(0, minx - 2); miny = Math.max(0, miny - 2); maxx = Math.min(W - 1, maxx + 2); maxy = Math.min(HH - 1, maxy + 2);
+      var bw = (maxx - minx + 1) * CELL, bh = (maxy - miny + 1) * CELL;
+      var k = Math.min(BASE_W / bw, BASE_H / bh);
+      view = { k: k, ox: (BASE_W - bw * k) / 2 - minx * CELL * k, oy: (BASE_H - bh * k) / 2 - miny * CELL * k };
+    }
+
+    var canvas = document.getElementById('cv');
+    var scale = 1;
+    var st = H.canvasStage(canvas, BASE_W, BASE_H, function (cssW, cssH, ctx, sc) {
+      scale = sc;
+      ctx.scale(sc, sc);
+      draw();
+    });
+    // 粒の層は 1 セル = 1px の小さな canvas に描いて拡大する
+    var pix = document.createElement('canvas');
+    pix.width = W; pix.height = HH;
+    var pctx = pix.getContext('2d');
+    var img = pctx.createImageData(W, HH);
+    var glow = document.createElement('canvas');
+    glow.width = W; glow.height = HH;
+    var gctx = glow.getContext('2d');
+    var gimg = gctx.createImageData(W, HH);
+
+    function hash(x, y) {
+      var h = (x * 374761393 + y * 668265263) | 0;
+      h = ((h ^ (h >>> 13)) * 1274126177) | 0;
+      return (h ^ (h >>> 16)) & 255;
+    }
+    var GEM_COLORS = [[240, 80, 110], [80, 200, 255], [120, 230, 120], [255, 210, 70], [200, 120, 255], [255, 140, 70]];
+
+    function hud() {
+      document.getElementById('level').textContent = (lvIndex + 1) + '/' + LEVELS.length + (cleared[lvIndex] ? ' ✓' : '');
+      if (state) {
+        var g = E.gemsInGoal(state);
+        document.getElementById('gem').textContent = state.need ? (g + '/' + state.need) : '-';
+        document.getElementById('hud-gem').style.display = state.need ? '' : 'none';
+        var en = E.enemiesAlive(state);
+        document.getElementById('enemy').textContent = en;
+        document.getElementById('hud-enemy').style.display = state.kill ? '' : 'none';
+        document.getElementById('pins').textContent = E.pinsLeft(state);
+      }
+      document.getElementById('btn-undo').classList.toggle('lit', hintUndo);
+    }
+
+    // ---------- 描画 ----------
+    function drawPixels() {
+      var d = img.data, gd = gimg.data, grid = state.grid, aux = state.aux, goal = state.goal, i, x, y, r, g, b, h;
+      for (y = 0; y < HH; y++) for (x = 0; x < W; x++) {
+        i = y * W + x; var t = grid[i]; h = hash(x, y);
+        var o = i * 4, ga = 0;
+        if (t === E.WALL) {
+          var mortar = (y % 4 === 0) || (((x + ((y >> 2) & 1) * 3) % 6) === 0);
+          var base = mortar ? 44 : 78 + (h % 24);
+          r = base; g = base - 2; b = base + 8;
+        } else if (t === E.EMPTY || t === E.PIN || t === E.BODY) {
+          var n = h % 9;
+          r = 28 + n; g = 24 + n; b = 42 + n;
+          if (goal[i]) { r += 18; g += 12; b -= 4; }
+        } else if (t === E.WATER) {
+          var wv = ((h + tick * 3) % 40) ; r = 40 + (wv >> 2); g = 130 + (wv >> 1); b = 230 - (wv >> 2);
+        } else if (t === E.LAVA) {
+          var lv = ((h + tick * 5) % 60);
+          r = 255; g = 110 + lv; b = 20 + (lv >> 1); ga = 200;
+        } else if (t === E.STONE) {
+          r = 116 + (h % 16); g = 112 + (h % 16); b = 118 + (h % 16);
+        } else if (t === E.SAND) {
+          r = 196 + (h % 20); g = 160 + (h % 16); b = 96;
+        } else if (t === E.GEM) {
+          var c = GEM_COLORS[aux[i] % 6]; var sh = (h % 3) * 14;
+          r = Math.min(255, c[0] + sh); g = Math.min(255, c[1] + sh); b = Math.min(255, c[2] + sh);
+        } else { r = 255; g = 0; b = 255; }
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+        gd[o] = 255; gd[o + 1] = 140; gd[o + 2] = 40; gd[o + 3] = ga;
+      }
+      pctx.putImageData(img, 0, 0);
+      gctx.putImageData(gimg, 0, 0);
+    }
+
+    function pinGeom(p) {
+      var ax = p.ax * CELL, ay = p.ay * CELL, bx = p.bx * CELL, by = p.by * CELL;
+      var headAtA = (p.hx === p.ax && p.hy === p.ay);
+      var dx = bx - ax, dy = by - ay, len = Math.sqrt(dx * dx + dy * dy) || 1;
+      var ux = dx / len, uy = dy / len;
+      return { ax: ax, ay: ay, bx: bx, by: by, ux: ux, uy: uy, len: len, headAtA: headAtA };
+    }
+
+    function drawPin(ctx, p, alpha, shift, lit) {
+      var gm = pinGeom(p);
+      var sx = -gm.ux * shift * (gm.headAtA ? 1 : -1), sy = -gm.uy * shift * (gm.headAtA ? 1 : -1);
+      var ax = gm.ax + sx, ay = gm.ay + sy, bx = gm.bx + sx, by = gm.by + sy;
+      var ext = 14;
+      var hx = gm.headAtA ? ax - gm.ux * ext : bx + gm.ux * ext;
+      var hy = gm.headAtA ? ay - gm.uy * ext : by + gm.uy * ext;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      if (lit) {
+        var pulse = 0.5 + 0.5 * Math.sin(tick * 0.2);
+        ctx.strokeStyle = 'rgba(255,255,255,' + (0.35 + 0.5 * pulse) + ')';
+        ctx.lineWidth = 24 + pulse * 6; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+        // 頭の上の矢印
+        ctx.fillStyle = '#fff3a0';
+        ctx.font = 'bold 26px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText('▼', hx, hy - 20 - pulse * 6);
+      }
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#8a6a12'; ctx.lineWidth = 16;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = '#e4b833'; ctx.lineWidth = 12;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,245,200,0.8)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(ax - gm.uy * 3, ay + gm.ux * 3); ctx.lineTo(bx - gm.uy * 3, by + gm.ux * 3); ctx.stroke();
+      // 頭
+      ctx.fillStyle = '#c9961f';
+      ctx.beginPath(); ctx.arc(hx, hy, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f3d35a';
+      ctx.beginPath(); ctx.arc(hx - 2, hy - 2, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath(); ctx.arc(hx - 4, hy - 4, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    function drawStick(ctx, b, kind) {
+      var cx = (b.x + b.w / 2) * CELL, top = b.y * CELL, h = b.h * CELL;
+      var headR = h * 0.14, headY = top + headR + h * 0.12;
+      var col = kind === 'K' ? '#f4f0ff' : '#ff7a6a';
+      ctx.save();
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 4;
+      // 頭
+      ctx.beginPath(); ctx.arc(cx, headY, headR, 0, Math.PI * 2); ctx.fill();
+      // 体
+      var neck = headY + headR, hip = top + h * 0.68, foot = top + h - 2;
+      ctx.beginPath(); ctx.moveTo(cx, neck); ctx.lineTo(cx, hip); ctx.stroke();
+      // 腕
+      ctx.beginPath();
+      if (kind === 'K') { ctx.moveTo(cx - 12, neck + 14); ctx.lineTo(cx, neck + 6); ctx.lineTo(cx + 12, neck + 14); }
+      else { ctx.moveTo(cx - 13, neck + 2); ctx.lineTo(cx, neck + 8); ctx.lineTo(cx + 13, neck + 2); }
+      ctx.stroke();
+      // 足
+      ctx.beginPath(); ctx.moveTo(cx - 9, foot); ctx.lineTo(cx, hip); ctx.lineTo(cx + 9, foot); ctx.stroke();
+      // 目
+      ctx.fillStyle = kind === 'K' ? '#2a2040' : '#300';
+      ctx.beginPath(); ctx.arc(cx - 3, headY - 1, 1.6, 0, Math.PI * 2); ctx.arc(cx + 3, headY - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+      if (kind === 'K') {
+        // 冠
+        ctx.fillStyle = '#ffd34a';
+        ctx.beginPath();
+        ctx.moveTo(cx - headR, headY - headR * 0.6);
+        ctx.lineTo(cx - headR, headY - headR - 7);
+        ctx.lineTo(cx - headR / 2, headY - headR - 1);
+        ctx.lineTo(cx, headY - headR - 8);
+        ctx.lineTo(cx + headR / 2, headY - headR - 1);
+        ctx.lineTo(cx + headR, headY - headR - 7);
+        ctx.lineTo(cx + headR, headY - headR * 0.6);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#e8483f';
+        ctx.beginPath(); ctx.arc(cx, headY - headR - 2, 1.8, 0, Math.PI * 2); ctx.fill();
+        // マント
+        ctx.fillStyle = 'rgba(220,60,70,0.85)';
+        ctx.beginPath(); ctx.moveTo(cx - 6, neck + 2); ctx.lineTo(cx + 6, neck + 2); ctx.lineTo(cx + 11, hip + 4); ctx.lineTo(cx - 11, hip + 4); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = col; ctx.beginPath(); ctx.moveTo(cx, neck); ctx.lineTo(cx, hip); ctx.stroke();
+      } else {
+        // 角
+        ctx.strokeStyle = '#ffb3a7'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(cx - headR * 0.7, headY - headR * 0.6); ctx.lineTo(cx - headR * 1.1, headY - headR - 6);
+        ctx.moveTo(cx + headR * 0.7, headY - headR * 0.6); ctx.lineTo(cx + headR * 1.1, headY - headR - 6); ctx.stroke();
+        // 口
+        ctx.strokeStyle = '#300'; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(cx - 4, headY + 4); ctx.lineTo(cx + 4, headY + 4); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawRock(ctx, b) {
+      var x = b.x * CELL, y = b.y * CELL, w = b.w * CELL, h = b.h * CELL;
+      ctx.save();
+      ctx.fillStyle = '#6f6f7c';
+      ctx.beginPath();
+      ctx.moveTo(x + 4, y + h * 0.4); ctx.lineTo(x + w * 0.3, y + 2); ctx.lineTo(x + w * 0.75, y + 3); ctx.lineTo(x + w - 2, y + h * 0.45);
+      ctx.lineTo(x + w - 5, y + h - 2); ctx.lineTo(x + 6, y + h - 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#9a9aa8';
+      ctx.beginPath(); ctx.moveTo(x + 8, y + h * 0.42); ctx.lineTo(x + w * 0.32, y + 6); ctx.lineTo(x + w * 0.6, y + 8); ctx.lineTo(x + w * 0.5, y + h * 0.5); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#3c3c48'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x + w * 0.55, y + h * 0.35); ctx.lineTo(x + w * 0.7, y + h * 0.7); ctx.stroke();
+      ctx.restore();
+    }
+
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx || !state) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#2c2c38';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      ctx.save();
+      ctx.translate(view.ox, view.oy);
+      ctx.scale(view.k, view.k);
+      drawPixels();
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(pix, 0, 0, BASE_W, BASE_H);
+      // 溶岩の光
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.globalAlpha = 0.35 + 0.1 * Math.sin(tick * 0.15);
+      ctx.drawImage(glow, -CELL, -CELL, BASE_W + CELL * 2, BASE_H + CELL * 2);
+      ctx.restore();
+      ctx.imageSmoothingEnabled = true;
+      var i;
+      for (i = 0; i < state.bodies.length; i++) {
+        var b = state.bodies[i];
+        if (!b.alive) continue;
+        if (b.t === 'R') drawRock(ctx, b); else drawStick(ctx, b, b.t);
+      }
+      var busy = !state.settled && state.status === 'play';
+      for (i = 0; i < state.pins.length; i++) {
+        var p = state.pins[i];
+        if (p.pulled) continue;
+        drawPin(ctx, p, busy ? 0.75 : 1, 0, hintPin === i);
+        if (!H.isTouch) {
+          var gm = pinGeom(p);
+          var hx = gm.headAtA ? gm.ax - gm.ux * 14 : gm.bx + gm.ux * 14, hy = gm.headAtA ? gm.ay - gm.uy * 14 : gm.by + gm.uy * 14;
+          ctx.fillStyle = '#4a3300'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(String(i + 1), hx, hy + 1);
+        }
+      }
+      for (i = pullAnims.length - 1; i >= 0; i--) {
+        var a = pullAnims[i];
+        drawPin(ctx, a.pin, 1 - a.t, a.t * a.t * 220, false);
+      }
+      for (i = effects.length - 1; i >= 0; i--) {
+        var e = effects[i];
+        ctx.save();
+        ctx.globalAlpha = 1 - e.t;
+        if (e.k === 'kill') {
+          ctx.strokeStyle = e.c; ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.arc(e.x, e.y, 10 + e.t * 40, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center';
+          ctx.fillText(e.txt, e.x, e.y - e.t * 30);
+        } else {
+          ctx.fillStyle = 'rgba(230,230,255,0.8)';
+          ctx.beginPath(); ctx.arc(e.x, e.y - e.t * 30, 4 + e.t * 10, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+      }
+      ctx.restore();
+      if (busy) {
+        ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.font = '13px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+        ctx.fillText('…', BASE_W - 8, 6);
+      }
+    }
+
+    // ---------- 進行 ----------
+    function consumeEvents() {
+      var ev = state.events;
+      for (var i = 0; i < ev.length; i++) {
+        var e = ev[i];
+        if (e.k === 'kill') {
+          effects.push({ k: 'kill', x: e.x * CELL, y: e.y * CELL, t: 0, c: e.t === 'E' ? '#ff8a6a' : '#ffffff', txt: e.t === 'E' ? '✦' : '!' });
+          if (e.t === 'E') H.audio.good(); else H.audio.bad();
+        } else if (e.k === 'steam') {
+          effects.push({ k: 'steam', x: e.x * CELL, y: e.y * CELL, t: 0 });
+        }
+      }
+      ev.length = 0;
+    }
+
+    function update(dt) {
+      tick++;
+      acc += dt;
+      var n = 0;
+      while (acc >= 1 / 60 && n < 4) {
+        acc -= 1 / 60; n++;
+        if (state && !state.settled && state.status === 'play') {
+          // 落ち始めは 2 ステップ/フレームで見せ、長引く横流れは 5 ステップ/フレームで早送り（物理は同じ）
+          var per = state.steps < 30 ? 2 : 5;
+          for (var q = 0; q < per && !state.settled && state.status === 'play'; q++) {
+            E.step(state);
+            consumeEvents();
+            if (state.settled) onSettled();
+          }
+        }
+      }
+      if (acc > 0.2) acc = 0;
+      var i;
+      for (i = pullAnims.length - 1; i >= 0; i--) { pullAnims[i].t += dt * 4; if (pullAnims[i].t >= 1) pullAnims.splice(i, 1); }
+      for (i = effects.length - 1; i >= 0; i--) { effects[i].t += dt * 1.6; if (effects[i].t >= 1) effects.splice(i, 1); }
+    }
+
+    function solutionsFor(prefix) {
+      var all = SOLUTIONS[lvIndex] || [], out = [];
+      for (var i = 0; i < all.length; i++) if (all[i].indexOf(prefix) === 0) out.push(all[i]);
+      return out;
+    }
+    function histStr() { return state.hist.join(''); }
+
+    function onSettled() {
+      hud();
+      if (state.status === 'win') { win(); return; }
+      if (state.status === 'fail') { lose(); return; }
+      // 手詰まりの検出（焼いた解の表から）
+      // 手詰まり（焼いた解の表に無い手順）。流れが落ち着いて、何が起きたか見えてから出す
+      if (SOLUTIONS[lvIndex] && SOLUTIONS[lvIndex].length && solutionsFor(histStr()).length === 0) {
+        var snap = state;
+        setTimeout(function () {
+          if (state !== snap || state.status !== 'play' || overlayEl) return;
+          H.audio.bad();
+          hintUndo = true; hud();
+          showOverlay({ title: 'このままでは届きません', html: '1 本戻すか、やり直してください。',
+            buttons: [{ label: '1 本戻す', onClick: function () { overlayEl = null; undo(); } },
+                      { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+        }, 500);
+      }
+    }
+
+    var FAIL_MSG = { lava: '王様に溶岩が…', rock: '王様の上に岩が…', enemy: '敵が王様の部屋に入った', nopins: 'ピンが無くなった。手がありません' };
+    function lose() {
+      H.audio.bad();
+      hintUndo = true; hud();
+      showOverlay({ title: '失敗', html: FAIL_MSG[state.why] || '',
+        buttons: [{ label: '1 本戻す', onClick: function () { overlayEl = null; undo(); } },
+                  { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+    }
+    function win() {
+      H.audio.win();
+      cleared[lvIndex] = true; store.set('cleared', cleared);
+      hud();
+      var last = lvIndex >= LEVELS.length - 1, buttons = [];
+      if (!last) buttons.push({ label: '次の面', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+      var n = 0;
+      for (var i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      setTimeout(function () {
+        if (state.status !== 'win') return;
+        showOverlay({ title: last ? '全面クリア!' : 'クリア!', big: state.hist.length + ' 本', html: 'クリア ' + n + ' / ' + LEVELS.length + ' 面', buttons: buttons });
+      }, 400);
+    }
+
+    function showOverlay(o) { closeOverlay(); overlayEl = H.overlay(o); }
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+
+    function loadLevel(idx) {
+      if (idx < 0 || idx >= LEVELS.length) return;
+      closeOverlay();
+      lvIndex = idx; store.set('level', idx);
+      state = E.parse(LEVELS[idx]);
+      E.settle(state);
+      state.events.length = 0;
+      state.settled = true;
+      fitView();
+      undoStack = []; pullAnims = []; effects = []; hintPin = -1; hintUndo = false;
+      hud(); draw();
+      if (firstHelp && idx === 0) { firstHelp = false; store.set('seen', true); H.toast('金のピンをタップして抜こう', 2200); }
+    }
+    function restart() { loadLevel(lvIndex); }
+
+    function pullPin(i) {
+      if (!state || state.status !== 'play' || !state.settled) return;
+      if (overlayEl) return;
+      var p = state.pins[i];
+      if (!p || p.pulled) return;
+      undoStack.push(E.clone(state));
+      E.pull(state, i);
+      pullAnims.push({ pin: p, t: 0 });
+      hintPin = -1; hintUndo = false;
+      H.audio.click();
+      hud();
+    }
+    function undo() {
+      closeOverlay();
+      if (!undoStack.length) { H.toast('戻せる手がありません'); return; }
+      state = undoStack.pop();
+      state.settled = true; state.status = 'play'; state.events.length = 0;
+      pullAnims = []; effects = []; hintPin = -1; hintUndo = false;
+      H.audio.click(); hud(); draw();
+    }
+    function hint() {
+      if (!state || state.status !== 'play' || overlayEl) return;
+      if (!state.settled) { H.toast('止まるまで待って'); return; }
+      var sols = solutionsFor(histStr());
+      if (!sols.length) { hintUndo = true; hud(); H.toast('この順では解けません。戻してください'); return; }
+      sols.sort(function (a, b) { return a.length - b.length; });
+      var next = parseInt(sols[0].charAt(state.hist.length), 10);
+      if (isNaN(next)) return;
+      hintPin = next; hintUndo = false; hud();
+      H.audio.click();
+    }
+
+    // ---------- 面一覧 ----------
+    function showLevels() {
+      closeOverlay();
+      var n = 0, i;
+      for (i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVELS.length + ' 面　✓ はクリア済み</span><br>';
+      html += '<span class="lv-grid">';
+      for (i = 0; i < LEVELS.length; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv scrollable';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+
+    // ---------- 入力 ----------
+    function pinAt(bx, by) {
+      var best = -1, bestD = 26 / view.k;
+      for (var i = 0; i < state.pins.length; i++) {
+        var p = state.pins[i];
+        if (p.pulled) continue;
+        var gm = pinGeom(p);
+        var ex = 14;
+        var ax = gm.ax - gm.ux * ex, ay = gm.ay - gm.uy * ex, bx2 = gm.bx + gm.ux * ex, by2 = gm.by + gm.uy * ex;
+        var vx = bx2 - ax, vy = by2 - ay, L2 = vx * vx + vy * vy;
+        var t = L2 ? Math.max(0, Math.min(1, ((bx - ax) * vx + (by - ay) * vy) / L2)) : 0;
+        var px = ax + vx * t, py = ay + vy * t;
+        var d = Math.sqrt((bx - px) * (bx - px) + (by - py) * (by - py));
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    H.onTap(canvas, function (cx, cy) {
+      if (!state) return;
+      var p = st.toBase(cx, cy);
+      var i = pinAt((p.x - view.ox) / view.k, (p.y - view.oy) / view.k);
+      if (i < 0) return;
+      if (!state.settled && state.status === 'play') { H.toast('止まるまで待って', 900); return; }
+      pullPin(i);
+    });
+    H.holdButton(document.getElementById('btn-undo'), undo);
+    H.holdButton(document.getElementById('btn-restart'), function () { H.audio.click(); restart(); });
+    H.holdButton(document.getElementById('btn-hint'), hint);
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); showLevels(); });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+    var keys = { z: undo, u: undo, r: restart, h: hint, Escape: function () { closeOverlay(); },
+      n: function () { loadLevel(lvIndex + 1); }, p: function () { loadLevel(lvIndex - 1); } };
+    for (var k = 1; k <= 6; k++) (function (k) { keys[String(k)] = function () { pullPin(k - 1); }; })(k);
+    H.keys(keys);
+
+    window.resetGame = function () { restart(); };
+    var loop = H.loop(update, draw);
+    H.pauseWhenHidden(function () { loop.pause(true); }, function () { loop.pause(false); });
+
+    // テスト用
+    window.__pinpull = {
+      pull: pullPin, undo: undo, hint: hint, load: loadLevel,
+      state: function () { return state; }, engine: E, levels: LEVELS, solutions: SOLUTIONS
+    };
+
+    loadLevel(lvIndex);
+    loop.start();
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ドット崩し - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.tappable { cursor: pointer; padding: 2px 8px; border-radius: 8px; background: var(--panel); }
+    .hud-item.tappable b::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
+    .ctl-btn.sm { min-width: 74px; font-size: 14px; padding: 0 8px; }
+    .ctl-btn.sm.undo { color: var(--warn); }
+    .ctl-btn.sm.on { background: var(--accent); border-color: var(--accent); }
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .overlay.lv p { max-width: 100%; }
+    .lv-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 2px; max-width: 560px; }
+    .lv-btn {
+      width: 60px; height: 70px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 12px; font-weight: 700;
+      display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      position: relative; padding: 0;
+    }
+    .lv-btn canvas { width: 44px; height: 44px; border-radius: 4px; background: #e4e4ee; }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.22); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -3px; right: 3px; font-size: 12px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ドット崩し" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item tappable" id="hud-level" role="button" aria-label="面を選ぶ">面<b id="level">1</b></span>
+      <span class="hud-item">残り<b id="remain">0</b></span>
+      <span class="hud-item">待機<b id="belt">0/5</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>上にドット絵、下に色つきの砲台が列に並ぶ。数字は弾の数。</li>
+            <li>列の先頭の砲台をタップすると、盤のまわりのベルトに乗ってぐるぐる回る。</li>
+            <li>左下の入口から時計回りに 1 周。正面に見える最初のドットが自分の色なら 1 発撃って崩す。1 回通るごとに 1 つ。</li>
+            <li>弾を撃ち切った砲台は消える。全部のドットを崩せばクリア。</li>
+            <li>1 周して弾が残った砲台は、盤の下の待機枠（5 つ）に入る。待機枠の砲台をタップすると、もう 1 周しに出て行く（枠は空く）。自分の色が外から見えるようになってから出すのがよい。</li>
+            <li>待機枠が 5 つとも埋まっているときに、弾の残った砲台が戻ってくると失敗。戻すかやり直す。</li>
+            <li>各色の弾の合計はその色のドットの数とぴったり同じ。弾が余ることも足りなくなることもない。</li>
+            <li>コツ: 今「外から見えている色」の砲台を出す。数字が大きい砲台は、その色がたくさん見えてから。</li>
+          </ul>
+          <h3>補助（無制限）</h3>
+          <ul>
+            <li>戻す: 最後に出した砲台を出す前の状態に戻る。何手でも。</li>
+            <li>ヒント: 今出しても詰まらない砲台（列の先頭か待機枠）が金色に光る。光る物がなければ「戻す」の合図。</li>
+            <li>速さ: ベルトの速さを 2 倍にする。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下の砲台の列をタップ。上の「面」で面一覧。</li>
+            <li>PC: 数字キー 1〜5 で列を選ぶ、6〜9・0 で待機枠の 1〜5 番目を出す、Z で戻す、H でヒント、S で速さ、N / P で次・前の面、R でやり直し。</li>
+          </ul>
+          <h3>面</h3>
+          <ul>
+            <li>全部の面を解けることを確かめてから入れてある（砲台の並びは固定）。易しい絵から大きな絵へ。クリアした面には ✓ と完成した絵が出る。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-row">
+        <button type="button" class="ctl-btn sm undo" id="btn-undo">↶ 戻す</button>
+        <button type="button" class="ctl-btn sm" id="btn-hint">ヒント</button>
+        <button type="button" class="ctl-btn sm" id="btn-fast">速さ ×1</button>
+        <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE-BEGIN*/
+  // 盤の状態と進行（DOM に触らない。node のソルバー/検証からも同じ物を使う）
+  // ルール: 砲台は入口(左下)から時計回りに 1 周だけ回り、正面に見える同色ドットを撃つ。
+  // 1 周して弾が残れば待機枠へ。待機枠の砲台はタップするともう 1 周する(枠は空く)。
+  // 待機枠(cap)が全部埋まった状態で、弾の残った砲台が戻ってきたら失敗。
+  function createCore() {
+    'use strict';
+    var ENTRY = 0;
+
+    function newState(level) {
+      var w = level.w, h = level.h, i;
+      var st = { lv: level, w: w, h: h, nc: level.colors.length, cap: level.cap,
+        grid: new Array(w * h), remain: 0, cols: [], heads: [], belt: [], nextId: 1, failed: false,
+        starts: [0, h + 1, h + 1 + w + 1, 2 * h + w + 3], lens: [h + 1, w + 1, h + 1, w + 1],
+        L: 2 * (w + 1) + 2 * (h + 1), tcache: {} };
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          var ch = level.rows[y].charAt(x);
+          var ci = ch === '.' ? -1 : level.colors.indexOf(ch);
+          st.grid[y * w + x] = ci;
+          if (ci >= 0) st.remain++;
+        }
+      }
+      for (i = 0; i < level.cols.length; i++) {
+        st.cols.push(level.cols[i].map(function (p) { return { c: p[0], a: p[1] }; }));
+        st.heads.push(0);
+      }
+      return st;
+    }
+
+    function countState(st, s) {
+      var n = 0;
+      for (var i = 0; i < st.belt.length; i++) if (st.belt[i].state === s) n++;
+      return n;
+    }
+    function parkedCount(st) { return countState(st, 'park'); }
+    function movingCount(st) { return countState(st, 'enter') + countState(st, 'run'); }
+    function headOf(st, ci) {
+      if (ci < 0 || ci >= st.cols.length) return null;
+      if (st.heads[ci] >= st.cols[ci].length) return null;
+      return st.cols[ci][st.heads[ci]];
+    }
+    function push(st, ci) {
+      var hd = headOf(st, ci);
+      if (!hd || st.failed) return null;
+      st.heads[ci]++;
+      var cn = { id: st.nextId++, c: hd.c, a: hd.a, a0: hd.a, p: ENTRY, state: 'enter', t: 0 };
+      st.belt.push(cn);
+      return cn;
+    }
+    function parkedList(st) {
+      var out = [];
+      for (var i = 0; i < st.belt.length; i++) if (st.belt[i].state === 'park') out.push(st.belt[i]);
+      return out;
+    }
+    // 待機枠の k 番目をもう 1 周させる
+    function relaunch(st, k) {
+      var pk = parkedList(st);
+      if (st.failed || k < 0 || k >= pk.length) return null;
+      pk[k].state = 'enter';
+      return pk[k];
+    }
+
+    // 辺 side(0 左 1 上 2 右 3 下) の idx 番目の行/列を外から内へ見たときのマス列
+    function lineCells(w, h, side, idx) {
+      var cells = [], i;
+      if (side === 0) for (i = 0; i < w; i++) cells.push(idx * w + i);
+      else if (side === 1) for (i = 0; i < h; i++) cells.push(i * w + idx);
+      else if (side === 2) for (i = w - 1; i >= 0; i--) cells.push(idx * w + i);
+      else for (i = h - 1; i >= 0; i--) cells.push(i * w + idx);
+      return cells;
+    }
+    // 外から見えているマス（重複なし）
+    function exposed(w, h, grid) {
+      var seen = {}, out = [], x, y;
+      function take(c) { if (!seen[c]) { seen[c] = 1; out.push(c); } }
+      for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) if (grid[y * w + x] >= 0) { take(y * w + x); break; }
+        for (x = w - 1; x >= 0; x--) if (grid[y * w + x] >= 0) { take(y * w + x); break; }
+      }
+      for (x = 0; x < w; x++) {
+        for (y = 0; y < h; y++) if (grid[y * w + x] >= 0) { take(y * w + x); break; }
+        for (y = h - 1; y >= 0; y--) if (grid[y * w + x] >= 0) { take(y * w + x); break; }
+      }
+      return out;
+    }
+    function gridHasTarget(w, h, grid, c) {
+      var ex = exposed(w, h, grid);
+      for (var i = 0; i < ex.length; i++) if (grid[ex[i]] === c) return true;
+      return false;
+    }
+    function hasTarget(st, c) {
+      if (st.tcache[c] !== undefined) return st.tcache[c];
+      var r = gridHasTarget(st.w, st.h, st.grid, c);
+      st.tcache[c] = r;
+      return r;
+    }
+
+    // ベルト座標 p → {side, q}（q は辺の中の進み、0..len）
+    function posOf(st, p) {
+      p = ((p % st.L) + st.L) % st.L;
+      for (var s = 3; s >= 0; s--) if (p >= st.starts[s]) return { side: s, q: p - st.starts[s] };
+      return { side: 0, q: p };
+    }
+    function lineIndex(st, side, q) {
+      if (side === 0) return st.h - q;
+      if (side === 1) return q - 1;
+      if (side === 2) return q - 1;
+      return st.w - q;
+    }
+    // 1 周で横切る行/列の並び（入口から時計回り）
+    function lapLines(st) {
+      if (st.lapCache) return st.lapCache;
+      var out = [];
+      for (var g = 1; g < st.L; g++) {
+        var ps = posOf(st, g);
+        if (ps.q >= 1 && ps.q <= st.lens[ps.side] - 1) out.push({ side: ps.side, idx: lineIndex(st, ps.side, ps.q), g: g });
+      }
+      st.lapCache = out;
+      return out;
+    }
+
+    // 正面の行/列を撃つ: 外から見て最初のドットが自分の色なら 1 発(1 回通るごとに 1 つ)。戻り値は撃った数
+    function fireGrid(w, h, grid, cn, side, idx, events) {
+      var cells = lineCells(w, h, side, idx), n = 0;
+      for (var i = 0; i < cells.length && cn.a > 0; i++) {
+        var col = grid[cells[i]];
+        if (col < 0) continue;
+        if (col !== cn.c) break;
+        grid[cells[i]] = -1;
+        cn.a--;
+        if (events) events.push({ type: 'shot', cannon: cn, side: side, idx: idx, cell: cells[i], color: col, n: n, dist: i });
+        n++;
+        break;
+      }
+      return n;
+    }
+    function fireLine(st, cn, side, idx, events) {
+      var n = fireGrid(st.w, st.h, st.grid, cn, side, idx, events);
+      if (n) { st.remain -= n; st.tcache = {}; }
+      return n;
+    }
+    function circDist(st, a, b) {
+      var d = Math.abs(((a - b) % st.L + st.L) % st.L);
+      return Math.min(d, st.L - d);
+    }
+
+    // dt 秒進める。speed はマス/秒。events に shot / empty / start / park / fail を積む
+    function step(st, dt, speed, events) {
+      var i, j, cn;
+      if (st.failed) return;
+      // 入口: 走っている砲台が入口付近に居なければ、入口待ちの先頭を 1 台出す
+      var gateFree = true;
+      for (j = 0; j < st.belt.length; j++) {
+        if (st.belt[j].state === 'run' && circDist(st, st.belt[j].p, ENTRY) < 1.8) { gateFree = false; break; }
+      }
+      if (gateFree) {
+        var pick = null;
+        for (j = 0; j < st.belt.length && !pick; j++) if (st.belt[j].state === 'enter') pick = st.belt[j];
+        if (pick) {
+          pick.state = 'run'; pick.p = ENTRY; pick.lap = (pick.lap || 0) + 1;
+          events.push({ type: 'start', cannon: pick });
+        }
+      }
+      for (i = 0; i < st.belt.length; i++) {
+        cn = st.belt[i];
+        if (cn.state === 'die') { cn.t += dt; continue; }
+        if (cn.state !== 'run') continue;
+        var p0 = cn.p, p1 = cn.p + speed * dt;
+        var g0 = Math.floor(p0), g1 = Math.min(Math.floor(p1), st.L - 1);
+        for (var g = g0 + 1; g <= g1 && cn.a > 0; g++) {
+          var ps = posOf(st, g);
+          if (ps.q >= 1 && ps.q <= st.lens[ps.side] - 1) fireLine(st, cn, ps.side, lineIndex(st, ps.side, ps.q), events);
+        }
+        cn.p = p1;
+        if (cn.a <= 0) { cn.state = 'die'; cn.t = 0; events.push({ type: 'empty', cannon: cn }); continue; }
+        if (p1 >= st.L) {
+          if (parkedCount(st) >= st.cap) {
+            cn.state = 'fail'; cn.p = 0; st.failed = true;
+            events.push({ type: 'fail', cannon: cn });
+          } else {
+            cn.state = 'park'; cn.p = 0; cn.t = 0;
+            events.push({ type: 'park', cannon: cn });
+          }
+        }
+      }
+      for (i = st.belt.length - 1; i >= 0; i--) if (st.belt[i].state === 'die' && st.belt[i].t > 0.3) st.belt.splice(i, 1);
+    }
+
+    function queueLeft(st) {
+      var n = 0;
+      for (var i = 0; i < st.cols.length; i++) n += st.cols[i].length - st.heads[i];
+      return n;
+    }
+    function quiet(st) { return movingCount(st) === 0; }
+
+    function snapshot(st) {
+      return { grid: st.grid.slice(), remain: st.remain, heads: st.heads.slice(), failed: st.failed,
+        belt: st.belt.map(function (c) { return { id: c.id, c: c.c, a: c.a, a0: c.a0, p: c.p, state: c.state, t: c.t, lap: c.lap }; }) };
+    }
+    function restore(st, sn) {
+      st.grid = sn.grid.slice(); st.remain = sn.remain; st.heads = sn.heads.slice(); st.failed = sn.failed;
+      st.belt = sn.belt.map(function (c) { return { id: c.id, c: c.c, a: c.a, a0: c.a0, p: c.p, state: c.state, t: c.t, lap: c.lap }; });
+      st.tcache = {};
+    }
+
+    // ---------- ソルバー（逐次モデル） ----------
+    // 砲台は 1 台ずつ順に 1 周する、として厳密に追う。実機で同時に 2 台以上出しても、
+    // 前の砲台が先に各列を通るので結果はほぼ同じ。手: 列の先頭を出す / 待機枠の砲台をもう 1 周
+    function simFrom(st) {
+      var sim = { w: st.w, h: st.h, grid: st.grid.slice(), remain: st.remain, heads: st.heads.slice(),
+        cols: st.cols, parked: [], lines: lapLines(st) };
+      var i, cn;
+      for (i = 0; i < st.belt.length; i++) {
+        cn = st.belt[i];
+        if (cn.state === 'park' || cn.state === 'fail') sim.parked.push({ c: cn.c, a: cn.a });
+      }
+      // 走行中・入口待ちは「これから 1 周する」として順に処理
+      for (i = 0; i < st.belt.length; i++) {
+        cn = st.belt[i];
+        if (cn.state === 'run' || cn.state === 'enter') {
+          var left = lap(sim, { c: cn.c, a: cn.a });
+          if (left > 0) sim.parked.push({ c: cn.c, a: left });
+        }
+      }
+      return sim;
+    }
+    function cloneSim(s) {
+      return { w: s.w, h: s.h, grid: s.grid.slice(), remain: s.remain, heads: s.heads.slice(), cols: s.cols,
+        parked: s.parked.map(function (p) { return { c: p.c, a: p.a }; }), lines: s.lines };
+    }
+    function lap(sim, cn) {
+      var tmp = { c: cn.c, a: cn.a };
+      for (var i = 0; i < sim.lines.length && tmp.a > 0; i++) {
+        var n = fireGrid(sim.w, sim.h, sim.grid, tmp, sim.lines[i].side, sim.lines[i].idx, null);
+        sim.remain -= n;
+      }
+      return tmp.a;
+    }
+    // 列 ci の先頭を出す。待機枠が溢れたら false
+    function simPush(sim, ci, cap) {
+      var hd = sim.cols[ci][sim.heads[ci]];
+      sim.heads[ci]++;
+      var left = lap(sim, hd);
+      if (left > 0) {
+        if (sim.parked.length >= cap) return false;
+        sim.parked.push({ c: hd.c, a: left });
+      }
+      return true;
+    }
+    // 待機枠 k をもう 1 周。的が見えていなければ無意味なので false
+    function simRelaunch(sim, k) {
+      var cn = sim.parked[k];
+      if (!gridHasTarget(sim.w, sim.h, sim.grid, cn.c)) return false;
+      sim.parked.splice(k, 1);
+      var left = lap(sim, cn);
+      if (left > 0) sim.parked.push({ c: cn.c, a: left });
+      return true;
+    }
+    function simKey(sim) {
+      var s = sim.heads.join(',') + '|' + sim.parked.map(function (p) { return p.c + ':' + p.a; }).join(',') + '|';
+      for (var i = 0; i < sim.grid.length; i++) s += sim.grid[i] < 0 ? '.' : 'o';
+      return s;
+    }
+    // 解けるか。budget を使い切ったら false（保守的）
+    function solvable(sim, cap, budget) {
+      var memo = {}, left = budget || 40000;
+      function rec(s) {
+        if (s.remain === 0) return true;
+        var key = simKey(s);
+        if (memo[key] !== undefined) return memo[key];
+        if (--left < 0) return false;
+        var res = false, k;
+        // 待機枠の再出発を先に試す（枠を空ける手）
+        for (k = 0; k < s.parked.length && !res; k++) {
+          var b2 = cloneSim(s);
+          if (simRelaunch(b2, k) && rec(b2)) res = true;
+        }
+        for (var ci = 0; ci < s.cols.length && !res; ci++) {
+          if (s.heads[ci] >= s.cols[ci].length) continue;
+          var b = cloneSim(s);
+          if (simPush(b, ci, cap) && rec(b)) res = true;
+        }
+        memo[key] = res;
+        return res;
+      }
+      return rec(sim);
+    }
+    // 今出してよい手。cols: 列ごと、parked: 待機枠ごと(待機枠の並び順)。cap を margin 減らして余裕を見る
+    function hintCols(st, margin) {
+      var base = simFrom(st), out, pk, any = false, ci, k;
+      var caps = margin ? [st.cap - margin, st.cap] : [st.cap];
+      var nPark = parkedList(st).length;
+      for (var m = 0; m < caps.length && !any; m++) {
+        out = []; pk = [];
+        for (ci = 0; ci < st.cols.length; ci++) {
+          var ok = false;
+          if (st.heads[ci] < st.cols[ci].length) {
+            var b = cloneSim(base);
+            ok = simPush(b, ci, caps[m]) && solvable(b, caps[m], 40000);
+          }
+          out.push(ok);
+          if (ok) any = true;
+        }
+        for (k = 0; k < nPark; k++) {
+          var ok2 = false;
+          if (k < base.parked.length) {
+            var b2 = cloneSim(base);
+            ok2 = simRelaunch(b2, k) && solvable(b2, caps[m], 40000);
+          }
+          pk.push(ok2);
+          if (ok2) any = true;
+        }
+      }
+      return { cols: out, parked: pk, any: any };
+    }
+
+    return { ENTRY: ENTRY, newState: newState, headOf: headOf, push: push, relaunch: relaunch, parkedList: parkedList,
+      step: step, hasTarget: hasTarget, parkedCount: parkedCount, movingCount: movingCount, quiet: quiet, queueLeft: queueLeft,
+      snapshot: snapshot, restore: restore, posOf: posOf, lineIndex: lineIndex,
+      simFrom: simFrom, solvable: solvable, hintCols: hintCols, exposed: exposed };
+  }
+  /*CORE-END*/
+
+  /*LEVELS-BEGIN*/
+  // 生成: tmp/agents/pixelflow/gen.js（全面を逐次ソルバー + 実機シミュレーション 16 回で確認済み。乱打失敗率の帯で選別）
+  var PAL = {"R":"#e63946","O":"#f4852a","Y":"#f9d548","G":"#4fc26b","B":"#3a86ff","C":"#8ecae6","P":"#9b5de5","I":"#ff8fb1","N":"#8d5a2b","K":"#2f3250","W":"#f1f1f6","E":"#9aa0b4","D":"#2d7a4f","S":"#f6cfa0","r":"#a4161a","o":"#b4530a","y":"#c9a227","g":"#2d7a4f","b":"#1e40af","c":"#4a9fc7","p":"#5b21b6","i":"#be185d","n":"#5b3a1a","k":"#0f0f1f","w":"#bfc0d0","e":"#5c6274","d":"#1b4d31","s":"#c98f63"};
+  var LEVELS = [{"n":"星","w":12,"h":11,"rows":[".....YY.....",".....YY.....","....YYYY....","....YYYY....","YYYYYYYYYYYY",".YYYYYYYYYY.","..YYYYYYYY..","...YYYYYY...","...YYYYYY...","..YYY..YYY..",".YY......YY."],"colors":["Y"],"cols":[[[0,8],[0,8],[0,10]],[[0,8],[0,10]],[[0,14],[0,6]]],"cap":5},{"n":"ハート","w":12,"h":10,"rows":["..RRR..RRR..",".RRRRRRRRRR.","RRWRRRRRRRRR","RRRRRRRRRRRR","RRRRRRRRRRRR",".RRRRRRRRRR.","..RRRRRRRR..","...RRRRRR...","....RRRR....",".....RR....."],"colors":["R","W"],"cols":[[[0,9],[0,10],[0,14]],[[0,11],[0,7],[0,6]],[[0,13],[1,1],[0,11]]],"cap":5},{"n":"レモン","w":12,"h":10,"rows":[".......GG...","....YYYYGG..","..YYYYYYYY..",".YYYYYYYYYY.","YYYYYYYYYYYY","YYYYYYYYYYYY",".YYYYYYYYYY.","..YYYYYYYY..","..GGYYYY....","...GG......."],"colors":["Y","G"],"cols":[[[0,4],[1,8],[0,14]],[[0,8],[0,9],[0,13]],[[0,7],[0,13]]],"cap":5},{"n":"みかん","w":12,"h":11,"rows":[".....GG.....",".....G......","...OOOOOO...","..OOOOOOOO..",".OOOOOOOOOO.",".OOOOOOOOOO.","OOOOOOOOOOOO",".OOOOOOOOOO.",".OOOOOOOOOO.","..OOOOOOOO..","...OOOOOO..."],"colors":["O","G"],"cols":[[[0,15],[0,8],[0,6]],[[1,3],[0,15],[0,15]],[[0,12],[0,9]]],"cap":5},{"n":"にんじん","w":12,"h":11,"rows":["....G..G....","....GGGG....",".....GG.....","....OOOO....","....OOOO....","....OOOO....",".....OOO....",".....OOO....",".....OO.....",".....OO.....","......O....."],"colors":["O","G"],"cols":[[[1,8]],[[0,15]],[[0,8]]],"cap":5},{"n":"バナナ","w":12,"h":11,"rows":["..........N.",".........YY.","........YYY.",".......YYYY.","......YYYY..",".....YYYY...","...YYYYY....",".YYYYYY.....","NYYYYY......","NYYYY.......",".YY........."],"colors":["Y","N"],"cols":[[[0,15],[1,3]],[[0,15]],[[0,9]]],"cap":5},{"n":"マグカップ","w":12,"h":11,"rows":["...W..W.....","..W..W......","..WWWWWWW...",".RRRRRRRRRR.",".RRRRRRRRRRR",".RRRRRRRRR.R",".RRRRRRRRR.R",".RRRRRRRRRRR",".RRRRRRRRRR.",".RRRRRRRRR..","..RRRRRRR..."],"colors":["R","W"],"cols":[[[0,7],[0,14],[0,7]],[[1,5],[0,12],[0,15]],[[0,10],[1,6],[0,13]]],"cap":5},{"n":"なし","w":12,"h":12,"rows":["......N.....","......N.....",".....GN.....","....GGG.....","....GGGG....","....GGGG....","...GGGGGG...","..GGGGGGGG..",".GGGGGGGGGG.",".GGGGGGGGGG.","..GGGGGGGG..","...GGGGGG..."],"colors":["G","N"],"cols":[[[0,12],[0,8],[0,12]],[[0,9],[0,9]],[[0,10],[1,3]]],"cap":5},{"n":"きのこ","w":12,"h":12,"rows":["....RRRR....","..RRWWRRRR..",".RRRWWRRRRR.",".RRRRRRWWRR.","RRWWRRRRWWRR","RRWWRRRRRRRR","RRRRRRRRRRRR","....WWWW....","....WWWW....","....WWWW....","....WWWW....","...WWWWWW..."],"colors":["R","W"],"cols":[[[1,9],[0,15],[1,10]],[[0,13],[0,9],[0,10]],[[0,9],[1,15]]],"cap":5},{"n":"木","w":12,"h":12,"rows":[".....GG.....","....GGGG....","...GGGGGG...","..GGGGGGGG..","...GGGGGG...","..GGGGGGGG..",".GGGGGGGGGG.","GGGGGGGGGGGG",".....NN.....",".....NN.....",".....NN.....","....NNNN...."],"colors":["G","N"],"cols":[[[0,13],[0,14]],[[0,4],[0,10]],[[0,15],[1,10]]],"cap":5},{"n":"にこにこ（縁取り）","w":12,"h":12,"rows":["...yyyyyy...","..yYYYYYYy..",".yYYYYYYYYy.","yYYKKYYKKYYy","yYYKKYYKKYYy","yYYYYYYYYYYy","yYYYYYYYYYYy","yKYYYYYYYYKy","yYKYYYYYYKYy",".yYKKKKKKYy.","..yYYYYYYy..","...yyyyyy..."],"colors":["Y","y","K"],"cols":[[[1,14],[1,9],[0,10]],[[0,8],[0,12],[2,9]],[[2,9],[0,12],[1,9]],[[0,11],[0,7],[0,10]]],"cap":5},{"n":"おばけ（縁取り）","w":12,"h":12,"rows":["....cccc....","..ccCCCCcc..",".cCCCCCCCCc.",".cCKKCCKKCc.","cCCKKCCKKCCc","cCCCCCCCCCCc","cCCCCCCCCCCc","cCCCCCCCCCCc","cCCCCCCCCCCc","cCcCCCcCCcCc","cc.cCc.cc.cc","c...c...c..c"],"colors":["C","c","K"],"cols":[[[0,9],[0,9],[1,11],[0,7]],[[0,9],[0,7],[0,8]],[[1,8],[0,11],[1,12]],[[2,8],[0,10],[1,8]]],"cap":5},{"n":"さかな（縁取り）","w":12,"h":9,"rows":[".....bbbb...","...bbOBBBb..","b.bBBOBBBBb.","bbBBBOBKBBb.","bBBBBOBBBBb.","bbBBBOBBBBBb","b.bBBOBBBBb.","...bbOBBBb..",".....bbbb..."],"colors":["B","b","O","K"],"cols":[[[0,8],[0,9],[1,9]],[[3,1],[0,13]],[[1,12],[1,7]],[[0,10],[2,7]]],"cap":5},{"n":"たこ（縁取り）","w":12,"h":11,"rows":["...pppppp...","..pPPPPPPp..",".pPPPPPPPPp.",".pPWKPPPWKp.",".pPPPPPPPPp.",".pPPPPPPPPp.","..pPPpPPpp..",".p.pp.pp.p..",".pp.pp.pp.pp",".p.pp.pp.p..",".p..p..p..p."],"colors":["p","P","W","K"],"cols":[[[0,13],[0,12],[0,12]],[[1,7],[3,2],[0,7]],[[1,6],[1,10],[1,8]],[[1,7],[2,2]]],"cap":5},{"n":"いちご（縁取り）","w":12,"h":12,"rows":[".....G......","..G..G..G...","..GGGGGGG...",".rRGGGGGRr..",".rRRRRRRRr..","rRRWRRRRWRr.","rRRRRRWRRRr.","rRWRRRRRRWr.",".rRRRWRRRr..",".rRWRRRRWr..","..rrRRRrr...","....rrr....."],"colors":["R","r","G","W"],"cols":[[[0,7],[0,9],[0,8]],[[0,10],[1,7]],[[3,8],[1,14]],[[0,11],[2,16]]],"cap":5},{"n":"くま（縁取り）","w":14,"h":12,"rows":[".nnn......nnn.","nNONn....nNONn","nNNNNnnnnNNNNn",".nNNNNNNNNNNn.",".nNNNNNNNNNNn.",".nNKKNNNNKKNn.",".nNKKNNNNKKNn.",".nNNNOOOONNNn.",".nNNOOKKOONNn.",".nNNOOOOOONNn.","..nNNOOOONNn..","...nnnnnnnn..."],"colors":["N","n","O","K"],"cols":[[[1,8],[2,12],[1,14],[0,6]],[[1,7],[3,10],[1,11]],[[0,17],[0,9],[0,7]],[[2,8],[0,14],[0,9]]],"cap":5},{"n":"ペンギン（縁取り）","w":12,"h":14,"rows":["....kkkk....","...kKKKKk...","..kKKKKKKk..","..kWWKKWWk..","..kWKKKKWk..","..kKKOOKKk..",".kKWWWWWWKk.",".kKWWWWWWKk.","kKKWWWWWWKKk","kKKWWWWWWKKk",".kKWWWWWWKk.",".kKKWWWWKKk.","..kKkkkkKk..","..OO....OO.."],"colors":["K","W","k","O"],"cols":[[[2,11],[1,15],[1,9]],[[0,19],[1,5],[2,11]],[[3,6],[0,11],[2,10]],[[1,11],[0,10]]],"cap":5},{"n":"きかんしゃ（縁取り）","w":16,"h":11,"rows":["....KK..........","...KKK..........",".rrRRRrrr.......",".rRCCCRRr.......",".rRCCCRRr.rrrrr.",".rRRRRRRRrRRRRr.",".rRRRRRRRRRRRRr.","rRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRr",".KKKKKKKKKKKKKK.","..KK..KK..KK..KK"],"colors":["R","K","r","C"],"cols":[[[0,4],[0,11],[2,9]],[[0,14],[2,14],[1,17]],[[0,8],[0,11],[0,12]],[[1,10],[3,6]]],"cap":5},{"n":"ピザ","w":16,"h":16,"rows":[".....NNNNNN.....","...NNYYYYYYNN...","..NYYRRYYYYRYN..",".NYYRRYYGYYRRYN.",".NYYYYYYYYYYYYN.","NYYGYYYRRYYYYYYN","NYYYYYYRRYYGYYYN","NYRRYYYYYYYYYRRN","NYRRYYGYYYYYYRRN","NYYYYYYYRRYYYYYN","NYYYYGYYRRYYYGYN",".NYYYYYYYYYYYYN.",".NYRRYYYYYRRYYN.","..NYRRYYGYYRYN..","...NNYYYYYYNN...",".....NNNNNN....."],"colors":["Y","N","R","G"],"cols":[[[0,12],[0,13],[1,20],[0,16]],[[0,15],[0,19],[0,4],[3,7]],[[2,20],[0,17],[0,17],[2,10]],[[1,8],[1,16],[0,14]]],"cap":5},{"n":"パンダ（縁取り）","w":18,"h":18,"rows":["..KKK........KKK..",".KKKKK......KKKKK.",".KKKWWwwwwwwWWKKK.","..KWWWWWWWWWWWWK..","..wWWWWWWWWWWWWw..",".wWWKKKWWWWKKKWWw.",".wWKKKKKWWKKKKKWw.",".wWKKWKKWWKKWKKWw.",".wWWKKKWWWWKKKWWw.",".wWWWWWWKKWWWWWWw.","..wWWWWWKKWWWWWw..","..wWWWWWWWWWWWWw..","...wWWWWWWWWWWw...","..KKKWWWWWWWWKKK..",".KKKKKWWWWWWKKKKK.",".KKKKKWWWWWWKKKKK.",".KKKKKKWWWWKKKKKK.","..KKKK.wwww.KKKK.."],"colors":["W","K","w"],"cols":[[[0,19],[0,14],[0,15],[2,22]],[[1,22],[0,18],[0,20],[1,17]],[[1,24],[1,15],[0,16],[2,6]],[[0,15],[1,10],[0,5],[1,16]]],"cap":5},{"n":"いちごケーキ","w":16,"h":14,"rows":[".......RR.......","......RRRR......","......RRRR......","....WWWWWWWW....","..WWWWWWWWWWWW..",".IIIIIIIIIIIIII.",".IIIIIIIIIIIIII.",".NNNNNNNNNNNNNN.",".NNNNNNNNNNNNNN.",".IIIIIIIIIIIIII.",".NNNNNNNNNNNNNN.",".NNNNNNNNNNNNNN.",".WWWWWWWWWWWWWW.","EEEEEEEEEEEEEEEE"],"colors":["N","I","W","E","R"],"cols":[[[2,16],[1,9],[1,8],[3,16]],[[0,14],[1,17],[0,13]],[[2,10],[0,14],[1,8]],[[4,10],[2,8],[0,15]]],"cap":5},{"n":"ロボット（赤）","w":14,"h":16,"rows":["......RR......",".....RRRR.....","..EEEEEEEEEE..",".EEKKKKKKKKEE.",".EEKCCCCCCKEE.",".EEKCKCCKCKEE.",".EEKCCCCCCKEE.",".EEKKKKKKKKEE.","..EEEEEEEEEE..","....RRRRRR....",".RRRRRRRRRRRR.","RRYRRRKKRRRYRR","RRYRRRKKRRRYRR",".RRRRRRRRRRRR.","..EEEE..EEEE..","..EEEE..EEEE.."],"colors":["R","E","K","C","Y"],"cols":[[[2,10],[1,12],[0,15],[1,18]],[[0,10],[0,18],[0,13]],[[3,16],[1,13],[4,4]],[[2,7],[2,11],[1,13]]],"cap":5},{"n":"バス（縁取り）","w":16,"h":11,"rows":["..yyyyyyyyyyyy..",".yYYYYYYYYYYYYy.",".yCCYCCYCCYCCYy.",".yCCYCCYCCYCCYy.",".yYYYYYYYYYYYYy.",".yYYYYYYYYYYYYy.",".yRYYYYYYYYYYRy.",".yYYYYYYYYYYYYy.","..yKKYyyyyYKKy..","..KKKK....KKKK..","...KK......KK..."],"colors":["Y","y","C","K","R"],"cols":[[[1,9],[1,14],[1,9]],[[0,12],[0,16],[2,16]],[[0,13],[3,16],[0,17]],[[0,10],[4,2]]],"cap":5},{"n":"だるま（縁取り）","w":14,"h":16,"rows":["....rrrrrr....","...rRRRRRRr...","..rRRRRRRRRr..","..rRSSSSSSRr..",".rRSSSSSSSSRr.",".rRSKKSSKKSRr.",".rRSSSSSSSSRr.",".rRSSKKKKSSRr.","..rRSSSSSSRr..","..rRRRRRRRRr..",".rRRRRYYRRRRr.",".rRRRYYYYRRRr.",".rRRRRYYRRRRr.",".rRRRRRRRRRRr.","..rRRRRRRRRr..","...rrrrrrrr..."],"colors":["R","r","S","K","Y"],"cols":[[[0,10],[0,14],[1,9],[4,8]],[[0,14],[1,4],[2,16],[3,8]],[[2,5],[0,18],[0,18]],[[1,11],[2,15],[1,18]]],"cap":5},{"n":"ハンバーガー","w":16,"h":12,"rows":["....OOOOOOOO....","..OOOOWOOOWOOO..",".OOOOOOOOOOOOOO.",".OOOOOOOOOOOOOO.","GGGGGGGGGGGGGGGG",".YYYYYYYYYYYYYY.",".NNNNNNNNNNNNNN.",".NNNNNNNNNNNNNN.",".RRRRRRRRRRRRRR.",".OOOOOOOOOOOOOO.","..OOOOOOOOOOOO..","...OOOOOOOOOO..."],"colors":["O","N","G","Y","R","W"],"cols":[[[5,2],[3,9],[1,15],[1,13]],[[2,5],[4,14],[0,11],[2,11]],[[0,16],[0,6],[0,13],[0,13]],[[3,5],[0,14],[0,9]]],"cap":5},{"n":"しんごう（縁取り）","w":10,"h":18,"rows":["..kkkkkk..",".kKKKKKKk.",".kKRRRRKk.",".kRRRRRRk.",".kRRRRRRk.",".kKRRRRKk.",".kKYYYYKk.",".kYYYYYYk.",".kYYYYYYk.",".kKYYYYKk.",".kKGGGGKk.",".kGGGGGGk.",".kGGGGGGk.",".kKGGGGKk.",".kkkKKkkk.","....EE....","....EE....","...EEEE..."],"colors":["k","K","R","Y","G","E"],"cols":[[[2,4],[0,13],[4,9],[3,16]],[[0,5],[3,4],[1,8]],[[1,12],[2,16],[0,9]],[[4,11],[5,8],[0,11]]],"cap":5},{"n":"ハート（大・縁取り）","w":24,"h":20,"rows":["....rrrrrr....rrrrrr....","....rRRRRr....rRRRRr....","..rrRRRRRRrrrrRRRRRRrr..","..rRRRRRRRRRRRRRRRRRRr..","rrRRWWRRRRRRRRRRRRRRRRrr","rRRRWWRRRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","rrRRRRRRRRRRRRRRRRRRRRrr","..rRRRRRRRRRRRRRRRRRRr..","..rrRRRRRRRRRRRRRRRRrr..","....rRRRRRRRRRRRRRRr....","....rrRRRRRRRRRRRRrr....","......rRRRRRRRRRRr......","......rrRRRRRRRRrr......","........rRRRRRRr........","........rrRRRRrr........","..........rRRr..........","..........rrrr.........."],"colors":["R","r","W"],"cols":[[[0,18],[0,26],[0,25],[0,17],[0,25]],[[0,25],[1,25],[1,11],[2,4]],[[0,21],[0,16],[0,25],[0,20]],[[1,16],[0,16],[0,18],[1,20]]],"cap":5},{"n":"レモン（大・縁取り）","w":24,"h":20,"rows":["..............GGGG......","..............GGGG......","........yyyyyyYYGGGG....","........yYYYYYYYGGGG....","....yyyyYYYYYYYYYYYy....","....yYYYYYYYYYYYYYYy....","..yyYYYYYYYYYYYYYYYYyy..","..yYYYYYYYYYYYYYYYYYYy..","yyYYYYYYYYYYYYYYYYYYYYyy","yYYYYYYYYYYYYYYYYYYYYYYy","yYYYYYYYYYYYYYYYYYYYYYYy","yyYYYYYYYYYYYYYYYYYYYYyy","..yYYYYYYYYYYYYYYYYYYy..","..yyYYYYYYYYYYYYYYYYyy..","....yYYYYYYYYYYYYYYy....","....yYYYYYYYYYYYyyyy....","....GGGGYYYYYYYy........","....GGGGYYyyyyyy........","......GGGG..............","......GGGG.............."],"colors":["Y","y","G"],"cols":[[[0,18],[0,27],[0,13],[0,27]],[[2,18],[1,10],[0,19],[0,19]],[[0,20],[0,17],[2,14],[1,24]],[[0,22],[1,18],[0,25],[0,13]]],"cap":5},{"n":"おとこのこ","w":16,"h":16,"rows":[".....NNNNNN.....","....NNNNNNNN....","...NNNNNNNNNN...","...NNSSSSSSNN...","...NSSSSSSSSN...","...NSSKSSSKSSN..","...SSSSSSSSSS...","...SSSSIISSSS...","....SSSSSSSS....",".....SSSSSS.....","...BBBBSSBBBB...","..BBBBBBBBBBBB..","..BBBBBWWBBBBB..","..BBBBBBBBBBBB..","..SSBBBBBBBBSS..","....BBBB..BBBB.."],"colors":["S","B","N","K","I","W"],"cols":[[[0,10],[1,15],[3,2],[1,11]],[[0,13],[4,2],[0,13],[1,19]],[[0,10],[1,9],[2,19],[1,4]],[[0,13],[5,2],[2,13]]],"cap":5},{"n":"クリスマスツリー（縁取り）","w":16,"h":20,"rows":[".......YY.......","......YYYY......",".......YY.......",".......gg.......","......gGGg......",".....gGRGGg.....",".....gGGGGg.....","....gGGGGYGg....","....gGGGGGGg....","...gGRGGGGGRg...","...gGGGGGGGGg...","..gGGGGYGGGGGg..","..gGGGGGGGGGGg..",".gGRGGGGGGGGRGg.",".gGGGGGGYGGGGGg.","gGGGGYGGGGGGRGGg","gggggggGGggggggg",".......NN.......",".......NN.......","......NNNN......"],"colors":["G","g","Y","N","R"],"cols":[[[0,11],[0,23],[2,12]],[[4,6],[1,10],[0,14]],[[0,14],[1,14],[1,16]],[[3,8],[0,15],[0,11]]],"cap":5},{"n":"マグカップ（大・縁取り）","w":24,"h":22,"rows":["......WW....WW..........","......WW....WW..........","....WW....WW............","....WW....WW............","....WWWWWWWWWWWWWW......","....WWWWWWWWWWWWWW......","..rrRRRRRRRRRRRRRRrrrr..","..rRRRRRRRRRRRRRRRRRRr..","..rRRRRRRRRRRRRRRRRRRRrr","..rRRRRRRRRRRRRRRRRRrrRr","..rRRRRRRRRRRRRRRRRr..rr","..rRRRRRRRRRRRRRRRRr..rr","..rRRRRRRRRRRRRRRRRr..rr","..rRRRRRRRRRRRRRRRRr..rr","..rRRRRRRRRRRRRRRRRRrrRr","..rRRRRRRRRRRRRRRRRRRRrr","..rRRRRRRRRRRRRRRRRRRr..","..rRRRRRRRRRRRRRRRRRrr..","..rRRRRRRRRRRRRRRRRr....","..rrRRRRRRRRRRRRRRrr....","....rRRRRRRRRRRRRr......","....rrrrrrrrrrrrrr......"],"colors":["R","r","W"],"cols":[[[0,18],[0,24],[0,14],[0,25]],[[2,14],[0,20],[0,18],[0,22]],[[0,18],[0,21],[1,12],[2,16]],[[2,14],[0,26],[1,26]],[[0,19],[0,22],[1,27]]],"cap":4},{"n":"さかな（大・縁取り）","w":24,"h":18,"rows":["..........bbbbbbbb......","..........bBBBBBBb......","......bbbbOOBBBBBBbb....","......bBBBOOBBBBBBBb....","bb..bbBBBBOOBBBBBBBBbb..","bb..bBBBBBOOBBBBBBBBBb..","bBbbBBBBBBOOBBKKBBBBBb..","bBBBBBBBBBOOBBKKBBBBBb..","bBBBBBBBBBOOBBBBBBBBBb..","bBBBBBBBBBOOBBBBBBBBBb..","bBBBBBBBBBOOBBBBBBBBBBbb","bBbbBBBBBBOOBBBBBBBBBBbb","bb..bBBBBBOOBBBBBBBBBb..","bb..bbBBBBOOBBBBBBBBbb..","......bBBBOOBBBBBBBb....","......bbbbOOBBBBBBbb....","..........bBBBBBBb......","..........bbbbbbbb......"],"colors":["B","b","O","K"],"cols":[[[0,25],[0,27],[1,27]],[[2,28],[0,23],[0,17]],[[0,14],[3,4],[0,22]],[[0,23],[1,7],[0,20]],[[1,17],[1,23],[0,27]]],"cap":4},{"n":"なし（大・縁取り）","w":24,"h":24,"rows":["............NN..........","............NN..........","............NN..........","............NN..........","..........ggNN..........","..........gGNN..........","........ggGGGg..........","........gGGGGg..........","........gGGGGGgg........","........gGGGGGGg........","........gGGGGGGg........","........gGGGGGGg........","......ggGGGGGGGGgg......","......gGGGGGGGGGGg......","....ggGGGGGGGGGGGGgg....","....gGGGGGGGGGGGGGGg....","..ggGGGGGGGGGGGGGGGGgg..","..gGGGGGGGGGGGGGGGGGGg..","..gGGGGGGGGGGGGGGGGGGg..","..ggGGGGGGGGGGGGGGGGgg..","....gGGGGGGGGGGGGGGg....","....ggGGGGGGGGGGGGgg....","......gGGGGGGGGGGg......","......gggggggggggg......"],"colors":["G","g","N"],"cols":[[[1,15],[2,12],[1,17]],[[0,30],[1,15],[0,16]],[[0,25],[0,21],[0,13]],[[0,12],[0,16],[1,14]],[[0,31],[0,15]]],"cap":4},{"n":"きのこ（大・縁取り）","w":24,"h":24,"rows":["........rrrrrrrr........","........rRRRRRRr........","....rrrrWWWWRRRRrrrr....","....rRRRWWWWRRRRRRRr....","..rrRRRRWWWWRRRRRRRRrr..","..rRRRRRWWWWRRRRRRRRRr..","..rRRRRRRRRRRRWWWWRRRr..","..rRRRRRRRRRRRWWWWRRRr..","rrRRWWWWRRRRRRRRWWWWRRrr","rRRRWWWWRRRRRRRRWWWWRRRr","rRRRWWWWRRRRRRRRRRRRRRRr","rRRRWWWWRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","rrrrrrrrRRRRRRRRrrrrrrrr","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","........WWWWWWWW........","......WWWWWWWWWWWW......","......WWWWWWWWWWWW......"],"colors":["R","W","r"],"cols":[[[0,29],[0,29],[0,20],[0,14]],[[1,15],[0,23],[0,12],[2,18]],[[0,19],[2,25],[1,22]],[[1,21],[0,20],[2,15]],[[1,31],[1,17],[1,30]]],"cap":4},{"n":"木（大・縁取り）","w":24,"h":24,"rows":["..........gggg..........","..........gGGg..........","........ggGGGGgg........","........gGGGGGGg........","......ggGGGGGGGGgg......","......gGGGGGGGGGGg......","....ggGGGGGGGGGGGGgg....","....ggGGGGGGGGGGGGgg....","......gGGGGGGGGGGg......","......gGGGGGGGGGGg......","....ggGGGGGGGGGGGGgg....","....gGGGGGGGGGGGGGGg....","..ggGGGGGGGGGGGGGGGGgg..","..gGGGGGGGGGGGGGGGGGGg..","ggGGGGGGGGGGGGGGGGGGGGgg","ggggggggggGGGGgggggggggg","..........NNNN..........","..........NNNN..........","..........NNNN..........","..........NNNN..........","..........NNNN..........","..........NNNN..........","........NNNNNNNN........","........NNNNNNNN........"],"colors":["G","g","N"],"cols":[[[0,20],[0,21],[0,28]],[[2,23],[2,17],[1,21]],[[0,21],[1,28]],[[0,27],[0,21]],[[0,20],[1,17]]],"cap":4},{"n":"にこにこ（大・縁取り）","w":24,"h":24,"rows":["......yyyyyyyyyyyy......","......yYYYYYYYYYYy......","....yyYYYYYYYYYYYYyy....","....yYYYYYYYYYYYYYYy....","..yyYYYYYYYYYYYYYYYYyy..","..yYYYYYYYYYYYYYYYYYYy..","yyYYYYKKKKYYYYKKKKYYYYyy","yYYYYYKKKKYYYYKKKKYYYYYy","yYYYYYKKKKYYYYKKKKYYYYYy","yYYYYYKKKKYYYYKKKKYYYYYy","yYYYYYYYYYYYYYYYYYYYYYYy","yYYYYYYYYYYYYYYYYYYYYYYy","yYYYYYYYYYYYYYYYYYYYYYYy","yYYYYYYYYYYYYYYYYYYYYYYy","yYKKYYYYYYYYYYYYYYYYKKYy","yYKKYYYYYYYYYYYYYYYYKKYy","yYYYKKYYYYYYYYYYYYKKYYYy","yyYYKKYYYYYYYYYYYYKKYYyy","..yYYYKKKKKKKKKKKKYYYy..","..yyYYKKKKKKKKKKKKYYyy..","....yYYYYYYYYYYYYYYy....","....yyYYYYYYYYYYYYyy....","......yYYYYYYYYYYy......","......yyyyyyyyyyyy......"],"colors":["Y","y","K"],"cols":[[[1,20],[0,18],[0,25],[2,34],[0,11]],[[0,23],[0,23],[0,21],[0,24],[0,19]],[[0,24],[2,22],[0,20],[0,18],[1,14]],[[0,21],[1,15],[0,24],[2,16]],[[0,13],[0,22],[1,31],[0,22]]],"cap":4},{"n":"おばけ（大・縁取り）","w":24,"h":24,"rows":["........cccccccc........","........cCCCCCCc........","....ccccCCCCCCCCcccc....","....cCCCCCCCCCCCCCCc....","..ccCCCCCCCCCCCCCCCCcc..","..cCCCCCCCCCCCCCCCCCCc..","..cCCCKKKKCCCCKKKKCCCc..","..cCCCKKKKCCCCKKKKCCCc..","ccCCCCKKKKCCCCKKKKCCCCcc","cCCCCCKKKKCCCCKKKKCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCCCCCCCCCCCCCCCCCCCCc","cCCCccCCCCCCccCCCCccCCCc","cCCc..cCCCCc..cCCc..cCCc","cCcc..ccCCcc..ccCc..ccCc","cc......cc......cc....cc","cc......cc......cc....cc"],"colors":["C","c","K"],"cols":[[[0,21],[0,16],[0,13],[0,19],[1,23]],[[1,23],[0,10],[1,26],[0,22],[0,22]],[[2,7],[0,28],[2,25],[0,24]],[[0,16],[0,24],[1,27],[0,21]],[[0,31],[0,25],[0,28],[0,17]]],"cap":4},{"n":"たいよう（大・縁取り）","w":24,"h":24,"rows":["..........yyyy..........","..........yYYy..........","yy........yYYy........yy","yy........yYYy........yy","..yy....yyYYYYyy....yy..","..yy....yYYYYYYy....yy..","....yyyyYYYYYYYYyyyy....","....yYYYYYYYYYYYYYYy....","....yYYYOOOOOOOOYYYy....","....yYYYOOOOOOOOYYYy....","yyyyYYYYOOOOOOOOYYYYyyyy","yYYYYYYYOOOOOOOOYYYYYYYy","yYYYYYYYOOOOOOOOYYYYYYYy","yyyyYYYYOOOOOOOOYYYYyyyy","....yYYYOOOOOOOOYYYy....","....yYYYOOOOOOOOYYYy....","....yYYYYYYYYYYYYYYy....","....yyyyYYYYYYYYyyyy....","..yy....yYYYYYYy....yy..","..yy....yyYYYYyy....yy..","yy........yYYy........yy","yy........yYYy........yy","..........yYYy..........","..........yyyy.........."],"colors":["Y","y","O"],"cols":[[[2,16],[1,26],[1,15],[0,19]],[[0,18],[2,15],[1,24],[2,21]],[[1,21],[1,9],[0,31]],[[0,27],[0,13],[2,12]],[[1,17],[0,14],[0,22]]],"cap":4},{"n":"プレゼント（大・縁取り）","w":24,"h":24,"rows":["....YYYY........YYYY....","....YYYY........YYYY....","..YY....YY....YY....YY..","..YY....YY....YY....YY..","..YY....YYYYYYYY....YY..","..YY....YYYYYYYY....YY..","....YYYY..YYYY..YYYY....","....YYYY..YYYY..YYYY....","rrrrRRRRrrYYYYrrRRRRrrrr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","YYYYYYYYYYYYYYYYYYYYYYYY","YYYYYYYYYYYYYYYYYYYYYYYY","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rRRRRRRRRRYYYYRRRRRRRRRr","rrrrrrrrrrYYYYrrrrrrrrrr"],"colors":["R","Y","r"],"cols":[[[1,19],[0,15],[2,18],[1,25],[0,15],[1,26]],[[0,22],[0,30],[2,21],[1,18],[0,30]],[[1,16],[0,13],[2,17],[1,13],[0,19]],[[1,8],[0,26],[0,13],[1,13],[1,13]],[[0,14],[1,19],[0,11],[0,16],[1,14]]],"cap":4},{"n":"おうかん（大・市松）","w":24,"h":20,"rows":["YY........yyYY........yy","YY........yyYY........yy","yyYY......YYyy......yyYY","yyYY......YYyy......yyYY","YYyyYY..YYyyYYyy..yyYYyy","YYyyYY..YYyyYYyy..yyYYyy","yyYYyyYYyyYYyyYYyyYYyyYY","yyYYyyYYyyYYyyYYyyYYyyYY","YYyyYYyyYYyyYYyyYYyyYYyy","YYyyYYyyYYyyYYyyYYyyYYyy","yyYYRRYYyyYYBBYYyyRRyyYY","yyYYRRYYyyYYBBYYyyRRyyYY","YYyyRRyyYYyyBByyYYRRYYyy","YYyyRRyyYYyyBByyYYRRYYyy","yyYYyyYYyyYYyyYYyyYYyyYY","yyYYyyYYyyYYyyYYyyYYyyYY","YYyyYYyyYYyyYYyyYYyyYYyy","YYyyYYyyYYyyYYyyYYyyYYyy","..YYyyYYyyYYyyYYyyYYyy..","..YYyyYYyyYYyyYYyyYYyy.."],"colors":["Y","y","R","B"],"cols":[[[1,26],[1,21],[1,27],[0,24],[0,17]],[[2,16],[1,17],[0,27],[0,21]],[[0,14],[1,20],[3,8],[1,26]],[[1,21],[1,20],[0,25],[0,20]],[[1,14],[0,19],[0,12],[0,13]]],"cap":4},{"n":"ひよこ（大・市松）","w":24,"h":22,"rows":["........YYyyYYyy........","........YYyyYYyy........","......YYyyYYyyYYyy......","......YYyyYYyyYYyy......","....YYyyKKyyYYyyYYyy....","....YYyyKKyyYYyyYYyy....","....yyYYyyYYyyYYyyOOOO..","....yyYYyyYYyyYYyyOOOO..","....YYyyYYyyYYyyYYyy....","....YYyyYYyyYYyyYYyy....","..YYyyYYyyYYyyYYyyYY....","..YYyyYYyyYYyyYYyyYY....","YYyyYYyyYYyyYYyyYYyy....","YYyyYYyyYYyyYYyyYYyy....","yyYYyyYYyyYYyyYYyyYY....","yyYYyyYYyyYYyyYYyyYY....","..yyYYyyYYyyYYyyYY......","..yyYYyyYYyyYYyyYY......","....yyYYyyYYyyYY........","....yyYYyyYYyyYY........","......OOOO..OOOO........","......OOOO..OOOO........"],"colors":["y","Y","O","K"],"cols":[[[1,16],[0,22],[2,24],[0,16]],[[0,24],[0,20],[0,27]],[[1,28],[1,15],[1,17]],[[1,23],[1,26],[0,25]],[[0,18],[3,4],[1,23]]],"cap":4},{"n":"かえる（大・縁取り）","w":24,"h":22,"rows":["..gggggg........gggggg..","..gGGGGg........gGGGGg..","ggGGWWKKgg....ggWWKKGGgg","gGGGWWKKGg....gGWWKKGGGg","gGGGGGGGGGggggGGGGGGGGGg","gGGGGGGGGGGGGGGGGGGGGGGg","gGGGGGGGGGGGGGGGGGGGGGGg","gGGGGGGGGGGGGGGGGGGGGGGg","gGGGGGGGGGGGGGGGGGGGGGGg","gGGGGGGGGGGGGGGGGGGGGGGg","gGKKGGGGGGGGGGGGGGGGKKGg","gGKKGGGGGGGGGGGGGGGGKKGg","gGGGKKKKKKKKKKKKKKKKGGGg","ggGGKKKKKKKKKKKKKKKKGGgg","..gGGGGGGGGGGGGGGGGGGg..","..ggGGGGGGGGGGGGGGGGgg..","....gGGGGGGGGGGGGGGg....","....gGggGGGGGGGGggGg....","..ggGg..gGGGGGGg..gGgg..","..gGgg..gGggggGg..ggGg..","ggGg....gg....gg....gGgg","gggg....gg....gg....gggg"],"colors":["G","g","K","W"],"cols":[[[1,19],[0,16],[2,21],[0,18],[0,28]],[[0,21],[0,26],[1,25],[1,18],[0,28]],[[0,19],[1,22],[0,20],[1,13]],[[0,22],[2,27],[0,20],[0,16]],[[1,13],[3,8],[0,17],[0,15]]],"cap":4},{"n":"ちょうちょ（大・縁取り）","w":24,"h":22,"rows":["KK..pppp........pppp..KK","KK..pPPp........pPPp..KK","pPppPPPp........pPPPppPp","pPPPPPPp........pPPPPPPp","pPPPYYPPpp....ppPPYYPPPp","pPPPYYPPPp....pPPPYYPPPp","pPPPPPPPPPKKKKPPPPPPPPPp","ppPPPPPPPPKKKKPPPPPPPPpp","..pPPPPPPPKKKKPPPPPPPp..","..ppPPPPPPKKKKPPPPPPpp..","....pPPPPPKKKKPPPPPp....","....pPPPPPKKKKPPPPPp....","....pPPPPPKKKKPPPPPp....","....pPPPPPKKKKPPPPPp....","..ppPPPPPPKKKKPPPPPPpp..","..pPPPPPPPKKKKPPPPPPPp..","ppPPYYPPPPKKKKPPPPYYPPpp","pPPPYYPPppKKKKppPPYYPPPp","pPPPPPPp..KKKK..pPPPPPPp","ppPPPPpp..KKKK..ppPPPPpp","..pPPp............pPPp..","..pppp............pppp.."],"colors":["P","p","K","Y"],"cols":[[[2,15],[0,15],[1,19],[0,19],[2,13]],[[0,23],[0,13],[0,26],[0,15]],[[2,14],[1,25],[0,28],[0,15]],[[3,16],[0,18],[1,14],[0,23]],[[2,22],[0,23],[1,22],[1,14]]],"cap":4},{"n":"たこ（大・縁取り）","w":24,"h":22,"rows":["......pppppppppppp......","......pPPPPPPPPPPp......","....ppPPPPPPPPPPPPpp....","....pPPPPPPPPPPPPPPp....","..ppPPPPPPPPPPPPPPPPpp..","..pPPPPPPPPPPPPPPPPPPp..","..pPPPWWKKPPPPPPWWKKPp..","..pPPPWWKKPPPPPPWWKKPp..","..pPPPPPPPPPPPPPPPPPPp..","..pPPPPPPPPPPPPPPPPPPp..","..pPPPPPPPPPPPPPPPPPPp..","..ppPPPPPPPPPPPPPPPPpp..","....pPPPPPPPPPPPPPPp....","....ppPPPPppPPPPppPp....","..pp..pPPp..pPPp..pp....","..pp..ppPp..ppPp..pp....","..pPpp..pPpp..pPpp..pppp","..pPpp..pPpp..pPpp..pppp","..pp..ppPp..ppPp..pp....","..pp..ppPp..ppPp..pp....","..pp....pp....pp....pp..","..pp....pp....pp....pp.."],"colors":["P","p","W","K"],"cols":[[[0,17],[1,20],[1,21],[1,19]],[[2,8],[0,24],[0,26],[1,18]],[[0,18],[0,27],[0,14],[1,19]],[[1,19],[0,15],[0,28],[0,15]],[[3,8],[0,15],[1,13]]],"cap":4},{"n":"くるま（大・縁取り）","w":24,"h":18,"rows":["......rrrrrrrrrrrr......","......rRRRRRRRRRRr......","....rrCCCCRRRRCCCCrr....","....rRCCCCRRRRCCCCRr....","..rrRRCCCCRRRRCCCCRRrr..","..rRRRCCCCRRRRCCCCRRRr..","rrRRRRRRRRRRRRRRRRRRRRrr","rRRRRRRRRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","rRRRRRRRRRRRRRRRRRRRRRRr","YYRRRRRRRRRRRRRRRRRRRRYY","YYRRRRRRRRRRRRRRRRRRRRYY","rRRRRRRRRRRRRRRRRRRRRRRr","rrRRRRRRRRRRRRRRRRRRRRrr","..rRKKKKRRRRRRRRKKKKRr..","..rrKKKKrrrrrrrrKKKKrr..","....KKKK........KKKK....","....KKKK........KKKK...."],"colors":["R","r","C","K","Y"],"cols":[[[0,21],[4,8],[3,19],[2,11]],[[0,15],[0,15],[0,13],[0,23]],[[2,21],[1,15],[0,24],[0,24]],[[0,19],[1,24],[0,22],[0,16]],[[0,24],[3,13],[1,17]]],"cap":4},{"n":"ふくろう","w":20,"h":20,"rows":["..NN............NN..","..NNN..........NNN..","..NNNNNNNNNNNNNNNN..","..NNNNNNNNNNNNNNNN..",".NNNYYYYNNNNYYYYNNN.",".NNYYYYYYNNYYYYYYNN.",".NNYYKKYYNNYYKKYYNN.",".NNYYKKYYNNYYKKYYNN.",".NNYYYYYYOOYYYYYYNN.","..NNYYYYNOONYYYYNN..","..NNNNNNNNNNNNNNNN..","..NNNWWWWWWWWWWNNN..","..NNWWnWWnWWnWWWNN..","..NNWWWWWWWWWWWWNN..","..NNWWWnWWnWWnWWNN..","..NNWWWWWWWWWWWWNN..","..NNNWWWWWWWWWWNNN..","...NNNNNNNNNNNNNN...","....NNNNNNNNNNNN....",".....OO......OO....."],"colors":["N","W","Y","K","O","n"],"cols":[[[1,24],[0,13],[0,15],[1,6]],[[0,20],[0,23],[1,11],[1,21]],[[0,18],[2,14],[2,10],[0,24]],[[0,13],[0,9],[4,8],[5,6]],[[2,12],[2,20],[0,15],[3,8]]],"cap":4},{"n":"ぶどう（大・縁取り）","w":24,"h":24,"rows":["..........NNNN..........","..........NNNN..........","........NN..............","........NN..............","......GGGG..............","......GGGG..............","....GGGGGGGG............","....GGGGGGGG............","......pPPp..pppp........","......pPPp..pPPp........","....ppPPPPppPPPPpp......","....pPPPPPPPPPPPPp......","..ppPPPPPPPPPPPPPPpp....","..pPPPPPPPPPPPPPPPPp....","..pPPPPPPPPPPPPPPPPp....","..ppPPPPPPPPPPPPPPpp....","....pPPPPPPPPPPPPp......","....ppPPPPPPPPPPpp......","......pPPPPPPPPp........","......ppPPPPPPpp........","........pPPPPp..........","........ppPPpp..........","..........pp............","..........pp............"],"colors":["P","p","G","N"],"cols":[[[1,17],[0,25],[1,19]],[[2,24],[0,25]],[[0,17],[1,16]],[[0,30],[0,14]],[[0,17],[3,12]]],"cap":4},{"n":"いちご（大・縁取り）","w":24,"h":24,"rows":["..........GG............","..........GG............","....GG....GG....GG......","....GG....GG....GG......","....GGGGGGGGGGGGGG......","....GGGGGGGGGGGGGG......","..rrRRGGGGGGGGGGRRrr....","..rRRRGGGGGGGGGGRRRr....","..rRRRRRRRRRRRRRRRRr....","..rRRRRRRRRRRRRRRRRr....","rrRRRRWWRRRRRRRRWWRRrr..","rRRRRRWWRRRRRRRRWWRRRr..","rRRRRRRRRRRRWWRRRRRRRr..","rRRRRRRRRRRRWWRRRRRRRr..","rRRRWWRRRRRRRRRRRRWWRr..","rrRRWWRRRRRRRRRRRRWWrr..","..rRRRRRRRWWRRRRRRRr....","..rRRRRRRRWWRRRRRRRr....","..rRRRWWRRRRRRRRWWRr....","..rrRRWWRRRRRRRRWWrr....","....rRRRRRRRRRRRRr......","....rrrrRRRRRRrrrr......","........rRRRRr..........","........rrrrrr.........."],"colors":["R","G","r","W"],"cols":[[[0,29],[0,23],[0,30]],[[1,13],[0,18],[0,22]],[[0,20],[0,30],[3,32]],[[1,29],[2,26],[0,14]],[[1,22],[2,28],[0,24]]],"cap":4},{"n":"はな（大・市松）","w":24,"h":24,"rows":["........IIiiIIii........","........IIiiIIii........","......IIiiIIiiIIii......","......IIiiIIiiIIii......","....IIiiYYYYYYYYIIii....","....IIiiYYYYYYYYIIii....","..IIiiYYYYYYYYYYYYIIii..","..IIiiYYYYYYYYYYYYIIii..","..iiIIYYYYYYYYYYYYiiII..","..iiIIYYYYYYYYYYYYiiII..","....iiIIYYYYYYYYiiII....","....iiIIYYYYYYYYiiII....","......iiIIiiIIiiII......","......iiIIiiIIiiII......","........iiIIiiII........","........iiIIiiII........","..........GGGG..........","..........GGGG..........","....GG....GGGG..........","....GG....GGGG..........","....GGGGGGGGGG....GG....","....GGGGGGGGGG....GG....","..........GGGGGGGGGG....","..........GGGGGGGGGG...."],"colors":["Y","I","i","G"],"cols":[[[0,21],[2,17],[2,19]],[[0,28],[2,28],[1,28]],[[3,20],[2,8],[3,19]],[[3,19],[1,16],[0,31]],[[3,6],[1,28]]],"cap":4},{"n":"かさ（大・縁取り）","w":24,"h":24,"rows":["..........rrrr..........","..........rRRr..........","......rrrrRRRRrrrr......","......rRRRRRRRRRRr......","....rrRRRRRRRRRRRRrr....","....rRRRRRRRRRRRRRRr....","..rrRRRRRRRRRRRRRRRRrr..","..rRRRRRRRRRRRRRRRRRRr..","rrRRRRRRRRRRRRRRRRRRRRrr","rRRRRRRRRRRRRRRRRRRRRRRr","rRRRWWWWRRRRWWWWRRRRWWWW","rrrrWWWWrrRRWWWWrrrrWWWW","..........KKKK..........","..........KKKK..........","..........KKKK..........","..........KKKK..........","..........KKKK..........","..........KKKK..........","..........KKKK..........","..........KKKK..........","....KKKK..KKKK..........","....KKKK..KKKK..........","......KKKKKK............","......KKKKKK............"],"colors":["R","K","r","W"],"cols":[[[1,22],[0,13],[0,18]],[[3,11],[1,13],[0,16]],[[0,14],[2,23],[3,13]],[[0,26],[1,25],[0,31]],[[0,13],[2,22]]],"cap":4},{"n":"アイス（大）","w":24,"h":24,"rows":["........IIIIIIII........","........IIIIIIII........","......IIIIIIIIIIII......","......IIIIIIIIIIII......","....IIIIIIIIIIIIIIII....","....IIIIIIIIIIIIIIII....","....WWWWWWWWWWWWWWWW....","....WWWWWWWWWWWWWWWW....","..WWWWWWWWWWWWWWWWWWWW..","..WWWWWWWWWWWWWWWWWWWW..","..WWWWWWWWWWWWWWWWWWWW..","..WWWWWWWWWWWWWWWWWWWW..","....NNNNNNNNNNNNNNNN....","....NNNNNNNNNNNNNNNN....","....NNOONNOONNOONNOO....","....NNOONNOONNOONNOO....","......NNNNNNNNNNNN......","......NNNNNNNNNNNN......","......OONNOONNOONN......","......OONNOONNOONN......","........NNNNNNNN........","........NNNNNNNN........","..........NNNN..........","..........NNNN.........."],"colors":["W","N","I","O"],"cols":[[[0,30],[2,20],[0,29]],[[0,27],[3,28],[1,24]],[[1,27],[2,23],[1,29]],[[1,20],[2,29]],[[0,26],[1,8]]],"cap":4},{"n":"てんとうむし（大・縁取り）","w":24,"h":24,"rows":["........KKKKKKKK........","........KKKKKKKK........","......KKKKKKKKKKKK......","......KKKKKKKKKKKK......","....KKKKKKWWWWKKKKKK....","....KKKKKKWWWWKKKKKK....","..rrRRRRKKKKKKKKRRRRrr..","..rRRRRRKKKKKKKKRRRRRr..","rrRRRRRRRRKKKKRRRRRRRRrr","rRRRRRRRRRKKKKRRRRRRRRRr","rRRRKKRRRRKKKKRRRRKKRRRr","rRRRKKRRRRKKKKRRRRKKRRRr","rRRRRRRRRRKKKKRRRRRRRRRr","rRRRRRRRRRKKKKRRRRRRRRRr","rRRRRRRRKKKKKKKKRRRRRRRr","rRRRRRRRKKKKKKKKRRRRRRRr","rRRRKKRRRRKKKKRRRRKKRRRr","rrRRKKRRRRKKKKRRRRKKRRrr","..rRRRRRRRKKKKRRRRRRRr..","..rrRRRRRRKKKKRRRRRRrr..","....rRRRRRKKKKRRRRRr....","....rrRRRRKKKKRRRRrr....","......rRRRRRRRRRRr......","......rrrrrrrrrrrr......"],"colors":["R","K","r","W"],"cols":[[[0,16],[0,27],[0,29],[0,18],[0,17]],[[1,13],[1,13],[1,30],[2,19],[0,24]],[[2,15],[0,30],[0,13],[0,25]],[[1,27],[1,23],[2,22],[1,16]],[[1,22],[1,16],[0,25],[3,8]]],"cap":4}];
+  /*LEVELS-END*/
+
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var Core = createCore();
+    var BASE_W = 360, BASE_H = 545, landscape = false, ctxMain = null;
+    var store = H.store('pixelflow');
+    var cleared = store.get('cleared', []);
+    var fast = !!store.get('fast', false);
+    var lvIndex = Math.min(store.get('level', 0), LEVELS.length - 1);
+    if (lvIndex < 0) lvIndex = 0;
+
+    var st = null, lv = null, undoStack = [], overlayEl = null, deadShown = false, won = false, winT = 0;
+    var bullets = [], parts = [], hintFlags = null, hintT = 0, time = 0;
+    var geo = null, off = null, offK = 1;
+
+    var canvas = document.getElementById('cv');
+    // 縦長なら 360x545（絵が上、砲台が下）、横長なら 600x360（絵が左、砲台が右）
+    function relayout() {
+      var main = document.querySelector('.app-main');
+      var r = main.getBoundingClientRect();
+      landscape = r.width > r.height * 1.15;
+      if (landscape) { BASE_W = 600; BASE_H = 360; } else { BASE_W = 360; BASE_H = 545; }
+      var f = H.fitStage(canvas.parentElement, BASE_W, BASE_H);
+      var dpr = Math.min(window.devicePixelRatio || 1, 3);
+      canvas.style.width = f.width + 'px';
+      canvas.style.height = f.height + 'px';
+      canvas.width = Math.max(1, Math.round(f.width * dpr));
+      canvas.height = Math.max(1, Math.round(f.height * dpr));
+      ctxMain = canvas.getContext('2d');
+      ctxMain.setTransform(dpr * f.scale, 0, 0, dpr * f.scale, 0, 0);
+      offK = canvas.width / BASE_W;
+      if (lv) layoutLevel();
+      rebuildOff();
+      draw();
+    }
+    H.onResize(relayout);
+    var stg = {
+      ctx: function () { return ctxMain; },
+      toBase: function (cx, cy) {
+        var r = canvas.getBoundingClientRect();
+        return { x: (cx - r.left) / r.width * BASE_W, y: (cy - r.top) / r.height * BASE_H };
+      }
+    };
+
+    // ---------- 配置 ----------
+    function layoutLevel() {
+      var SQ = 352, sx = 4, sy = 4, off0 = 26;
+      var inner = SQ - off0 * 2;
+      var cs = Math.floor(inner / Math.max(lv.w, lv.h));
+      var gw = cs * lv.w, gh = cs * lv.h;
+      var gx = sx + Math.round((SQ - gw) / 2), gy = sy + Math.round((SQ - gh) / 2);
+      var Q = lv.cols.length;
+      geo = { cs: cs, gx: gx, gy: gy, gw: gw, gh: gh, boff: 14, bw: 20, Q: Q, land: landscape };
+      if (!landscape) {
+        geo.px0 = 0; geo.pw = BASE_W;
+        geo.slotY = 378; geo.sw = 44; geo.sgap = 6;
+        geo.colW = Math.min(84, Math.floor(350 / Q));
+        geo.headY = 452; geo.headS = 58; geo.nextY = 512; geo.nextS = 36; geo.labelY = 538;
+        geo.remainY = -1;
+      } else {
+        geo.px0 = 368; geo.pw = BASE_W - 368 - 4;
+        geo.slotY = 46; geo.sw = 40; geo.sgap = 5;
+        geo.colW = Math.min(58, Math.floor(geo.pw / Q));
+        geo.headY = 170; geo.headS = Math.min(52, geo.colW - 6); geo.nextY = 230; geo.nextS = 32; geo.labelY = 258;
+        geo.remainY = 320;
+      }
+      geo.sx0 = geo.px0 + Math.round((geo.pw - (geo.sw + geo.sgap) * lv.cap + geo.sgap) / 2);
+      geo.qx0 = geo.px0 + Math.round((geo.pw - geo.colW * Q) / 2);
+    }
+    // ベルト座標 → 画面座標と向き（内側を向く単位ベクトル）
+    function beltXY(p) {
+      var ps = Core.posOf(st, p), side = ps.side, q = ps.q, cs = geo.cs, o = geo.boff;
+      var L = geo.gx - o, R = geo.gx + geo.gw + o, T = geo.gy - o, B = geo.gy + geo.gh + o;
+      var len = st.lens[side], a, b, t;
+      function along(q, len, c0, first, last, c1) {
+        if (q < 1) return c0 + (first - c0) * q;
+        if (q > len - 1) return last + (c1 - last) * (q - (len - 1));
+        return first + (last - first) * (q - 1) / Math.max(1, len - 2);
+      }
+      if (side === 0) { // 左辺を上へ
+        t = along(q, len, B, geo.gy + (lv.h - 0.5) * cs, geo.gy + 0.5 * cs, T);
+        return { x: L, y: t, dx: 1, dy: 0 };
+      }
+      if (side === 1) {
+        t = along(q, len, L, geo.gx + 0.5 * cs, geo.gx + (lv.w - 0.5) * cs, R);
+        return { x: t, y: T, dx: 0, dy: 1 };
+      }
+      if (side === 2) {
+        t = along(q, len, T, geo.gy + 0.5 * cs, geo.gy + (lv.h - 0.5) * cs, B);
+        return { x: R, y: t, dx: -1, dy: 0 };
+      }
+      t = along(q, len, R, geo.gx + (lv.w - 0.5) * cs, geo.gx + 0.5 * cs, L);
+      return { x: t, y: B, dx: 0, dy: -1 };
+    }
+    function cellXY(cell) {
+      var x = cell % lv.w, y = Math.floor(cell / lv.w);
+      return { x: geo.gx + (x + 0.5) * geo.cs, y: geo.gy + (y + 0.5) * geo.cs };
+    }
+    function colorOf(ci) { return PAL[lv.colors[ci]] || '#fff'; }
+
+    // ---------- 盤のオフスクリーン ----------
+    function rebuildOff() {
+      if (!st || !geo) return;
+      var k = offK;
+      if (!off) off = document.createElement('canvas');
+      off.width = Math.max(1, Math.round(geo.gw * k));
+      off.height = Math.max(1, Math.round(geo.gh * k));
+      var c = off.getContext('2d');
+      c.setTransform(k, 0, 0, k, 0, 0);
+      c.clearRect(0, 0, geo.gw, geo.gh);
+      for (var i = 0; i < st.grid.length; i++) if (st.grid[i] >= 0 && !pendingCell[i]) drawCube(c, i, st.grid[i]);
+    }
+    var pendingCell = {};
+    function drawCube(c, cell, ci) {
+      var cs = geo.cs, x = (cell % lv.w) * cs, y = Math.floor(cell / lv.w) * cs;
+      var s = cs - 1;
+      c.fillStyle = colorOf(ci);
+      c.fillRect(x, y, s, s);
+      c.fillStyle = 'rgba(255,255,255,0.32)';
+      c.fillRect(x, y, s, Math.max(1, s * 0.2));
+      c.fillStyle = 'rgba(0,0,0,0.3)';
+      c.fillRect(x, y + s - Math.max(1, s * 0.2), s, Math.max(1, s * 0.2));
+      c.fillRect(x + s - Math.max(1, s * 0.12), y, Math.max(1, s * 0.12), s);
+    }
+    function clearCube(cell) {
+      if (!off) return;
+      var c = off.getContext('2d'), cs = geo.cs;
+      c.clearRect((cell % lv.w) * cs, Math.floor(cell / lv.w) * cs, cs, cs);
+    }
+
+    // ---------- 面の読み込み ----------
+    function loadLevel(i) {
+      if (i < 0 || i >= LEVELS.length) return;
+      closeOverlay();
+      lvIndex = i;
+      store.set('level', i);
+      lv = LEVELS[i];
+      st = Core.newState(lv);
+      undoStack = []; bullets = []; parts = []; pendingCell = {}; hintFlags = null;
+      deadShown = false; won = false; winT = 0;
+      layoutLevel();
+      rebuildOff();
+      hud();
+    }
+    function restart() { loadLevel(lvIndex); }
+
+    function hud() {
+      document.getElementById('level').textContent = (lvIndex + 1) + '/' + LEVELS.length + (cleared[lvIndex] ? ' ✓' : '');
+      document.getElementById('remain').textContent = st ? st.remain : 0;
+      document.getElementById('belt').textContent = st ? (Core.parkedCount(st) + '/' + st.cap) : '';
+      var fb = document.getElementById('btn-fast');
+      fb.textContent = '速さ ×' + (fast ? 2 : 1);
+      fb.className = 'ctl-btn sm' + (fast ? ' on' : '');
+    }
+
+    // ---------- 操作 ----------
+    function doPush(ci) {
+      if (!st || won || overlayEl) return;
+      if (!Core.headOf(st, ci)) return;
+      if (st.failed) return;
+      undoStack.push(Core.snapshot(st));
+      Core.push(st, ci);
+      hintFlags = null;
+      deadShown = false;
+      H.audio.click();
+      hud();
+    }
+    function doRelaunch(k) {
+      if (!st || won || overlayEl || st.failed) return;
+      var pk = Core.parkedList(st);
+      if (k < 0 || k >= pk.length) return;
+      undoStack.push(Core.snapshot(st));
+      Core.relaunch(st, k);
+      hintFlags = null;
+      H.audio.beep(720, 0.06, 'square', 0.03);
+      hud();
+    }
+    function undo() {
+      if (!st || overlayEl && !deadShown) return;
+      if (!undoStack.length) { H.toast('戻せる手がありません'); return; }
+      closeOverlay();
+      Core.restore(st, undoStack.pop());
+      bullets = []; parts = []; pendingCell = {}; hintFlags = null; deadShown = false; won = false;
+      rebuildOff();
+      H.audio.click();
+      hud();
+    }
+    function hint() {
+      if (!st || won || overlayEl) return;
+      var r = Core.hintCols(st, 1);
+      if (r.any) { hintFlags = r; hintT = 3; H.audio.good(); }
+      else {
+        hintFlags = null;
+        if (Core.queueLeft(st) === 0) H.toast('全部出しました。崩れるのを待って');
+        else if (!Core.quiet(st)) H.toast('砲台が回り終わるのを待って');
+        else H.toast('今出せる物がありません。戻してみて');
+        H.audio.bad();
+      }
+    }
+    function toggleFast() { fast = !fast; store.set('fast', fast); hud(); H.audio.click(); }
+
+    H.onTap(canvas, function (cx, cy) {
+      if (!st || overlayEl) return;
+      var p = stg.toBase(cx, cy);
+      if (geo.land && p.x < geo.px0) return;
+      if (p.y >= geo.slotY - 24 && p.y <= geo.slotY + 24) {
+        var k = Math.floor((p.x - geo.sx0) / (geo.sw + geo.sgap));
+        if (k >= 0 && k < st.cap) doRelaunch(k);
+        return;
+      }
+      if (p.y < geo.slotY + 24) return;
+      var ci = Math.floor((p.x - geo.qx0) / geo.colW);
+      if (ci < 0 || ci >= geo.Q) return;
+      doPush(ci);
+    });
+    H.holdButton(document.getElementById('btn-undo'), undo);
+    H.holdButton(document.getElementById('btn-hint'), hint);
+    H.holdButton(document.getElementById('btn-fast'), toggleFast);
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); if (overlayEl && overlayEl.isLv) closeOverlay(); else showLevels(); });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl && overlayEl.isLv) closeOverlay(); else showLevels(); });
+    var km = { z: undo, Z: undo, u: undo, h: hint, H: hint, s: toggleFast, S: toggleFast,
+      n: function () { if (!overlayEl) loadLevel(lvIndex + 1); }, p: function () { if (!overlayEl) loadLevel(lvIndex - 1); },
+      r: function () { if (!overlayEl) restart(); } };
+    for (var d = 1; d <= 5; d++) (function (k) { km[String(k)] = function () { doPush(k - 1); }; })(d);
+    for (d = 6; d <= 10; d++) (function (k) { km[String(k % 10)] = function () { doRelaunch(k - 6); }; })(d);
+    H.keys(km);
+
+    // ---------- 進行 ----------
+    function update(dt) {
+      time += dt;
+      if (!st) return;
+      if (hintT > 0) { hintT -= dt; if (hintT <= 0) hintFlags = null; }
+      if (!won && !overlayEl) {
+        var ev = [];
+        var speed = st.L / 5 * (fast ? 2 : 1);
+        Core.step(st, dt, speed, ev);
+        for (var i = 0; i < ev.length; i++) handleEvent(ev[i]);
+        if (ev.length) hud();
+        if (st.remain === 0) { won = true; winT = 0; }
+        else if (!deadShown && st.failed && !bullets.length) {
+          deadShown = true;
+          H.audio.bad();
+          overlayEl = H.overlay({ title: '待機枠がいっぱい', html: '弾の残った砲台が戻ってきたのに、置く枠がありません。<br>戻して、今見えている色の砲台から出してみて。',
+            buttons: [{ label: '↶ 戻す', onClick: function () { overlayEl = null; undo(); } },
+                      { label: 'やり直す', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+        }
+      }
+      if (won) {
+        winT += dt;
+        if (winT > 0.8 && !overlayEl && !bullets.length) finish();
+        if (winT < 0.6 && Math.random() < 0.6) confetti();
+      }
+      // 弾
+      for (i = bullets.length - 1; i >= 0; i--) {
+        var b = bullets[i];
+        b.t += dt;
+        if (b.t >= b.delay + b.dur) {
+          delete pendingCell[b.cell];
+          clearCube(b.cell);
+          popCell(b.cell, b.color, b.dx, b.dy);
+          bullets.splice(i, 1);
+        }
+      }
+      // 破片
+      for (i = parts.length - 1; i >= 0; i--) {
+        var q = parts[i];
+        q.life -= dt;
+        if (q.life <= 0) { parts.splice(i, 1); continue; }
+        q.vy += 700 * dt;
+        q.x += q.vx * dt; q.y += q.vy * dt; q.rot += q.vr * dt;
+      }
+    }
+    var shotTick = 0;
+    function handleEvent(e) {
+      if (e.type === 'shot') {
+        var from = beltXY(st.starts[e.side] + (e.side === 0 ? st.h - e.idx : e.side === 1 ? e.idx + 1 : e.side === 2 ? e.idx + 1 : st.w - e.idx));
+        var to = cellXY(e.cell);
+        pendingCell[e.cell] = true;
+        bullets.push({ x0: from.x + from.dx * 10, y0: from.y + from.dy * 10, x1: to.x, y1: to.y, t: 0,
+          delay: e.n * 0.05, dur: 0.1 + e.dist * 0.008, color: colorOf(e.color), cell: e.cell, dx: from.dx, dy: from.dy });
+        if (e.n === 0 && time - shotTick > 0.05) { shotTick = time; H.audio.beep(900 + e.color * 60, 0.04, 'square', 0.025); }
+      } else if (e.type === 'empty') {
+        var pos = beltXY(e.cannon.p);
+        for (var i = 0; i < 10; i++) parts.push({ x: pos.x, y: pos.y, vx: (Math.random() - 0.5) * 220, vy: -Math.random() * 200,
+          vr: (Math.random() - 0.5) * 10, rot: 0, s: 3 + Math.random() * 3, color: colorOf(e.cannon.c), life: 0.6 });
+        H.audio.beep(500, 0.08, 'triangle', 0.05);
+      } else if (e.type === 'park') {
+        H.audio.beep(260, 0.12, 'triangle', 0.05);
+      } else if (e.type === 'start' && e.from === 'park') {
+        H.audio.beep(720, 0.06, 'square', 0.03);
+      }
+    }
+    function popCell(cell, color, dx, dy) {
+      var c = cellXY(cell), cs = geo.cs;
+      var n = Math.min(4, Math.max(2, Math.round(cs / 4)));
+      if (parts.length > 320) return;
+      for (var i = 0; i < n; i++) {
+        parts.push({ x: c.x + (Math.random() - 0.5) * cs, y: c.y + (Math.random() - 0.5) * cs,
+          vx: dx * (60 + Math.random() * 120) + (Math.random() - 0.5) * 120, vy: dy * (60 + Math.random() * 120) - 120 - Math.random() * 120,
+          vr: (Math.random() - 0.5) * 14, rot: Math.random() * 3, s: Math.max(2, cs * 0.45), color: color, life: 0.5 + Math.random() * 0.3 });
+      }
+    }
+    function confetti() {
+      if (parts.length > 300) return;
+      for (var i = 0; i < 6; i++) {
+        var ci = Math.floor(Math.random() * lv.colors.length);
+        parts.push({ x: Math.random() * BASE_W, y: geo.gy + Math.random() * geo.gh, vx: (Math.random() - 0.5) * 300, vy: -200 - Math.random() * 250,
+          vr: (Math.random() - 0.5) * 12, rot: 0, s: 5 + Math.random() * 4, color: colorOf(ci), life: 1.2 });
+      }
+    }
+
+    function finish() {
+      var first = !cleared[lvIndex];
+      cleared[lvIndex] = true;
+      store.set('cleared', cleared);
+      hud();
+      H.audio.win();
+      var n = 0;
+      for (var i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var last = lvIndex >= LEVELS.length - 1;
+      var html = lv.n + ' を崩した!' + (first ? '<br>はじめてのクリア' : '') + '<br>クリア ' + n + ' / ' + LEVELS.length + ' 面';
+      if (n === LEVELS.length) html += '<br>全部の面をクリア、おめでとう!';
+      var buttons = [];
+      if (!last) buttons.push({ label: '次の面へ', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; restart(); } });
+      buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+      overlayEl = H.overlay({ title: last ? '最終面クリア!' : 'クリア!', big: '面 ' + (lvIndex + 1), html: html, buttons: buttons });
+    }
+
+    // ---------- 描画 ----------
+    function rrect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+    function drawCannon(ctx, x, y, s, color, ammo, dx, dy, glow, alpha) {
+      ctx.save();
+      if (alpha !== undefined) ctx.globalAlpha = alpha;
+      if (glow) { ctx.shadowColor = '#ffd166'; ctx.shadowBlur = 14; }
+      if (dx || dy) {
+        ctx.fillStyle = '#555577';
+        ctx.fillRect(x + dx * s * 0.45 - (dx ? 0 : s * 0.15), y + dy * s * 0.45 - (dy ? 0 : s * 0.15), dx ? s * 0.35 : s * 0.3, dy ? s * 0.35 : s * 0.3);
+        if (dx < 0) ctx.fillRect(x - s * 0.8, y - s * 0.15, s * 0.35, s * 0.3);
+        if (dy < 0) ctx.fillRect(x - s * 0.15, y - s * 0.8, s * 0.3, s * 0.35);
+      }
+      ctx.fillStyle = color;
+      rrect(ctx, x - s / 2, y - s / 2, s, s, s * 0.22);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      rrect(ctx, x - s / 2, y - s / 2, s, s * 0.35, s * 0.22);
+      ctx.fill();
+      if (glow) { ctx.lineWidth = 2.5; ctx.strokeStyle = '#ffd166'; rrect(ctx, x - s / 2, y - s / 2, s, s, s * 0.22); ctx.stroke(); }
+      ctx.fillStyle = '#fff';
+      ctx.font = '800 ' + Math.round(s * 0.56) + 'px ' + 'system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineJoin = 'round';
+      ctx.strokeText(String(ammo), x, y + 1);
+      ctx.fillText(String(ammo), x, y + 1);
+      ctx.restore();
+    }
+    function draw() {
+      var ctx = stg.ctx();
+      if (!ctx || !st || !geo) return;
+      var i, j;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE_W, BASE_H);
+      // ベルト
+      var o = geo.boff, bw = geo.bw;
+      ctx.lineWidth = bw; ctx.strokeStyle = '#2a2a48'; ctx.lineJoin = 'round';
+      rrect(ctx, geo.gx - o, geo.gy - o, geo.gw + o * 2, geo.gh + o * 2, 12);
+      ctx.stroke();
+      ctx.save();
+      ctx.setLineDash([6, 10]); ctx.lineDashOffset = -time * 40 * (fast ? 2 : 1);
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      rrect(ctx, geo.gx - o, geo.gy - o, geo.gw + o * 2, geo.gh + o * 2, 12);
+      ctx.stroke();
+      ctx.restore();
+      // 入口
+      var en = beltXY(Core.ENTRY);
+      ctx.fillStyle = '#3b3b66'; rrect(ctx, en.x - 12, en.y - 12, 24, 24, 6); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '700 14px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('▲', en.x, en.y + 1);
+      // 待機枠（空の箱。中身の砲台は後で描く）
+      for (i = 0; i < st.cap; i++) {
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+        rrect(ctx, geo.sx0 + i * (geo.sw + geo.sgap), geo.slotY - 20, geo.sw, 40, 6); ctx.fill(); ctx.stroke();
+      }
+      // 盤（地は明るい灰。暗い色のドットが沈まないように）
+      ctx.fillStyle = '#e4e4ee';
+      ctx.fillRect(geo.gx - 2, geo.gy - 2, geo.gw + 4, geo.gh + 4);
+      if (off) ctx.drawImage(off, geo.gx, geo.gy, geo.gw, geo.gh);
+      // 弾
+      for (i = 0; i < bullets.length; i++) {
+        var b = bullets[i];
+        if (b.t < b.delay) continue;
+        var f = Math.min(1, (b.t - b.delay) / b.dur);
+        var bx = b.x0 + (b.x1 - b.x0) * f, by = b.y0 + (b.y1 - b.y0) * f;
+        ctx.fillStyle = b.color;
+        ctx.beginPath(); ctx.arc(bx, by, 3.2, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(bx - (b.x1 - b.x0) * 0.06, by - (b.y1 - b.y0) * 0.06); ctx.lineTo(bx, by); ctx.stroke();
+      }
+      // ベルト上の砲台
+      var waiting = 0, parked = 0;
+      for (i = 0; i < st.belt.length; i++) {
+        var cn = st.belt[i];
+        if (cn.state === 'enter') {
+          drawCannon(ctx, en.x - 2 - waiting * 5, en.y + 6 + waiting * 5, 22, colorOf(cn.c), cn.a, 0, 0, false, 0.85);
+          waiting++;
+          continue;
+        }
+        if (cn.state === 'park') {
+          var tg = Core.hasTarget(st, cn.c);
+          var pglow = !!(hintFlags && hintFlags.parked[parked]);
+          drawCannon(ctx, geo.sx0 + parked * (geo.sw + geo.sgap) + geo.sw / 2, geo.slotY, 32, colorOf(cn.c), cn.a, 0, 0, pglow, tg ? 1 : 0.7);
+          parked++;
+          continue;
+        }
+        if (cn.state === 'fail') {
+          drawCannon(ctx, en.x, en.y, 26, colorOf(cn.c), cn.a, 1, 0, true, 1);
+          continue;
+        }
+        var pos = beltXY(cn.p);
+        var sc = cn.state === 'die' ? Math.max(0, 1 - cn.t / 0.3) : 1;
+        var tgt = Core.hasTarget(st, cn.c);
+        drawCannon(ctx, pos.x, pos.y, 24 * sc, colorOf(cn.c), cn.a, pos.dx, pos.dy, false, tgt ? 1 : 0.65);
+      }
+      // 破片
+      for (i = 0; i < parts.length; i++) {
+        var q = parts[i];
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, q.life * 2.5);
+        ctx.translate(q.x, q.y); ctx.rotate(q.rot);
+        ctx.fillStyle = q.color;
+        ctx.fillRect(-q.s / 2, -q.s / 2, q.s, q.s);
+        ctx.restore();
+      }
+      ctx.fillStyle = '#a9a9c9'; ctx.font = '600 12px system-ui, sans-serif'; ctx.textBaseline = 'middle';
+      if (!geo.land) {
+        ctx.textAlign = 'left'; ctx.fillText('待機枠', 6, geo.slotY);
+        ctx.textAlign = 'right'; ctx.fillText('残り ' + st.remain, BASE_W - 6, geo.slotY);
+      } else {
+        ctx.textAlign = 'center';
+        ctx.fillText('待機枠 ' + Core.parkedCount(st) + '/' + st.cap, geo.px0 + geo.pw / 2, geo.slotY - 32);
+        ctx.font = '700 18px system-ui, sans-serif';
+        ctx.fillText('残り ' + st.remain, geo.px0 + geo.pw / 2, geo.remainY);
+      }
+      // 砲台の列（先頭と次の 1 つだけ）
+      for (i = 0; i < geo.Q; i++) {
+        var cx = geo.qx0 + geo.colW * (i + 0.5);
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        rrect(ctx, cx - geo.colW / 2 + 2, geo.headY - geo.headS / 2 - 8, geo.colW - 4, geo.labelY - geo.headY + geo.headS / 2 + 16, 8); ctx.fill();
+        var col = st.cols[i], hidx = st.heads[i];
+        if (hidx + 1 < col.length) {
+          var it = col[hidx + 1];
+          drawCannon(ctx, cx, geo.nextY, geo.nextS, colorOf(it.c), it.a, 0, 0, false, 0.6);
+        }
+        if (hidx < col.length) {
+          var hd = col[hidx];
+          var glow = !!(hintFlags && hintFlags.cols[i]);
+          drawCannon(ctx, cx, geo.headY, geo.headS, colorOf(hd.c), hd.a, 0, 0, glow, 1);
+        } else {
+          ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center';
+          ctx.fillText('空', cx, geo.headY);
+        }
+        var rest = col.length - hidx - 2;
+        ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(String(i + 1) + (rest > 0 ? '  +' + rest : ''), cx, geo.labelY);
+      }
+    }
+
+    // ---------- 面一覧 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function drawThumb(cv, L, done) {
+      var c = cv.getContext('2d'), S = 48, cs = Math.floor(S / Math.max(L.w, L.h));
+      var ox = Math.floor((S - cs * L.w) / 2), oy = Math.floor((S - cs * L.h) / 2);
+      c.clearRect(0, 0, S, S);
+      for (var y = 0; y < L.h; y++) for (var x = 0; x < L.w; x++) {
+        var ch = L.rows[y].charAt(x);
+        if (ch === '.') continue;
+        c.fillStyle = done ? (PAL[ch] || '#fff') : 'rgba(40,40,70,0.35)';
+        c.fillRect(ox + x * cs, oy + y * cs, cs - (cs > 2 ? 0.5 : 0), cs - (cs > 2 ? 0.5 : 0));
+      }
+    }
+    function showLevels() {
+      closeOverlay();
+      var n = 0, i;
+      for (i = 0; i < LEVELS.length; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVELS.length + ' 面　✓ はクリア済み。クリアした絵は色つきで出る</span><br>';
+      html += '<span class="lv-grid">';
+      for (i = 0; i < LEVELS.length; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' +
+          '<canvas width="48" height="48" data-th="' + i + '"></canvas><span>' + (i + 1) + ' ' + LEVELS[i].w + '×' + LEVELS[i].h + '</span></button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv scrollable';
+      overlayEl.isLv = true;
+      var ths = overlayEl.querySelectorAll('canvas[data-th]');
+      for (i = 0; i < ths.length; i++) { var k = parseInt(ths[i].getAttribute('data-th'), 10); drawThumb(ths[i], LEVELS[k], cleared[k]); }
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+
+    function showStart() {
+      overlayEl = H.overlay({ title: 'ドット崩し', big: '面 ' + (lvIndex + 1), html: LEVELS[lvIndex].n + '　' + LEVELS[lvIndex].w + '×' + LEVELS[lvIndex].h + '<br>下の砲台をタップしてベルトへ。同じ色のドットを撃って崩そう',
+        buttons: [{ label: 'スタート', onClick: function () { overlayEl = null; } },
+                  { label: '面を選ぶ', secondary: true, onClick: function () { overlayEl = null; showLevels(); } }] });
+    }
+
+    window.resetGame = function () { restart(); };
+    var mainLoop = H.loop(update, draw);
+    H.pauseWhenHidden(function () { mainLoop.pause(true); }, function () { mainLoop.pause(false); });
+
+    loadLevel(lvIndex);
+    relayout();
+    setTimeout(relayout, 0);
+    showStart();
+    mainLoop.start();
+  })();
+  </script>
+</body>
+</html>

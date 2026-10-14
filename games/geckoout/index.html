@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ヤモリの穴 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 12px; }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 10px; }
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-grid { display: inline-flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 460px; }
+    .lv-btn {
+      width: 50px; height: 44px; border-radius: 8px;
+      border: 1px solid var(--panel-border); background: var(--panel); color: var(--text);
+      font-size: 16px; font-weight: 700; display: inline-flex; flex-direction: column;
+      align-items: center; justify-content: center; position: relative; line-height: 1.1;
+    }
+    .lv-btn .st { font-size: 9px; color: var(--warn); letter-spacing: -1px; }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.22); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -3px; right: 3px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .overlay .stars { font-size: 34px; color: var(--warn); letter-spacing: 4px; }
+    .overlay .stars .off { color: rgba(255,255,255,0.18); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ヤモリの穴" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item" id="hud-level">面<b id="level">1</b></span>
+      <span class="hud-item">手数<b id="moves">0</b></span>
+      <span class="hud-item">最短<b id="opt">0</b></span>
+      <span class="hud-item">残り<b id="left">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>ヤモリの頭か尻尾を指で掴んで引っ張ると、体がついてくる。</li>
+            <li>同じ色の穴にどちらかの端が入ると、体ごと吸い込まれる。</li>
+            <li>全部のヤモリを穴に入れたらクリア。壁・他のヤモリ・自分の体はまたげない。</li>
+            <li>🔑 を通ると 🔒 の扉が開く。点線の穴は 1 回しか使えない。</li>
+            <li>手数が最短に近いほど ★ が増える。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 頭か尻尾をドラッグ</li>
+            <li>PC: 頭か尻尾をクリックして選び、矢印キー。Z 戻す、H ヒント、R やり直し</li>
+            <li>戻す・ヒントは何回でも使える。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-undo">↶ 戻す</button>
+      <button type="button" class="ctl-btn sm" id="btn-hint">💡 ヒント</button>
+      <button type="button" class="ctl-btn sm" id="btn-restart">やり直し</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 盤面の論理部分。node のソルバー(テスト)もこのブロックをそのまま使う。
+  var GeckoCore = (function () {
+    'use strict';
+    var DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    var COLORS = 'rgbyop';
+    // 文字: # 壁, . 床, 大文字=穴(色), 小文字=1回だけの穴, k 鍵, D 扉(閉)
+    function parse(def) {
+      var rows = def.m, h = rows.length, w = 0, i, x, y, ch;
+      for (i = 0; i < h; i++) if (rows[i].length > w) w = rows[i].length;
+      var L = { w: w, h: h, wall: [], hole: {}, key: {}, door: {}, geckos: [], opt: def.opt || 0 };
+      for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+        ch = rows[y][x] || '#';
+        var idx = y * w + x;
+        L.wall[idx] = false;
+        if (ch === '#' || ch === ' ') L.wall[idx] = true;
+        else if (ch === 'k') L.key[idx] = true;
+        else if (ch === 'D') L.door[idx] = true;
+        else if (ch !== '.') {
+          var lc = ch.toLowerCase();
+          if (COLORS.indexOf(lc) >= 0) L.hole[idx] = { c: lc, once: ch === lc };
+        }
+      }
+      for (i = 0; i < def.g.length; i++) {
+        var parts = def.g[i].split(':');
+        var cells = parts[1].trim().split(/\s+/).map(function (p) { var a = p.split(','); return parseInt(a[1], 10) * w + parseInt(a[0], 10); });
+        L.geckos.push({ c: parts[0], cells: cells });
+      }
+      return L;
+    }
+    function initState(L) {
+      return { g: L.geckos.map(function (gk) { return gk.cells.slice(); }), door: false, used: {} };
+    }
+    function clone(S) {
+      var u = {}, k;
+      for (k in S.used) u[k] = true;
+      return { g: S.g.map(function (c) { return c ? c.slice() : null; }), door: S.door, used: u };
+    }
+    function key(S) {
+      var parts = [];
+      for (var i = 0; i < S.g.length; i++) {
+        var c = S.g[i];
+        if (!c) { parts.push('x'); continue; }
+        var a = c.join(','), b = c.slice().reverse().join(',');
+        parts.push(a < b ? a : b);
+      }
+      var u = Object.keys(S.used).sort().join('.');
+      return parts.join('|') + '|' + (S.door ? 1 : 0) + '|' + u;
+    }
+    function occupied(S, idx, skipG) {
+      for (var i = 0; i < S.g.length; i++) {
+        var c = S.g[i];
+        if (!c || i === skipG) continue;
+        for (var j = 0; j < c.length; j++) if (c[j] === idx) return true;
+      }
+      return false;
+    }
+    // 端 end(0=頭,1=尻尾) を dir へ 1 マス。戻り値 null=不可, {to, enter}
+    function probe(L, S, gi, end, dir) {
+      var c = S.g[gi];
+      if (!c) return null;
+      var lead = end === 0 ? c[0] : c[c.length - 1];
+      var x = lead % L.w + DIRS[dir][0], y = Math.floor(lead / L.w) + DIRS[dir][1];
+      if (x < 0 || y < 0 || x >= L.w || y >= L.h) return null;
+      var to = y * L.w + x;
+      if (L.wall[to]) return null;
+      if (L.door[to] && !S.door) return null;
+      var hole = L.hole[to];
+      var enter = false;
+      if (hole) {
+        if (hole.c !== L.geckos[gi].c) return null;
+        if (hole.once && S.used[to]) return null;
+        enter = true;
+      }
+      for (var j = 0; j < c.length; j++) if (c[j] === to) return null;
+      if (occupied(S, to, gi)) return null;
+      return { to: to, enter: enter };
+    }
+    function apply(L, S, gi, end, dir) {
+      var p = probe(L, S, gi, end, dir);
+      if (!p) return null;
+      var N = clone(S);
+      var c = N.g[gi];
+      if (p.enter) {
+        N.g[gi] = null;
+        if (L.hole[p.to].once) N.used[p.to] = true;
+      } else {
+        if (end === 0) { c.pop(); c.unshift(p.to); } else { c.shift(); c.push(p.to); }
+        if (L.key[p.to] && !N.used[p.to]) { N.used[p.to] = true; N.door = true; }
+      }
+      return { S: N, to: p.to, enter: p.enter };
+    }
+    function moves(L, S) {
+      var out = [];
+      for (var gi = 0; gi < S.g.length; gi++) {
+        if (!S.g[gi]) continue;
+        for (var end = 0; end < 2; end++) for (var d = 0; d < 4; d++) {
+          if (probe(L, S, gi, end, d)) out.push({ gi: gi, end: end, dir: d });
+        }
+      }
+      return out;
+    }
+    function isWin(S) {
+      for (var i = 0; i < S.g.length; i++) if (S.g[i]) return false;
+      return true;
+    }
+    // 見積り(許容的): 各ヤモリの端から入れる穴までの最短マンハッタン距離の和
+    function heur(L, S) {
+      var sum = 0;
+      for (var gi = 0; gi < S.g.length; gi++) {
+        var c = S.g[gi];
+        if (!c) continue;
+        var col = L.geckos[gi].c, best = 1e9;
+        var ends = [c[0], c[c.length - 1]];
+        for (var hk in L.hole) {
+          var hole = L.hole[hk];
+          if (hole.c !== col || (hole.once && S.used[hk])) continue;
+          var hi = parseInt(hk, 10), hx = hi % L.w, hy = (hi - hx) / L.w;
+          for (var e = 0; e < 2; e++) {
+            var ex = ends[e] % L.w, ey = (ends[e] - ex) / L.w;
+            var d = Math.abs(ex - hx) + Math.abs(ey - hy);
+            if (d < best) best = d;
+          }
+        }
+        if (best === 1e9) return -1;
+        sum += best;
+      }
+      return sum;
+    }
+    // A*(段階ごとのバケツ)。最短手順を返す。budget を超えたら status:'budget'
+    function solve(L, S0, budget, weight) {
+      budget = budget || 200000; weight = weight || 1;
+      var k0 = key(S0);
+      if (isWin(S0)) return { path: [], nodes: 1, status: 'ok' };
+      var h0 = heur(L, S0);
+      if (h0 < 0) return { path: null, nodes: 1, status: 'none' };
+      var gBest = {}; gBest[k0] = 0;
+      var parent = {}; parent[k0] = null;
+      var buckets = [], f = h0 * weight, n = 1;
+      buckets[f] = [{ S: S0, k: k0, g: 0 }];
+      while (f < buckets.length) {
+        var b = buckets[f];
+        if (!b || !b.length) { f++; continue; }
+        var cur = b.pop();
+        var S = cur.S;
+        if (gBest[cur.k] < cur.g) continue;
+        for (var gi = 0; gi < S.g.length; gi++) {
+          if (!S.g[gi]) continue;
+          for (var end = 0; end < 2; end++) for (var d = 0; d < 4; d++) {
+            var r = apply(L, S, gi, end, d);
+            if (!r) continue;
+            var k = key(r.S), g2 = cur.g + 1;
+            if (gBest[k] !== undefined && gBest[k] <= g2) continue;
+            if (gBest[k] === undefined) n++;
+            gBest[k] = g2;
+            parent[k] = { p: cur.k, mv: { gi: gi, end: end, dir: d } };
+            if (isWin(r.S)) {
+              var path = [], at = k;
+              while (parent[at]) { path.unshift(parent[at].mv); at = parent[at].p; }
+              return { path: path, nodes: n, status: 'ok' };
+            }
+            if (n > budget) return { path: null, nodes: n, status: 'budget' };
+            var h = heur(L, r.S);
+            if (h < 0) continue;
+            var f2 = g2 + h * weight;
+            if (f2 < f) f2 = f;
+            (buckets[f2] || (buckets[f2] = [])).push({ S: r.S, k: k, g: g2 });
+          }
+        }
+      }
+      return { path: null, nodes: n, status: 'none' };
+    }
+    return { DIRS: DIRS, COLORS: COLORS, parse: parse, initState: initState, clone: clone, key: key,
+      probe: probe, apply: apply, moves: moves, isWin: isWin, solve: solve };
+  })();
+  var LEVELS = /*LEVELS*/[{"m":["######","#R...#","#....#","#....#","######"],"g":["r:2,2 3,2 4,2"],"opt":2,"s":[[0,0,3],[0,0,0]]},{"m":["#######","#.....#","#..#..#","#.....#","#G...R#","#######"],"g":["r:1,1 2,1 3,1","g:1,3 2,3 3,3"],"opt":6,"s":[[1,0,2],[0,1,1],[0,1,2],[0,1,2],[0,1,2],[0,1,1]]},{"m":["#######","#.#.R.#","#.....#","#....##","#..#..#","#...G.#","#######"],"g":["r:4,4 4,3 4,2","g:3,3 3,2 2,2"],"opt":4,"s":[[0,1,0],[1,0,1],[1,0,2],[1,0,2]]},{"m":["#######","#....G#","#.#...#","#....R#","##....#","#.....#","#######"],"g":["r:1,5 2,5 2,4","g:4,3 4,2 4,1"],"opt":5,"s":[[1,1,1],[0,1,1],[0,1,1],[0,1,1],[0,1,0]]},{"m":["#######","#...RG#","#.....#","#.....#","#.....#","##....#","#######"],"g":["r:2,2 1,2 1,3","g:5,4 5,5 4,5"],"opt":6,"s":[[1,0,0],[1,0,0],[1,0,0],[0,0,1],[0,0,1],[0,0,0]]},{"m":["#######","#.....#","#.....#","#.#.#.#","#R....#","#...#G#","#######"],"g":["r:2,5 3,5 3,4","g:5,1 4,1 4,2"],"opt":6,"s":[[1,1,1],[1,1,2],[1,1,2],[1,1,2],[0,1,3],[0,1,3]]},{"m":["#######","#.....#","#.....#","#R...##","#....G#","#.....#","#######"],"g":["r:4,3 3,3 2,3 2,2","g:3,2 4,2 5,2"],"opt":6,"s":[[0,1,3],[0,1,2],[1,1,0],[1,0,2],[1,0,2],[1,0,1]]},{"m":["#######","#..#..#","#....R#","#....##","#.....#","#....G#","#######"],"g":["r:2,5 1,5 1,4 1,3","g:2,3 2,4 3,4"],"opt":8,"s":[[1,1,2],[1,1,1],[1,1,1],[0,1,1],[0,1,1],[0,1,1],[0,1,0],[0,1,1]]},{"m":["#######","#B....#","#.###.#","#.....#","#...#.#","#....Y#","#######"],"g":["y:1,3 2,3 3,3 4,3","b:5,3 5,4 5,5"],"opt":9,"s":[[1,0,0],[1,0,0],[1,0,3],[1,0,3],[1,0,3],[1,0,3],[0,1,1],[0,1,2],[0,1,2]]},{"m":["#########","#r.....r#","#.#####.#","#.......#","#.#####.#","#.......#","#########"],"g":["r:3,3 4,3 5,3","r:3,5 4,5 5,5 6,5"],"opt":9,"s":[[1,1,1],[1,1,0],[1,1,0],[1,1,0],[1,1,0],[0,0,3],[0,0,3],[0,0,0],[0,0,0]]},{"m":["########","#.##...#","#......#","#....#.#","#..#..R#","##BG...#","#......#","########"],"g":["r:4,4 4,5 5,5 6,5 6,6","g:5,1 4,1 4,2 5,2 6,2","b:2,3 2,4 1,4 1,3 1,2"],"opt":10,"s":[[2,1,1],[2,0,2],[1,1,0],[1,1,3],[1,0,2],[0,0,1],[0,0,1],[1,0,2],[1,0,2],[1,0,3]]},{"m":["########","#......#","#......#","#......#","#G.B#..#","#..#R..#","#....#.#","########"],"g":["r:1,5 1,6 2,6","g:5,4 5,3 4,3 4,2 4,1","b:3,3 3,2 3,1 2,1 1,1"],"opt":10,"s":[[0,1,1],[0,1,1],[0,1,0],[1,1,1],[1,1,2],[2,0,2],[1,0,3],[1,0,3],[1,0,3],[1,0,2]]},{"m":["########","##.....#","#.#.#.R#","#.G#...#","#......#","###....#","####.B.#","########"],"g":["r:5,3 6,3 6,4","g:4,1 5,1 6,1","b:5,5 6,5 6,6"],"opt":11,"s":[[2,0,2],[1,0,3],[0,1,2],[1,1,2],[1,1,2],[1,1,3],[1,1,2],[1,1,3],[1,1,3],[1,1,0],[0,0,0]]},{"m":["########","#....#.#","#......#","#......#","#......#","#.....##","#R.....#","#B...###","########"],"g":["r:2,5 2,6 3,6 4,6 5,6","r:4,3 4,4 3,4","b:2,2 2,1 3,1"],"opt":12,"s":[[2,0,2],[2,0,2],[1,1,2],[0,1,1],[2,0,2],[0,0,3],[2,0,2],[2,0,2],[2,0,3],[1,1,3],[1,1,3],[1,1,2]]},{"m":["########","#......#","#.R..#.#","#......#","#.#....#","#G....B#","########"],"g":["g:1,1 2,1 3,1","b:4,3 3,3 2,3","r:6,1 6,2 6,3 6,4"],"opt":13,"s":[[2,0,3],[2,0,3],[2,0,2],[2,0,3],[2,0,3],[1,0,2],[1,0,2],[1,0,1],[1,0,1],[0,0,2],[0,0,2],[0,0,2],[0,0,2]]},{"m":["########","#..k...#","#.####.#","#.#R.#.#","#.#D##.#","#......#","########"],"g":["r:1,5 2,5 3,5 4,5"],"opt":13,"s":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,1],[0,0,1],[0,1,2],[0,1,2],[0,1,2],[0,1,1],[0,1,1],[0,1,0],[0,1,0]]},{"m":["########","#..#.R.#","#....#B#","#......#","#..#...#","#....G##","#.#....#","########"],"g":["r:1,1 1,2 1,3 1,4","g:5,3 4,3 4,4","b:4,1 4,2 3,2 2,2"],"opt":13,"s":[[2,1,2],[1,1,2],[1,1,1],[2,0,2],[2,0,1],[2,0,1],[2,0,0],[0,1,2],[0,0,1],[0,0,1],[0,0,1],[0,0,0],[0,0,1]]},{"m":["########","#....#.#","#..##R.#","##..#..#","##.....#","##...#.#","#.....##","#..#.###","########"],"g":["r:6,3 5,3 5,4 4,4 4,5","r:5,6 4,6 3,6 2,6 2,7","r:3,3 3,4 3,5 2,5"],"opt":13,"s":[[0,0,0],[0,0,3],[1,1,3],[1,0,0],[1,0,0],[1,0,1],[1,0,0],[1,0,0],[2,1,2],[2,0,1],[2,0,1],[2,0,0],[2,0,0]]},{"m":["########","#......#","#......#","#......#","#..R#..#","#...B#.#","#.G.#..#","########"],"g":["r:6,2 6,1 5,1 5,2","g:5,6 6,6 6,5 6,4 5,4","b:1,4 1,3 2,3 2,2 3,2"],"opt":15,"s":[[1,1,0],[1,1,3],[1,1,3],[2,0,2],[2,0,1],[2,0,1],[2,0,1],[1,1,3],[1,1,2],[1,1,2],[1,1,2],[0,1,3],[0,1,3],[0,1,2],[0,1,2]]},{"m":["########","#...#..#","#..#..R#","#.....B#","#..#...#","#.#..#.#","#.....##","##.....#","########"],"g":["r:5,3 5,4 6,4 6,5","r:5,7 4,7 3,7 2,7","b:1,3 2,3 2,2 1,2"],"opt":15,"s":[[0,0,0],[0,0,1],[1,1,0],[1,0,0],[2,1,0],[2,0,1],[2,0,1],[2,0,1],[2,0,1],[1,0,0],[1,0,0],[1,0,1],[1,0,0],[1,0,0],[1,0,1]]},{"m":["########","#..#...#","#......#","#..##..#","#....#.#","#.....##","##.....#","##R....#","########"],"g":["r:2,2 2,1 1,1","r:6,6 5,6 5,7","r:4,1 5,1 6,1 6,2 6,3"],"opt":16,"s":[[2,0,2],[2,0,3],[1,1,3],[1,1,3],[1,1,3],[0,0,2],[0,0,2],[0,0,2],[2,0,3],[0,0,2],[2,0,2],[0,0,2],[2,0,2],[2,0,2],[2,0,2],[2,0,2]]},{"m":["########","##....B#","#......#","#r.....#","#r...###","#......#","#......#","#......#","########"],"g":["r:4,6 3,6 3,7 4,7","r:1,6 2,6 2,5 2,4 3,4","b:5,6 6,6 6,5"],"opt":16,"s":[[0,1,1],[2,0,3],[2,0,0],[2,0,0],[0,0,0],[1,1,0],[1,1,3],[2,0,0],[2,0,1],[2,0,1],[2,0,0],[2,0,0],[1,1,3],[0,0,3],[0,0,3],[0,0,0]]},{"m":["########","#..#..G#","#..#...#","#......#","#......#","#B.....#","##.R...#","########"],"g":["r:6,5 6,4 5,4","g:2,2 2,1 1,1 1,2 1,3","b:4,2 4,3 5,3 6,3 6,2"],"opt":17,"s":[[0,0,2],[0,0,3],[0,0,3],[1,0,2],[1,0,1],[2,1,3],[2,0,2],[2,0,3],[2,0,3],[2,0,3],[2,0,2],[1,0,1],[1,0,1],[1,0,1],[1,0,0],[1,0,0],[0,0,3]]},{"m":["#########","#....D..#","#..#.#..#","#.....R.#","##....#.#","#B..#..##","#....####","#k....G##","#....Y..#","#########"],"g":["r:5,3 5,4 5,5 6,5","g:4,3 4,2 4,1 3,1 2,1 2,2","b:3,7 3,6 3,5 2,5 2,4","y:1,2 1,3 2,3 3,3 3,4"],"opt":17,"s":[[2,0,3],[2,1,3],[3,1,2],[3,1,2],[3,1,1],[3,1,2],[3,1,1],[0,0,1],[1,0,3],[1,0,2],[3,1,2],[1,0,2],[1,0,2],[1,0,2],[1,0,1],[1,0,1],[1,0,1]]},{"m":["#########","#D#...R.#","#BY.....#","#.......#","#.....#.#","#.G#....#","#...#...#","#k.#....#","#......##","#########"],"g":["r:5,4 5,5 6,5 6,6 7,6 7,5","g:4,5 4,4 3,4 3,3","b:3,2 3,1 4,1 5,1 5,2","y:6,8 6,7 5,7 5,6"],"opt":18,"s":[[1,1,3],[1,1,2],[1,1,2],[2,0,2],[2,0,3],[2,0,3],[2,0,0],[0,0,0],[0,0,1],[0,0,0],[0,0,0],[3,1,0],[3,1,3],[3,1,0],[3,1,3],[3,1,3],[3,1,0],[3,1,0]]},{"m":["#########","#...#R..#","#.##.#..#","#.Y#...##","#.#....##","#...k#..#","##...G#.#","##...#..#","#DB.....#","#########"],"g":["r:5,4 5,3 6,3 6,2 7,2 7,1","g:1,5 1,4 1,3 1,2 1,1 2,1","b:4,8 5,8 6,8","y:6,4 6,5 7,5 7,6 7,7"],"opt":18,"s":[[1,0,1],[1,0,2],[1,0,1],[1,0,1],[1,0,1],[0,1,3],[3,0,3],[3,0,3],[3,0,3],[3,0,2],[3,0,3],[2,0,3],[2,0,3],[3,0,3],[3,0,0],[3,0,0],[3,0,1],[0,1,3]]},{"m":["#########","####.B.D#","####.#.##","######.##","#..##...#","#..#....#","##k....##","#...G...#","#..##...#","#R......#","#########"],"g":["r:2,5 1,5 1,4 2,4","g:7,5 7,4 6,4 6,3 6,2","b:6,8 7,8 7,7 6,7 6,6","g:5,9 4,9 3,9 2,9"],"opt":19,"s":[[3,0,0],[3,0,0],[3,0,3],[1,0,3],[1,0,3],[1,0,3],[1,0,2],[1,0,2],[2,1,0],[2,1,0],[2,1,0],[2,1,0],[2,1,0],[2,1,3],[0,0,2],[0,0,2],[0,0,3],[0,0,2],[0,0,2]]},{"m":["#########","#....#..#","##.#....#","#.......#","#.#..#..#","##....###","#....#..#","#...#...#","#..R#..##","#.....###","#########"],"g":["r:5,3 5,2 6,2 6,3 7,3","r:1,4 1,3 2,3 2,2 2,1","r:1,9 2,9 3,9 4,9 5,9 5,8","r:1,8 1,7 1,6 2,6 3,6"],"opt":20,"s":[[1,1,1],[1,1,1],[1,0,1],[1,0,2],[1,0,2],[2,1,1],[2,1,0],[3,1,2],[3,1,2],[2,0,0],[1,0,2],[1,0,2],[1,0,2],[0,0,3],[0,0,3],[0,0,2],[0,0,2],[0,0,2],[0,0,2],[0,0,2]]},{"m":["########","##.....#","##...B.#","#....#.#","#....#G#","#.#...##","##...#R#","#......#","########"],"g":["r:3,2 3,3 4,3","g:3,5 3,6 2,6","b:3,4 2,4 1,4 1,5"],"opt":21,"s":[[0,1,2],[0,1,2],[2,0,0],[2,0,0],[2,0,1],[2,0,1],[1,0,0],[0,1,2],[0,1,2],[1,0,1],[1,0,0],[1,0,0],[0,1,1],[1,0,0],[1,0,1],[1,0,1],[1,0,2],[1,0,2],[1,0,2],[0,1,1],[0,1,0]]},{"m":["#########","####R.#D#","###B....#","####....#","####....#","#.G.#.###","#Y...k#.#","#.......#","#.......#","#########"],"g":["r:3,7 3,8 2,8 2,7 2,6 3,6","g:7,6 7,7 7,8 6,8 5,8 4,8","b:7,2 6,2 5,2 5,3 4,3","y:7,3 7,4 6,4 5,4 5,5"],"opt":21,"s":[[3,1,2],[3,1,3],[0,0,1],[3,1,3],[0,0,1],[3,1,3],[3,1,3],[2,1,0],[2,1,3],[0,0,0],[0,0,0],[0,0,0],[1,1,3],[1,1,3],[1,1,0],[1,1,0],[1,1,0],[0,0,3],[0,0,0],[0,0,0],[0,0,0]]},{"m":["#########","#......##","#.......#","#..#kG#.#","#.....#.#","#....##.#","#..r#Dr.#","#.#..#..#","#.....#.#","#B#.#...#","#########"],"g":["r:7,4 7,5 7,6 7,7 7,8 7,9","g:1,3 1,2 1,1 2,1","b:5,1 6,1 6,2 7,2 7,3","r:3,5 4,5 4,4 5,4"],"opt":21,"s":[[0,1,3],[0,1,3],[0,0,3],[1,1,2],[1,1,1],[3,0,2],[2,0,3],[2,0,3],[1,1,1],[1,1,2],[2,0,3],[2,0,3],[2,0,2],[2,0,2],[2,0,2],[2,0,2],[2,0,2],[2,0,2],[2,0,2],[2,0,2],[1,1,1]]},{"m":["#########","######.##","#####...#","####..#.#","#####..Y#","##..G...#","#......B#","#..#R...#","#.....###","#########"],"g":["r:5,2 6,2 7,2 7,3","g:4,8 3,8 2,8","b:5,5 6,5 6,4 5,4 5,3 4,3","y:1,7 1,6 2,6 2,5"],"opt":22,"s":[[1,0,1],[1,0,0],[1,0,0],[1,0,3],[1,0,0],[2,0,2],[2,0,1],[0,0,2],[3,0,2],[3,1,1],[3,1,1],[2,0,1],[3,1,1],[3,1,1],[3,1,0],[3,1,1],[3,1,0],[0,0,2],[0,0,2],[0,0,2],[0,0,3],[0,0,2]]},{"m":["#########","#.###.#.#","#..#...r#","#....##.#","#.#.....#","#....#..#","##..#..##","#..Y..###","#..##...#","#....rB.#","#########"],"g":["r:4,4 5,4 6,4 7,4 7,5","r:2,8 2,9 1,9 1,8 1,7","b:1,1 1,2 2,2 2,3","y:5,2 4,2 4,3 3,3 3,4"],"opt":22,"s":[[3,1,2],[3,1,2],[3,1,2],[2,1,1],[2,1,2],[0,0,2],[0,1,0],[0,1,0],[2,1,1],[2,1,1],[2,1,1],[2,1,2],[2,1,2],[2,1,3],[2,1,2],[2,1,2],[2,1,1],[2,1,2],[1,1,1],[1,0,1],[1,0,1],[1,0,1]]},{"m":["#########","#...r.###","#.#.#.#D#","#.....k.#","###...#G#","#...#..r#","##......#","##......#","###.....#","####.Y#.#","#########"],"g":["r:7,7 7,8 6,8 6,7","g:5,7 4,7 3,7 2,7 2,6","r:4,3 4,4 3,4 3,3","y:3,1 2,1 1,1 1,2 1,3 2,3"],"opt":22,"s":[[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,1],[1,0,1],[1,0,2],[2,0,1],[3,1,1],[2,0,0],[3,1,2],[3,1,2],[3,1,2],[3,1,2],[3,1,2],[3,1,1],[3,1,2],[3,1,1],[2,0,0],[2,0,3],[0,0,0],[0,0,0]]},{"m":["##########","#......r##","#..#....##","#......#.#","#.....#.O#","#........#","#....b#..#","#.#.#...##","#........#","##.##r...#","###...b..#","##########"],"g":["r:4,3 4,2 4,1 5,1 6,1","r:1,5 1,4 1,3 1,2 1,1 2,1 2,2","b:3,8 3,7 3,6 4,6 4,5 5,5 5,4","b:6,7 7,7 7,6 8,6 8,5","o:2,4 2,3 3,3 3,4 3,5 2,5 2,6"],"opt":22,"s":[[2,0,3],[2,1,2],[4,1,1],[4,1,1],[1,0,2],[1,0,2],[1,0,2],[4,1,0],[4,1,1],[4,1,1],[4,1,1],[4,1,0],[4,1,1],[3,0,2],[3,0,2],[3,0,2],[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,0,2],[0,1,1]]},{"m":["#########","#G..k..##","#D##....#","#....#..#","#...#..B#","#....#..#","#.......#","#.#.##..#","#...#...#","#R..Y.#.#","#########"],"g":["r:2,6 3,6 4,6 4,5","g:3,5 3,4 2,4 2,3 3,3 4,3","b:5,6 6,6 7,6 7,7 7,8","y:4,2 5,2 5,1 6,1"],"opt":23,"s":[[3,1,2],[1,1,0],[1,1,0],[1,1,3],[1,1,3],[1,1,3],[3,1,2],[3,1,2],[3,1,2],[2,1,3],[2,1,3],[3,1,2],[3,1,2],[2,0,0],[2,0,0],[3,1,2],[3,1,3],[3,1,2],[3,1,3],[0,0,3],[0,0,2],[0,0,2],[0,0,2]]},{"m":["#########","##k#.#..#","#G...#..#","#R...#..#","#B......#","#.....#.#","#.......#","###.....#","#D...Y..#","#########"],"g":["r:7,7 7,6 6,6 5,6","g:6,2 6,3 7,3 7,4 6,4","b:2,8 3,8 3,7","y:3,2 3,3 3,4 2,4"],"opt":26,"s":[[0,1,0],[0,1,3],[0,1,3],[0,1,3],[1,1,3],[1,1,3],[3,0,3],[2,1,0],[2,1,3],[2,1,3],[2,1,0],[2,1,0],[1,1,0],[1,1,0],[0,1,0],[0,1,0],[0,1,3],[3,1,2],[3,1,2],[3,1,2],[3,1,2],[3,1,1],[3,1,1],[1,1,3],[1,1,3],[1,1,3]]},{"m":["##########","#R...#k..#","#...#D...#","##..##.#.#","#....###G#","#........#","###......#","#....#...#","##.......#","#........#","#B..#....#","##########"],"g":["r:8,7 8,8 8,9 7,9 7,8 7,7","g:8,5 7,5 7,6 6,6 5,6 5,5","b:6,10 6,9 6,8 6,7","r:4,5 4,4 3,4 3,3 2,3 2,2 2,1","g:5,8 4,8 4,9 3,9 3,8 3,7 4,7"],"opt":28,"s":[[1,0,0],[0,1,0],[0,1,0],[0,1,3],[0,1,3],[2,1,0],[2,0,3],[4,1,0],[4,1,1],[4,1,1],[3,1,3],[2,0,3],[0,1,3],[0,1,3],[0,1,3],[4,1,1],[4,1,1],[4,1,0],[4,1,0],[2,0,3],[2,0,3],[2,0,3],[2,0,2],[0,1,0],[0,1,0],[0,1,0],[0,1,3],[0,1,0]]},{"m":["##########","#........#","#......Y.#","#......#.#","##....#..#","##.k.....#","##.....O.#","#B.....#D#","##G.R#..##","#......###","###..#.###","##########"],"g":["r:3,4 4,4 5,4 5,3 6,3 6,2","g:6,6 5,6 4,6 4,5","b:3,9 3,10 4,10 4,9 5,9 6,9 6,8","y:3,1 3,2 2,2 2,3","o:5,1 4,1 4,2 4,3 3,3","o:6,1 7,1 8,1 8,2 8,3 8,4 7,4"],"opt":28,"s":[[5,1,2],[5,1,2],[4,0,2],[3,1,3],[2,0,0],[2,0,0],[2,0,3],[2,0,3],[1,1,3],[1,1,3],[1,1,2],[1,1,2],[1,1,2],[0,1,0],[0,0,2],[0,0,2],[0,0,2],[0,0,2],[4,1,2],[4,1,2],[4,1,2],[4,1,1],[4,1,1],[4,1,1],[3,0,1],[3,0,1],[3,0,1],[3,0,1]]},{"m":["##########","#....#.#.#","###......#","#..G..#.##","#..#.....#","#.....#..#","#..R#...##","#......###","#.#.....##","##......##","####.##..#","##########"],"g":["r:1,7 2,7 3,7 4,7 4,8 5,8 5,7","g:1,6 2,6 2,5 1,5","g:4,10 4,9 5,9 6,9 6,8 6,7 6,6","r:6,4 5,4 4,4 4,3","g:8,5 8,4 7,4 7,3 7,2 8,2 8,1","g:4,1 3,1 3,2 4,2 5,2 5,3"],"opt":30,"s":[[2,1,3],[2,1,0],[2,1,3],[2,1,3],[1,1,0],[1,1,0],[1,1,1],[2,1,3],[2,1,0],[4,0,3],[4,0,2],[1,1,1],[2,1,0],[4,0,3],[2,1,1],[0,1,1],[0,1,2],[4,0,3],[4,0,0],[3,0,1],[5,1,3],[5,1,3],[3,1,2],[3,1,3],[3,1,2],[4,0,3],[4,0,0],[4,0,0],[4,0,3],[0,0,0]]},{"m":["##########","#...D....#","##..#....#","#........#","#....#..B#","#..#.....#","#........#","#....#..##","#.#......#","#.R....Y##","#kG....###","##########"],"g":["r:3,7 4,7 4,8 3,8 3,9","g:3,4 3,3 2,3 1,3 1,4 1,5 1,6","b:6,10 5,10 4,10 4,9 5,9","y:5,6 5,5 4,5 4,6","g:8,3 8,2 8,1 7,1 7,2"],"opt":32,"s":[[4,1,3],[4,1,3],[4,1,2],[4,1,3],[4,1,2],[3,0,1],[3,0,2],[4,1,2],[4,1,2],[4,1,3],[3,0,2],[3,0,2],[3,0,1],[2,1,1],[2,1,0],[2,1,1],[2,1,0],[2,1,0],[2,1,1],[2,1,0],[2,1,0],[1,1,2],[1,1,2],[1,1,2],[1,1,2],[1,1,1],[0,1,3],[4,1,2],[4,1,2],[4,1,2],[4,1,2],[4,1,3]]},{"m":["##########","#....#..Y#","#..#.##..#","#......R.#","#......#.#","#........#","#O.#.#.#B#","#....G.#.#","#.#..#...#","##..#.####","###......#","##########"],"g":["r:4,3 5,3 6,3 6,4 6,5 5,5 5,4","g:1,8 1,7 2,7 2,6 2,5 2,4","b:7,5 8,5 8,4 8,3 8,2","y:4,5 4,4 3,4 3,3","o:4,1 3,1 2,1 2,2 2,3 1,3","y:3,9 3,8 4,8 4,7 4,6"],"opt":32,"s":[[4,1,2],[4,1,2],[0,0,0],[0,0,0],[0,0,3],[3,0,1],[3,0,1],[4,1,2],[2,1,3],[3,0,1],[2,0,2],[3,0,1],[5,1,0],[3,0,0],[5,1,1],[3,0,0],[5,1,1],[3,0,0],[5,1,1],[3,0,0],[5,1,1],[5,1,0],[5,1,0],[5,1,0],[5,1,0],[1,1,3],[1,1,2],[1,0,1],[1,0,1],[1,0,1],[0,0,3],[0,1,1]]},{"m":["##########","#...#.#..#","#G.......#","#.#Y##..##","##Rk.....#","##.......#","##.#....##","#B..#....#","#.#D#.#..#","#..##....#","#.....#..#","##########"],"g":["r:6,9 5,9 5,10 4,10","g:7,8 8,8 8,7 7,7","b:8,4 8,5 7,5 7,6 6,6 6,5 5,5","y:5,6 4,6 4,5 4,4","b:5,4 6,4 6,3 7,3 7,2 8,2"],"opt":35,"s":[[0,1,3],[0,0,0],[0,0,0],[3,1,3],[3,1,0],[4,0,3],[4,0,3],[4,0,2],[4,0,3],[4,0,2],[4,0,2],[4,0,3],[2,1,3],[2,1,3],[2,1,3],[2,1,2],[2,1,2],[2,1,3],[1,1,3],[1,1,0],[1,1,0],[1,1,0],[1,1,0],[1,1,0],[1,1,3],[1,1,3],[1,1,3],[1,1,3],[1,1,3],[0,0,0],[0,0,3],[0,0,0],[0,0,3],[0,0,3],[0,0,0]]},{"m":["##########","#.R...#..#","#.....#..#","#P.....y##","#......#.#","##.#.....#","##....##.#","#......###","##....#..#","#........#","#B..#y...#","##########"],"g":["r:4,1 4,2 4,3 4,4 3,4 3,3","r:6,9 6,10 7,10 7,9 8,9","b:3,6 3,7 4,7 4,6 5,6","y:8,4 8,5 7,5 6,5 6,4 6,3","y:2,9 2,8 2,7 2,6","p:3,8 3,9 3,10 2,10"],"opt":35,"s":[[4,1,0],[5,1,0],[4,0,1],[4,0,1],[4,0,2],[4,0,1],[5,1,0],[5,1,0],[5,1,0],[5,1,0],[5,1,0],[5,1,3],[5,1,0],[4,0,2],[3,1,1],[2,1,2],[2,0,3],[2,0,2],[2,0,2],[2,0,3],[2,0,2],[1,0,3],[1,0,3],[1,0,3],[1,0,3],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[0,0,3],[0,0,3]]},{"m":["##########","#........#","#.#......#","#........#","##......##","#........#","#B.##...##","##..#....#","###.#.#R.#","###...####","###.G#####","##########"],"g":["r:7,1 7,2 8,2 8,3","g:7,7 7,6 6,6 6,5 5,5","b:2,6 2,5 3,5 4,5 4,4 5,4 6,4","g:8,5 7,5 7,4 7,3 6,3","g:1,2 1,1 2,1 3,1","b:3,10 3,9 3,8 3,7 2,7"],"opt":35,"s":[[1,0,3],[1,0,3],[1,0,2],[1,0,2],[1,0,3],[4,0,2],[4,0,1],[4,0,2],[3,1,3],[3,0,3],[3,0,3],[3,0,2],[2,0,3],[5,1,0],[5,1,3],[4,0,2],[4,0,2],[4,0,2],[4,0,1],[4,0,2],[4,0,2],[4,0,2],[4,0,1],[1,0,2],[3,0,2],[3,0,2],[3,0,2],[3,0,3],[3,0,2],[0,1,3],[0,1,2],[0,1,2],[0,1,2],[0,1,2],[0,1,2]]},{"m":["##########","#....#..R#","#...##...#","#........#","#B......##","#G.......#","#.##.....#","#........#","#........#","#..#..#..#","##.#....Y#","##########"],"g":["r:7,10 7,9 8,9 8,8 7,8 6,8 5,8","g:2,8 1,8 1,7 2,7 3,7 4,7 4,6","b:4,9 5,9 5,10 6,10","y:4,3 3,3 2,3 2,2 3,2 3,1 4,1","y:8,6 7,6 7,7 6,7"],"opt":37,"s":[[4,0,2],[3,0,2],[3,0,2],[3,0,1],[3,0,2],[3,0,2],[2,0,0],[0,0,3],[3,0,2],[0,1,0],[0,1,0],[0,1,0],[0,1,1],[0,1,0],[4,0,2],[4,0,2],[4,0,2],[0,1,0],[0,1,1],[3,0,1],[3,0,1],[3,0,2],[3,0,2],[3,0,1],[1,1,1],[1,1,2],[1,0,0],[1,0,0],[2,0,0],[2,0,0],[2,0,0],[2,0,3],[2,0,3],[2,0,0],[2,0,3],[0,1,0],[0,1,0]]},{"m":["##########","#...B....#","####.....#","#........#","##.....###","#......#.#","##O#.....#","#G.......#","##..#....#","#.#..R...#","#.Y..#..##","##########"],"g":["r:6,5 5,5 4,5 3,5 3,4","g:8,3 8,2 8,1 7,1 7,2","b:8,6 8,7 7,7 7,8","y:6,2 6,1 5,1 5,2 5,3","o:4,7 4,6 5,6 6,6 6,7"],"opt":38,"s":[[4,0,3],[4,0,3],[4,0,0],[3,1,3],[3,1,2],[2,0,3],[2,0,3],[1,1,3],[1,1,2],[1,1,2],[1,1,3],[0,1,3],[2,0,0],[0,0,2],[0,0,2],[0,0,2],[0,0,2],[3,1,2],[3,1,2],[3,1,2],[3,1,3],[3,1,2],[3,1,2],[3,1,2],[3,1,3],[2,0,3],[2,0,3],[2,0,0],[2,0,0],[2,0,0],[2,0,0],[1,1,3],[1,1,2],[1,1,2],[1,1,2],[1,1,3],[1,1,3],[1,1,3]]},{"m":["##########","#.....##Y#","#.#...#..#","#.#..##..#","#Or....#.#","#..#.....#","##...##.r#","#.P......#","#.#......#","#........#","#.#.#.B#.#","##########"],"g":["r:6,5 6,4 5,4 4,4 4,3 4,2 5,2","r:3,4 3,3 3,2 3,1 2,1","b:1,10 1,9 2,9 3,9 3,8 4,8","y:3,7 3,6 2,6 2,5","o:7,8 8,8 8,9 7,9","p:8,2 7,2 7,3 8,3 8,4"],"opt":38,"s":[[0,0,1],[0,0,1],[3,1,3],[3,0,1],[4,0,3],[4,0,3],[4,0,0],[4,0,3],[4,0,3],[3,0,0],[3,0,1],[2,1,2],[2,1,1],[2,1,2],[2,1,1],[1,0,3],[0,0,2],[5,1,2],[5,1,3],[5,1,2],[5,1,2],[5,1,3],[3,0,1],[4,0,0],[4,0,3],[5,1,3],[4,0,0],[5,1,3],[4,0,3],[5,1,3],[5,1,3],[4,0,0],[3,0,1],[3,0,1],[3,0,0],[3,0,0],[3,0,0],[3,0,0]]}]/*ENDLEVELS*/;
+  /*ENDCORE*/
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = GeckoCore;
+    var store = H.store('geckoout');
+    var CS = 48, PAD = 10, MAX_CELL = 110;
+    var PALETTE = {
+      r: { main: '#ef5a5a', dark: '#a93232', light: '#ffb0a8' },
+      g: { main: '#5fcf6a', dark: '#2e8a3a', light: '#c6ffb8' },
+      b: { main: '#4fb5f0', dark: '#1f6ea8', light: '#bfe9ff' },
+      y: { main: '#f4d03f', dark: '#b08d12', light: '#fff5b0' },
+      o: { main: '#f59a3c', dark: '#b05a10', light: '#ffd7a8' },
+      p: { main: '#b57df0', dark: '#6e3bb0', light: '#e5ccff' }
+    };
+
+    var lvIndex = 0, L = null, S = null, moves = 0, undoStack = [];
+    var stars = store.get('stars', []);
+    var busy = false, won = false;
+    var geckos = [];        // 描画用: {c, segs:[{x,y}], len, sink:null|{hole,done}}
+    var drag = null, sel = null, hint = null, hintT = 0;
+    var overlayEl = null;
+    var canvas = document.getElementById('cv'), stage = document.getElementById('stage');
+    var ctx = null, scale = 1, baseW = 100, baseH = 100;
+
+    function layout() {
+      if (!L) return;
+      baseW = L.vw * CS + PAD * 2; baseH = L.vh * CS + PAD * 2;
+      // 空きいっぱいに。1 マスの上限は MAX_CELL だが、上限で空きの 85% を切るなら 88% を優先
+      var f = H.fitStage(stage, baseW, baseH);
+      var cap = MAX_CELL / CS;
+      if (f.scale > cap) f = H.fitStage(stage, baseW, baseH, { maxScale: Math.max(cap, f.scale * 0.88) });
+      ctx = H.setupCanvas(canvas, f.width, f.height);
+      scale = f.scale;
+      ctx.scale(scale, scale);
+      draw();
+    }
+    H.onResize(layout);
+    function toBase(cx, cy) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (cx - r.left) / r.width * baseW, y: (cy - r.top) / r.height * baseH };
+    }
+    function cellAt(cx, cy) {
+      var p = toBase(cx, cy);
+      var x = Math.floor((p.x - PAD) / CS) + L.ox, y = Math.floor((p.y - PAD) / CS) + L.oy;
+      if (x < L.ox || y < L.oy || x >= L.ox + L.vw || y >= L.oy + L.vh) return -1;
+      return y * L.w + x;
+    }
+    function cx(idx) { return PAD + (idx % L.w - L.ox) * CS + CS / 2; }
+    function cy(idx) { return PAD + (Math.floor(idx / L.w) - L.oy) * CS + CS / 2; }
+    function viewBox(Lv) {
+      var x0 = Lv.w, y0 = Lv.h, x1 = -1, y1 = -1;
+      for (var i = 0; i < Lv.w * Lv.h; i++) {
+        if (Lv.wall[i]) continue;
+        var x = i % Lv.w, y = Math.floor(i / Lv.w);
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      if (x1 < 0) { x0 = 0; y0 = 0; x1 = Lv.w - 1; y1 = Lv.h - 1; }
+      Lv.ox = x0; Lv.oy = y0; Lv.vw = x1 - x0 + 1; Lv.vh = y1 - y0 + 1;
+    }
+
+    // ---------- 面の読み込み ----------
+    function loadLevel(i) {
+      if (i < 0 || i >= LEVELS.length) return;
+      closeOverlay();
+      lvIndex = i; store.set('last', i);
+      L = C.parse(LEVELS[i]); viewBox(L); S = C.initState(L);
+      buildSolutionKeys();
+      moves = 0; undoStack = []; busy = false; won = false; drag = null; sel = null; hint = null;
+      geckos = L.geckos.map(function (gk) {
+        return { c: gk.c, segs: gk.cells.map(function (ci) { return { x: cx(ci), y: cy(ci) }; }), sink: null, alive: true };
+      });
+      hud(); layout();
+    }
+    function hud() {
+      document.getElementById('level').textContent = lvIndex + 1;
+      document.getElementById('moves').textContent = moves;
+      document.getElementById('opt').textContent = L ? L.opt : 0;
+      var n = 0;
+      if (S) for (var i = 0; i < S.g.length; i++) if (S.g[i]) n++;
+      document.getElementById('left').textContent = n;
+    }
+    function starsFor(m, opt) {
+      if (m <= Math.ceil(opt * 1.15) + 1) return 3;
+      if (m <= Math.ceil(opt * 1.6) + 3) return 2;
+      return 1;
+    }
+
+    // ---------- 1 歩 ----------
+    function step(gi, end, dir) {
+      var r = C.apply(L, S, gi, end, dir);
+      if (!r) return false;
+      var prevUsed = S.used;
+      S = r.S; moves++; hint = null;
+      var g = geckos[gi];
+      if (r.enter) {
+        g.sink = { hole: r.to, t: 0 };
+        H.audio.good();
+      } else {
+        if (end === 0) { g.segs.pop(); g.segs.unshift({ x: g.segs[0].x, y: g.segs[0].y }); }
+        else { g.segs.shift(); g.segs.push({ x: g.segs[g.segs.length - 1].x, y: g.segs[g.segs.length - 1].y }); }
+        if (L.key[r.to] && !prevUsed[r.to] && S.used[r.to]) { H.audio.beep(900, 0.15); H.toast('扉が開いた'); }
+      }
+      hud();
+      return true;
+    }
+    // 端から目標マスへ最短経路(現在の占有で)。見つかれば最初の方向
+    function planDir(gi, end, target) {
+      var c = S.g[gi];
+      var lead = end === 0 ? c[0] : c[c.length - 1];
+      if (lead === target) return -1;
+      var prev = {}; prev[lead] = -1;
+      var q = [lead], h = 0, firstDir = {};
+      while (h < q.length) {
+        var cur = q[h++];
+        for (var d = 0; d < 4; d++) {
+          var x = cur % L.w + C.DIRS[d][0], y = Math.floor(cur / L.w) + C.DIRS[d][1];
+          if (x < 0 || y < 0 || x >= L.w || y >= L.h) continue;
+          var to = y * L.w + x;
+          if (prev[to] !== undefined) continue;
+          var hole = L.hole[to];
+          if (L.wall[to] || (L.door[to] && !S.door)) continue;
+          if (hole && (hole.c !== L.geckos[gi].c || (hole.once && S.used[to]) || to !== target)) continue;
+          var occ = false;
+          for (var k = 0; k < S.g.length && !occ; k++) {
+            var cc = S.g[k];
+            if (!cc) continue;
+            for (var j = 0; j < cc.length; j++) if (cc[j] === to) { occ = true; break; }
+          }
+          if (occ) continue;
+          prev[to] = cur; firstDir[to] = cur === lead ? d : firstDir[cur];
+          if (to === target) return firstDir[to];
+          if (hole) continue;
+          q.push(to);
+        }
+      }
+      return -1;
+    }
+    function pullTo(target) {
+      if (!drag || busy || won) return;
+      var gi = drag.gi, end = drag.end;
+      for (var n = 0; n < 12; n++) {
+        if (!S.g[gi]) break;
+        var d = planDir(gi, end, target);
+        if (d < 0) break;
+        if (!step(gi, end, d)) break;
+        drag.changed = true;
+        if (!S.g[gi]) break;
+      }
+      afterMove();
+    }
+    function afterMove() {
+      if (C.isWin(S)) { won = true; setTimeout(showClear, 650); return; }
+      if (C.moves(L, S).length === 0) setTimeout(showStuck, 300);
+    }
+    function pushUndo(prev) {
+      undoStack.push({ S: prev.S, moves: prev.moves });
+    }
+    function snapshot() { return { S: S, moves: moves }; }
+    function restore(sn) {
+      S = sn.S; moves = sn.moves; hint = null; won = false;
+      for (var i = 0; i < geckos.length; i++) {
+        var c = S.g[i], g = geckos[i];
+        if (!c) { g.alive = false; continue; }
+        g.alive = true; g.sink = null;
+        g.segs = c.map(function (ci) { return { x: cx(ci), y: cy(ci) }; });
+      }
+      hud();
+    }
+    function undo() {
+      if (busy && !won) return;
+      if (!undoStack.length) { H.toast('戻す手がありません'); return; }
+      closeOverlay();
+      restore(undoStack.pop());
+      busy = false;
+      H.audio.click();
+    }
+    function restart() {
+      closeOverlay();
+      if (moves > 0) pushUndo(snapshot());
+      restore({ S: C.initState(L), moves: 0 });
+      undoStack = []; busy = false;
+    }
+    // 焼いてある最短解の途中状態 → 次の手
+    var solKeys = {};
+    function buildSolutionKeys() {
+      solKeys = {};
+      var sol = LEVELS[lvIndex].s;
+      if (!sol) return;
+      var T = C.initState(L);
+      for (var i = 0; i < sol.length; i++) {
+        solKeys[C.key(T)] = { gi: sol[i][0], end: sol[i][1], dir: sol[i][2] };
+        var r = C.apply(L, T, sol[i][0], sol[i][1], sol[i][2]);
+        if (!r) break;
+        T = r.S;
+      }
+    }
+    // Worker(Blob で CORE を読み込む)。無ければ null
+    var worker = null, workerFailed = false, pending = null;
+    function coreSource() {
+      var scripts = document.getElementsByTagName('script');
+      for (var i = 0; i < scripts.length; i++) {
+        var t = scripts[i].textContent || '';
+        var a = t.indexOf('/*CORE*/'), b = t.indexOf('/*ENDCORE*/');
+        if (a >= 0 && b > a) return t.slice(a, b);
+      }
+      return null;
+    }
+    function getWorker() {
+      if (worker || workerFailed) return worker;
+      try {
+        if (!window.Worker || !window.Blob || !window.URL || !window.URL.createObjectURL) { workerFailed = true; return null; }
+        var src = coreSource();
+        if (!src) { workerFailed = true; return null; }
+        src += '\nself.onmessage = function (e) { var d = e.data; var L = GeckoCore.parse(d.def); var r = GeckoCore.solve(L, d.S, d.budget); if (r.status === "budget") r = GeckoCore.solve(L, d.S, d.budget, 4); self.postMessage({ id: d.id, status: r.status, mv: r.path && r.path.length ? r.path[0] : null }); };';
+        var url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+        worker = new Worker(url);
+        worker.onmessage = function (e) { onHintResult(e.data); };
+        worker.onerror = function () { workerFailed = true; try { worker.terminate(); } catch (er) { /* ignore */ } worker = null; if (pending) { var p = pending; pending = null; hintSync(p.S); } };
+      } catch (e) { workerFailed = true; worker = null; }
+      return worker;
+    }
+    var hintSeq = 0;
+    function onHintResult(d) {
+      if (!pending || d.id !== pending.id) return;
+      var p = pending; pending = null;
+      if (C.key(S) !== p.key) return;   // 計算中に動かした
+      applyHint(d.status, d.mv);
+    }
+    function applyHint(status, mv) {
+      if (status === 'ok' && mv) { hint = mv; hintT = 0; H.toast('光っている方へ 1 マス'); }
+      else if (status === 'none') showStuck(true);
+      else H.toast('この形は読み切れません。戻すか、やり直しを');
+    }
+    function hintSync(S0) {
+      var r = C.solve(L, S0, 250000);
+      if (r.status === 'budget') r = C.solve(L, S0, 250000, 4);
+      if (C.key(S) !== C.key(S0)) return;
+      applyHint(r.status, r.path && r.path.length ? r.path[0] : null);
+    }
+    function showHint() {
+      if (busy || won) return;
+      var k = C.key(S);
+      if (solKeys[k]) { hint = solKeys[k]; hintT = 0; H.toast('光っている方へ 1 マス'); return; }
+      if (pending) { H.toast('考え中…'); return; }
+      var w = getWorker();
+      if (w) {
+        pending = { id: ++hintSeq, key: k, S: S };
+        H.toast('考え中…', 4000);
+        w.postMessage({ id: pending.id, def: LEVELS[lvIndex], S: S, budget: 250000 });
+      } else {
+        H.toast('考え中…');
+        var S0 = S;
+        setTimeout(function () { hintSync(S0); }, 30);
+      }
+    }
+
+    // ---------- 入力 ----------
+    function grabAt(idx) {
+      for (var gi = 0; gi < S.g.length; gi++) {
+        var c = S.g[gi];
+        if (!c) continue;
+        if (c[0] === idx) return { gi: gi, end: 0 };
+        if (c[c.length - 1] === idx) return { gi: gi, end: 1 };
+        for (var j = 1; j < c.length - 1; j++) if (c[j] === idx) return { gi: gi, end: j * 2 < c.length ? 0 : 1 };
+      }
+      return null;
+    }
+    function onDown(x, y) {
+      if (busy || won || !L) return;
+      var idx = cellAt(x, y);
+      if (idx < 0) return;
+      var g = grabAt(idx);
+      if (!g) { drag = null; return; }
+      drag = { gi: g.gi, end: g.end, changed: false, prev: snapshot() };
+      sel = { gi: g.gi, end: g.end };
+      H.audio.click();
+    }
+    function onMove(x, y) {
+      if (!drag) return;
+      var idx = cellAt(x, y);
+      if (idx < 0) return;
+      pullTo(idx);
+    }
+    function onUp() {
+      if (!drag) return;
+      if (drag.changed) pushUndo(drag.prev);
+      drag = null;
+    }
+    if (window.PointerEvent) {
+      canvas.addEventListener('pointerdown', function (e) { if (e.pointerType === 'mouse' && e.button !== 0) return; try { canvas.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ } onDown(e.clientX, e.clientY); });
+      canvas.addEventListener('pointermove', function (e) { onMove(e.clientX, e.clientY); });
+      canvas.addEventListener('pointerup', onUp);
+      canvas.addEventListener('pointercancel', onUp);
+    } else {
+      canvas.addEventListener('touchstart', function (e) { var t = e.touches[0]; if (t) onDown(t.clientX, t.clientY); }, { passive: true });
+      canvas.addEventListener('touchmove', function (e) { var t = e.touches[0]; if (t) onMove(t.clientX, t.clientY); }, { passive: true });
+      canvas.addEventListener('touchend', onUp);
+      canvas.addEventListener('mousedown', function (e) { onDown(e.clientX, e.clientY); });
+      canvas.addEventListener('mousemove', function (e) { if (e.buttons) onMove(e.clientX, e.clientY); });
+      canvas.addEventListener('mouseup', onUp);
+    }
+    function keyMove(d) {
+      if (busy || won || !sel || !S.g[sel.gi]) return;
+      var prev = snapshot();
+      if (step(sel.gi, sel.end, d)) { pushUndo(prev); afterMove(); }
+      else H.audio.bad();
+    }
+    H.keys({
+      ArrowUp: function () { keyMove(0); }, ArrowRight: function () { keyMove(1); },
+      ArrowDown: function () { keyMove(2); }, ArrowLeft: function () { keyMove(3); },
+      z: undo, Z: undo, h: showHint, H: showHint, r: restart, R: restart,
+      Tab: function () {
+        var alive = [];
+        for (var i = 0; i < S.g.length; i++) if (S.g[i]) alive.push(i);
+        if (!alive.length) return;
+        var cur = sel ? alive.indexOf(sel.gi) : -1;
+        sel = { gi: alive[(cur + 1) % alive.length], end: 0 };
+      }
+    });
+    H.holdButton(document.getElementById('btn-undo'), undo, null, 250);
+    H.holdButton(document.getElementById('btn-hint'), showHint);
+    H.holdButton(document.getElementById('btn-restart'), function () { H.audio.click(); restart(); });
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); showLevels(); });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+
+    // ---------- 画面 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function starHtml(n) {
+      var s = '';
+      for (var i = 0; i < 3; i++) s += i < n ? '★' : '<span class="off">★</span>';
+      return '<span class="stars">' + s + '</span>';
+    }
+    function showClear() {
+      busy = true;
+      var st = starsFor(moves, L.opt);
+      if (!stars[lvIndex] || stars[lvIndex] < st) { stars[lvIndex] = st; store.set('stars', stars); }
+      H.audio.win();
+      var last = lvIndex >= LEVELS.length - 1;
+      var html = starHtml(st) + '<br><span class="sub">' + moves + ' 手（最短 ' + L.opt + ' 手）</span>';
+      var buttons = [];
+      if (!last) buttons.push({ label: '次の面', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; loadLevel(lvIndex); } });
+      buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+      overlayEl = H.overlay({ title: last ? '全面クリア!' : 'クリア!', html: html, buttons: buttons });
+    }
+    function showStuck(unsolvable) {
+      closeOverlay();
+      H.audio.bad();
+      overlayEl = H.overlay({ title: '手がありません', html: unsolvable ? 'この形からは全部入れられません。' : '動かせるヤモリがいません。',
+        buttons: [{ label: '戻す', onClick: function () { overlayEl = null; undo(); } },
+                  { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+    }
+    function showLevels() {
+      closeOverlay();
+      var n = 0, i;
+      for (i = 0; i < LEVELS.length; i++) if (stars[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + LEVELS.length + ' 面</span><br><span class="lv-grid">';
+      for (i = 0; i < LEVELS.length; i++) {
+        var st = stars[i] || 0, s = '';
+        for (var k = 0; k < st; k++) s += '★';
+        html += '<button type="button" class="lv-btn' + (st ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + (st ? '<span class="st">' + s + '</span>' : '') + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html, buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv scrollable';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click(); loadLevel(idx);
+        });
+      }
+    }
+    window.resetGame = function () { restart(); };
+
+    // ---------- 描画 ----------
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function drawBoard() {
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, baseW, baseH);
+      for (var idx = 0; idx < L.w * L.h; idx++) {
+        if (L.wall[idx]) continue;
+        var x = cx(idx) - CS / 2, y = cy(idx) - CS / 2;
+        ctx.fillStyle = '#2a2a4a';
+        rrect(x + 1.5, y + 1.5, CS - 3, CS - 3, 6); ctx.fill();
+        ctx.fillStyle = '#34345a';
+        rrect(x + 1.5, y + 1.5, CS - 3, CS - 8, 6); ctx.fill();
+        if (L.door[idx]) {
+          if (S.door) {
+            ctx.strokeStyle = 'rgba(245,176,65,0.45)'; ctx.lineWidth = 3; ctx.setLineDash([5, 5]);
+            rrect(x + 5, y + 5, CS - 10, CS - 10, 6); ctx.stroke(); ctx.setLineDash([]);
+          } else {
+            ctx.fillStyle = '#7a5a2a'; rrect(x + 3, y + 3, CS - 6, CS - 6, 6); ctx.fill();
+            ctx.fillStyle = '#a97c3a'; rrect(x + 3, y + 3, CS - 6, CS - 12, 6); ctx.fill();
+            ctx.font = '22px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('🔒', x + CS / 2, y + CS / 2 + 1);
+          }
+        }
+        if (L.key[idx] && !S.used[idx]) {
+          ctx.font = '26px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('🔑', x + CS / 2, y + CS / 2 + 1);
+        }
+        var hole = L.hole[idx];
+        if (hole) {
+          var pal = PALETTE[hole.c], used = hole.once && S.used[idx];
+          ctx.beginPath(); ctx.arc(x + CS / 2, y + CS / 2, CS * 0.40, 0, Math.PI * 2);
+          ctx.fillStyle = used ? '#3a3a55' : pal.main; ctx.fill();
+          if (hole.once && !used) { ctx.setLineDash([4, 4]); ctx.lineWidth = 2.5; ctx.strokeStyle = pal.light; ctx.stroke(); ctx.setLineDash([]); }
+          ctx.beginPath(); ctx.arc(x + CS / 2, y + CS / 2, CS * 0.28, 0, Math.PI * 2);
+          ctx.fillStyle = used ? '#2a2a40' : '#101020'; ctx.fill();
+          if (used) { ctx.strokeStyle = '#5a5a75'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + CS * 0.35, y + CS * 0.35); ctx.lineTo(x + CS * 0.65, y + CS * 0.65); ctx.moveTo(x + CS * 0.65, y + CS * 0.35); ctx.lineTo(x + CS * 0.35, y + CS * 0.65); ctx.stroke(); }
+        }
+      }
+    }
+    function drawGecko(gi, now) {
+      var g = geckos[gi];
+      if (!g.alive) return;
+      var pal = PALETTE[g.c], segs = g.segs, n = segs.length, i;
+      var shrink = 1;
+      if (g.sink) shrink = Math.max(0, 1 - g.sink.t);
+      if (shrink <= 0) return;
+      var bw = CS * 0.62 * shrink;
+      var selected = sel && sel.gi === gi && !g.sink;
+      // 影 + 縁
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      function path() {
+        ctx.beginPath(); ctx.moveTo(segs[0].x, segs[0].y);
+        for (i = 1; i < n; i++) ctx.lineTo(segs[i].x, segs[i].y);
+      }
+      if (n === 1) { ctx.beginPath(); ctx.arc(segs[0].x, segs[0].y, 1, 0, 7); }
+      path(); ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = bw + 6; ctx.stroke();
+      path(); ctx.strokeStyle = selected ? '#ffffff' : pal.dark; ctx.lineWidth = bw + 4; ctx.stroke();
+      path(); ctx.strokeStyle = pal.main; ctx.lineWidth = bw; ctx.stroke();
+      // 背中のハイライト
+      path(); ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = bw * 0.35; ctx.stroke();
+      // 模様(色ごと)
+      var pat = 'rgbyop'.indexOf(g.c) % 3;
+      for (i = 1; i < n - 1; i++) {
+        var s = segs[i];
+        ctx.fillStyle = pal.dark;
+        if (pat === 0) { ctx.beginPath(); ctx.arc(s.x, s.y, bw * 0.16, 0, Math.PI * 2); ctx.fill(); }
+        else if (pat === 1) {
+          var dx = segs[i - 1].x - s.x, dy = segs[i - 1].y - s.y, len = Math.sqrt(dx * dx + dy * dy) || 1;
+          dx /= len; dy /= len;
+          ctx.strokeStyle = pal.dark; ctx.lineWidth = 3 * shrink; ctx.beginPath();
+          ctx.moveTo(s.x - dy * bw * 0.22 - dx * bw * 0.12, s.y + dx * bw * 0.22 - dy * bw * 0.12);
+          ctx.lineTo(s.x + dx * bw * 0.16, s.y + dy * bw * 0.16);
+          ctx.lineTo(s.x + dy * bw * 0.22 - dx * bw * 0.12, s.y - dx * bw * 0.22 - dy * bw * 0.12); ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.arc(s.x - bw * 0.18, s.y - bw * 0.12, bw * 0.1, 0, 7); ctx.arc(s.x + bw * 0.18, s.y + bw * 0.12, bw * 0.1, 0, 7); ctx.fill();
+        }
+      }
+      // 尻尾の先
+      if (n >= 2) {
+        var t = segs[n - 1], u = segs[n - 2];
+        var tx = t.x - u.x, ty = t.y - u.y, tl = Math.sqrt(tx * tx + ty * ty) || 1;
+        ctx.beginPath(); ctx.arc(t.x + tx / tl * bw * 0.25, t.y + ty / tl * bw * 0.25, bw * 0.28, 0, Math.PI * 2);
+        ctx.fillStyle = pal.main; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = pal.dark; ctx.stroke();
+      }
+      // 頭
+      var hd = segs[0], hx = 0, hy = -1;
+      if (n >= 2) { hx = hd.x - segs[1].x; hy = hd.y - segs[1].y; var hl = Math.sqrt(hx * hx + hy * hy) || 1; hx /= hl; hy /= hl; }
+      ctx.beginPath(); ctx.arc(hd.x, hd.y, bw * 0.66, 0, Math.PI * 2);
+      ctx.fillStyle = pal.main; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = selected ? '#ffffff' : pal.dark; ctx.stroke();
+      // 目(進行方向に向いて並ぶ)
+      var ex = -hy, ey = hx, eo = bw * 0.36, ef = bw * 0.18;
+      for (i = -1; i <= 1; i += 2) {
+        var px = hd.x + ex * eo * i + hx * ef, py = hd.y + ey * eo * i + hy * ef;
+        ctx.beginPath(); ctx.arc(px, py, bw * 0.2, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(px + hx * bw * 0.07, py + hy * bw * 0.07, bw * 0.1, 0, 7); ctx.fillStyle = '#1a1a2e'; ctx.fill();
+      }
+      // 手足(4 本の小さな点)
+      if (n >= 2 && shrink > 0.5) {
+        ctx.fillStyle = pal.dark;
+        var la = n > 2 ? 1 : 0, lb = n - 2;
+        [la, lb].forEach(function (k, j) {
+          if (k < 0 || k >= n || (j === 1 && lb === la)) return;
+          var s = segs[k], nx = segs[k + 1] || segs[k - 1];
+          var dx = nx.x - s.x, dy = nx.y - s.y, dl = Math.sqrt(dx * dx + dy * dy) || 1;
+          var ox = -dy / dl, oy = dx / dl;
+          ctx.beginPath(); ctx.arc(s.x + ox * bw * 0.62, s.y + oy * bw * 0.62, bw * 0.13, 0, 7); ctx.fill();
+          ctx.beginPath(); ctx.arc(s.x - ox * bw * 0.62, s.y - oy * bw * 0.62, bw * 0.13, 0, 7); ctx.fill();
+        });
+      }
+    }
+    function drawHint(now) {
+      if (!hint || !S.g[hint.gi]) return;
+      var c = S.g[hint.gi];
+      var lead = hint.end === 0 ? c[0] : c[c.length - 1];
+      var tx = lead % L.w + C.DIRS[hint.dir][0], ty = Math.floor(lead / L.w) + C.DIRS[hint.dir][1];
+      var pulse = 0.5 + 0.5 * Math.sin(now / 160);
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 + 0.5 * pulse) + ')'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(cx(lead), cy(lead), CS * 0.42 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
+      var ax = cx(ty * L.w + tx), ay = cy(ty * L.w + tx);
+      var dx = C.DIRS[hint.dir][0], dy = C.DIRS[hint.dir][1];
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.6 + 0.4 * pulse) + ')';
+      ctx.beginPath();
+      ctx.moveTo(ax + dx * 12, ay + dy * 12);
+      ctx.lineTo(ax - dx * 8 + dy * 10, ay - dy * 8 + dx * 10);
+      ctx.lineTo(ax - dx * 8 - dy * 10, ay - dy * 8 - dx * 10);
+      ctx.closePath(); ctx.fill();
+    }
+    function draw(now) {
+      if (!ctx || !L) return;
+      now = now || performance.now();
+      ctx.clearRect(0, 0, baseW, baseH);
+      drawBoard();
+      // 穴に入る途中のものを先に(下に)描く
+      for (var gi = 0; gi < geckos.length; gi++) if (geckos[gi].sink) drawGecko(gi, now);
+      for (gi = 0; gi < geckos.length; gi++) if (!geckos[gi].sink) drawGecko(gi, now);
+      drawHint(now);
+    }
+
+    // ---------- アニメ ----------
+    var last = performance.now();
+    function tick(now) {
+      var dt = Math.min(0.05, (now - last) / 1000); last = now;
+      var k = 1 - Math.pow(0.0005, dt);  // なめらかな追従
+      for (var gi = 0; gi < geckos.length; gi++) {
+        var g = geckos[gi];
+        if (!g.alive) continue;
+        var target = S.g[gi];
+        if (g.sink) {
+          var hx = cx(g.sink.hole), hy = cy(g.sink.hole);
+          g.sink.t += dt / (0.25 + g.segs.length * 0.09);
+          // 先頭から順に穴へ流れ込む
+          for (var i = 0; i < g.segs.length; i++) {
+            var s = g.segs[i], lead = i === 0 ? { x: hx, y: hy } : g.segs[i - 1];
+            var tx = i === 0 ? hx : lead.x, ty = i === 0 ? hy : lead.y;
+            var kk = 1 - Math.pow(0.0001, dt);
+            s.x += (tx - s.x) * kk; s.y += (ty - s.y) * kk;
+          }
+          if (g.sink.t >= 1) { g.alive = false; }
+          continue;
+        }
+        if (!target) { g.alive = false; continue; }
+        for (i = 0; i < target.length && i < g.segs.length; i++) {
+          var tx2 = cx(target[i]), ty2 = cy(target[i]);
+          g.segs[i].x += (tx2 - g.segs[i].x) * k; g.segs[i].y += (ty2 - g.segs[i].y) * k;
+        }
+      }
+      draw(now);
+      window.requestAnimationFrame(tick);
+    }
+    window.requestAnimationFrame(tick);
+
+    // ---------- 開始 ----------
+    var lastLv = store.get('last', 0);
+    if (lastLv >= LEVELS.length) lastLv = 0;
+    loadLevel(lastLv);
+    setTimeout(layout, 50);
+    setTimeout(layout, 400);
+    if (!stars.length && lastLv === 0) {
+      overlayEl = H.overlay({ title: 'ヤモリの穴', html: 'ヤモリの頭か尻尾を引っ張って<br>同じ色の穴へ入れよう',
+        buttons: [{ label: 'スタート', onClick: function () { overlayEl = null; } }] });
+    }
+  })();
+  </script>
+</body>
+</html>

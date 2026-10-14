@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>バス待ち - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .hud-item.tappable { cursor: pointer; padding: 2px 8px; border-radius: 8px; background: var(--panel); }
+    .hud-item.tappable b::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
+    .lv-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 44px);
+      gap: 6px;
+      justify-content: center;
+      padding: 2px;
+    }
+    .overlay.lv { overflow-y: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; gap: 8px; padding: 10px; }
+    .overlay.lv h2 { font-size: 20px; flex: 0 0 auto; }
+    .overlay.lv p, .overlay.lv .btn-row { flex: 0 0 auto; }
+    .lv-btn {
+      width: 44px; height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .lv-btn.done { background: rgba(46, 204, 113, 0.25); border-color: var(--ok); }
+    .lv-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 2px; font-size: 10px; color: var(--ok); }
+    .lv-btn.now { outline: 2px solid var(--warn); }
+    .overlay .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .ctl-btn.sm { min-width: 0; padding: 0 12px; font-size: 15px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="バス待ち" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item tappable" id="hud-level" role="button" aria-label="面を選ぶ">面<b id="level">1</b></span>
+      <span class="hud-item">待ち<b id="left">0</b><span style="font-size:12px">人</span></span>
+      <span class="hud-item">車<b id="cars">0</b><span style="font-size:12px">台</span></span>
+      <span class="hud-item">手数<b id="moves">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>駐車場の車をタップすると、矢印の向きにまっすぐ進んで出ていく。前に車がいると出られない(手数には数えない)。</li>
+            <li>出た車は上の乗り場に並ぶ。行列の先頭の人と同じ色の車があれば、順番に乗っていく。</li>
+            <li>屋根の数字は定員。満員になると発車して、乗り場が空く。</li>
+            <li>乗り場が全部ふさがって誰も乗れなくなると失敗。「戻す」で何手でも戻せる。</li>
+            <li>行列の人を全員運べばクリア。全 48 面、後半ほど車が多く、乗り場が少なく、色が混ざる。</li>
+            <li>「ヒント」で、いま出してよい車が光る。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 車をタップ、下のボタン</li>
+            <li>PC: クリック、Z で戻す、H でヒント、R でやり直し、N / P で次・前の面</li>
+            <li>上の「面」をタップすると面一覧</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-row">
+        <button type="button" class="ctl-btn sm" id="btn-undo">↶ 戻す</button>
+        <button type="button" class="ctl-btn sm" id="btn-hint">ヒント</button>
+        <button type="button" class="ctl-btn sm" id="btn-restart">やり直し</button>
+        <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  // @@LOGIC-BEGIN  (node の検証スクリプトがこの区間を読む。ブラウザ API を使わない)
+  var BJ = (function () {
+    'use strict';
+    var DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];   // 0 上 1 右 2 下 3 左
+    var CAP_LEN = { 4: 2, 6: 3, 10: 3 };
+
+    function rng(seed) {
+      var a = seed >>> 0;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function pick(r, arr) { return arr[Math.floor(r() * arr.length)]; }
+
+    // 面のパラメータ: 易しい → 難しい
+    function params(i) {
+      var tier = Math.min(5, Math.floor(i / 8)), k = i % 8;
+      var T = [
+        { cols: 5, rows: 5, cars: 4, slots: 4, colors: 3, mix: 0.1, caps: [4, 4, 6] },
+        { cols: 6, rows: 6, cars: 7, slots: 4, colors: 4, mix: 0.3, caps: [4, 4, 6, 10] },
+        { cols: 6, rows: 7, cars: 10, slots: 3, colors: 4, mix: 0.4, caps: [4, 6, 6, 10] },
+        { cols: 7, rows: 7, cars: 13, slots: 3, colors: 5, mix: 0.5, caps: [4, 6, 10] },
+        { cols: 7, rows: 8, cars: 16, slots: 3, colors: 6, mix: 0.6, caps: [4, 6, 10] },
+        { cols: 8, rows: 8, cars: 17, slots: 3, colors: 7, mix: 0.7, caps: [4, 6, 10, 10] }
+      ][tier];
+      return {
+        cols: T.cols, rows: T.rows,
+        cars: T.cars + Math.floor(k / 2),
+        slots: T.slots,
+        colors: Math.min(8, T.colors + (k >= 6 ? 1 : 0)),
+        mix: T.mix + k * 0.02,
+        caps: T.caps
+      };
+    }
+
+    function carCells(c) {
+      var out = [];
+      for (var k = 0; k < c.len; k++) out.push([c.x - DX[c.dir] * k, c.y - DY[c.dir] * k]);
+      return out;
+    }
+    function carPath(c, cols, rows) {
+      var out = [], x = c.x + DX[c.dir], y = c.y + DY[c.dir];
+      while (x >= 0 && y >= 0 && x < cols && y < rows) { out.push([x, y]); x += DX[c.dir]; y += DY[c.dir]; }
+      return out;
+    }
+
+    // 解の順(0 番が最初に出る)から逆に置く: 車 i の進路には i より後に出る車が居ない。
+    // 先に出る車は、後の車の進路をふさぐ位置を優先して置く(最初から出せる車を減らす)
+    function build(p, r) {
+      var n = p.cars, occ = {}, blockWant = {}, cars = new Array(n);
+      function key(x, y) { return x + ',' + y; }
+      for (var i = n - 1; i >= 0; i--) {
+        var best = null, bestScore = -1;
+        for (var t = 0; t < 140; t++) {
+          var cap = pick(r, p.caps), len = CAP_LEN[cap], dir = Math.floor(r() * 4);
+          var c = { id: i, x: Math.floor(r() * p.cols), y: Math.floor(r() * p.rows), dir: dir, len: len, cap: cap, color: Math.floor(r() * p.colors) };
+          var cells = carCells(c), good = true, j, score = r() * 0.5;
+          for (j = 0; j < cells.length; j++) {
+            var kk = key(cells[j][0], cells[j][1]);
+            if (cells[j][0] < 0 || cells[j][1] < 0 || cells[j][0] >= p.cols || cells[j][1] >= p.rows || occ[kk]) { good = false; break; }
+            if (blockWant[kk]) score += blockWant[kk];
+          }
+          if (!good) continue;
+          var path = carPath(c, p.cols, p.rows);
+          for (j = 0; j < path.length; j++) if (occ[key(path[j][0], path[j][1])]) { good = false; break; }
+          if (!good) continue;
+          if (score > bestScore) { bestScore = score; best = c; if (score >= 2) break; }
+        }
+        if (!best) return null;
+        var bc = carCells(best), bp = carPath(best, p.cols, p.rows);
+        for (j = 0; j < bc.length; j++) occ[key(bc[j][0], bc[j][1])] = true;
+        for (j = 0; j < bp.length; j++) { var pk = key(bp[j][0], bp[j][1]); blockWant[pk] = (blockWant[pk] || 0) + (j === 0 ? 1.5 : 1); }
+        cars[i] = best;
+      }
+      // 行列: 解の順に車を乗り場へ入れつつ、居る車の色を混ぜながら並べる
+      var S = [], next = 0, q = [];
+      while (next < n || S.length) {
+        var canArrive = next < n && S.length < p.slots;
+        if (canArrive && (S.length === 0 || r() < p.mix)) { S.push({ car: cars[next], seated: 0 }); next++; continue; }
+        var col = pick(r, S).car.color, tgt = null;
+        for (var s = 0; s < S.length; s++) if (S[s].car.color === col && S[s].seated < S[s].car.cap) { tgt = S[s]; break; }
+        tgt.seated++; q.push(col);
+        if (tgt.seated >= tgt.car.cap) S.splice(S.indexOf(tgt), 1);
+      }
+      return { cols: p.cols, rows: p.rows, slots: p.slots, cars: cars, queue: q };
+    }
+
+    // 単純な手(先頭の色の車を優先、無ければ最初の車)で解けてしまうか
+    function greedyWins(lv, frontFirst) {
+      var g = newState(lv);
+      for (var k = 0; k < 200; k++) {
+        var s = status(lv, g);
+        if (s !== 'play') return s === 'win';
+        var mv = movable(lv, g.lot), front = lv.queue[g.qi], c = mv[0];
+        if (frontFirst) for (var i = 0; i < mv.length; i++) if (mv[i].color === front) { c = mv[i]; break; }
+        g = release(lv, g, c, null);
+        if (!g) return false;
+      }
+      return false;
+    }
+
+    function genLevel(idx) {
+      var p = params(idx), best = null, bestScore = -1e9, tries = idx < 4 ? 1 : 20;
+      for (var a = 0; a < 500; a++) {
+        var lv = build(p, rng(90001 + idx * 7919 + a * 104729));
+        if (!lv) continue;
+        // 難しさの目安: 最初から出せる車が少ない、単純な手では解けない
+        var score = -movable(lv, lv.cars).length / lv.cars.length * 3;
+        if (idx >= 4) { if (!greedyWins(lv, true)) score += 3; if (!greedyWins(lv, false)) score += 1.5; }
+        if (score > bestScore) { bestScore = score; best = lv; best.seedTry = a; }
+        if (--tries <= 0) break;
+      }
+      return best;
+    }
+
+    // ---------- 状態と進行 ----------
+    // state: { lot: [car...], slots: [{car, seated, arr}|null...], qi, arr }
+    function newState(lv) {
+      var slots = [];
+      for (var i = 0; i < lv.slots; i++) slots.push(null);
+      return { lot: lv.cars.slice(), slots: slots, qi: 0, arr: 0 };
+    }
+    function cloneState(st) {
+      return { lot: st.lot.slice(), slots: st.slots.map(function (s) { return s ? { car: s.car, seated: s.seated, arr: s.arr } : null; }), qi: st.qi, arr: st.arr };
+    }
+    function occupancy(lv, lot) {
+      var occ = {};
+      for (var i = 0; i < lot.length; i++) {
+        var cells = carCells(lot[i]);
+        for (var j = 0; j < cells.length; j++) occ[cells[j][0] + ',' + cells[j][1]] = lot[i];
+      }
+      return occ;
+    }
+    // 進めるか: 進路上に他の車が無い。ぶつかる車とそこまでの距離も返す
+    function canMove(lv, lot, car) {
+      var occ = occupancy(lv, lot), path = carPath(car, lv.cols, lv.rows);
+      for (var k = 0; k < path.length; k++) {
+        var o = occ[path[k][0] + ',' + path[k][1]];
+        if (o && o !== car) return { ok: false, dist: k, hit: o };
+      }
+      return { ok: true, dist: path.length };
+    }
+    function movable(lv, lot) {
+      var out = [];
+      for (var i = 0; i < lot.length; i++) if (canMove(lv, lot, lot[i]).ok) out.push(lot[i]);
+      return out;
+    }
+    function freeSlot(st) { for (var i = 0; i < st.slots.length; i++) if (!st.slots[i]) return i; return -1; }
+    // 先頭の人が乗れる車(同色・空きあり・最も早く来た)
+    function boardTarget(lv, st) {
+      if (st.qi >= lv.queue.length) return -1;
+      var col = lv.queue[st.qi], best = -1;
+      for (var i = 0; i < st.slots.length; i++) {
+        var s = st.slots[i];
+        if (s && s.car.color === col && s.seated < s.car.cap && (best < 0 || s.arr < st.slots[best].arr)) best = i;
+      }
+      return best;
+    }
+    // 乗り場に車が来た後の自動処理。events に [type, ...] を積む
+    function settle(lv, st, events) {
+      for (;;) {
+        var i = boardTarget(lv, st);
+        if (i < 0) break;
+        var s = st.slots[i];
+        s.seated++; st.qi++;
+        if (events) events.push({ type: 'board', slot: i, color: s.car.color, seated: s.seated });
+        if (s.seated >= s.car.cap) {
+          st.slots[i] = null;
+          if (events) events.push({ type: 'depart', slot: i, car: s.car });
+        }
+      }
+    }
+    // 'win' | 'lose' | 'play'
+    function status(lv, st) {
+      if (st.qi >= lv.queue.length) return 'win';
+      if (freeSlot(st) < 0) return 'lose';
+      if (st.lot.length && movable(lv, st.lot).length === 0) return 'lose';
+      return 'play';
+    }
+    // 車を出す。戻り値: 新しい state(失敗なら null)。events に積む
+    function release(lv, st, car, events) {
+      if (!canMove(lv, st.lot, car).ok) return null;
+      var fs = freeSlot(st);
+      if (fs < 0) return null;
+      var ns = cloneState(st);
+      ns.lot.splice(ns.lot.indexOf(car), 1);
+      ns.arr++;
+      ns.slots[fs] = { car: car, seated: 0, arr: ns.arr };
+      if (events) events.push({ type: 'exit', car: car, slot: fs });
+      settle(lv, ns, events);
+      return ns;
+    }
+
+    // ---------- ソルバー(DFS + 失敗の記憶) ----------
+    function stateKey(st) {
+      var ids = st.lot.map(function (c) { return c.id; }).sort(function (a, b) { return a - b; }).join(',');
+      var sl = st.slots.map(function (s) { return s ? s.car.id + ':' + s.seated + ':' + s.arr : '-'; }).join(',');
+      return ids + '|' + sl + '|' + st.qi;
+    }
+    function nextNeed(lv, st, color) {
+      for (var i = st.qi; i < lv.queue.length; i++) if (lv.queue[i] === color) return i - st.qi;
+      return 9999;
+    }
+    // 戻り値 { found: bool, path: [car...], exhausted: bool, nodes }
+    function solve(lv, st, limit) {
+      var dead = {}, nodes = 0, over = false, path = [];
+      function dfs(s) {
+        if (over) return false;
+        var stt = status(lv, s);
+        if (stt === 'win') return true;
+        if (stt === 'lose') return false;
+        var k = stateKey(s);
+        if (dead[k]) return false;
+        if (++nodes > limit) { over = true; return false; }
+        var mv = movable(lv, s.lot);
+        var front = lv.queue[s.qi];
+        mv.sort(function (a, b) {
+          var na = nextNeed(lv, s, a.color), nb = nextNeed(lv, s, b.color);
+          if (na !== nb) return na - nb;
+          return a.id - b.id;
+        });
+        var lastSlot = freeSlot(s) >= 0 && s.slots.filter(function (x) { return !x; }).length === 1;
+        for (var i = 0; i < mv.length; i++) {
+          if (lastSlot && mv[i].color !== front) continue;   // 最後の枠に違う色は即失敗
+          var ns = release(lv, s, mv[i], null);
+          if (!ns) continue;
+          path.push(mv[i]);
+          if (dfs(ns)) return true;
+          path.pop();
+        }
+        dead[k] = true;
+        return false;
+      }
+      var found = dfs(st);
+      return { found: found, path: path, exhausted: !over, nodes: nodes };
+    }
+
+    return { DX: DX, DY: DY, params: params, genLevel: genLevel, carCells: carCells, carPath: carPath,
+      newState: newState, cloneState: cloneState, canMove: canMove, movable: movable, freeSlot: freeSlot,
+      release: release, status: status, solve: solve, LEVELS: 48 };
+  })();
+  // @@LOGIC-END
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var BASE_W = 360, BASE_H = 600;
+    var COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#e67e22', '#9b59b6', '#ff7eb6', '#1abc9c'];
+    var store = H.store('busjam');
+    var cleared = store.get('cleared', []);
+    if (!Array.isArray(cleared)) cleared = [];
+    var lvIndex = 0, lv = null, st = null, hist = [], moves = 0;
+    var overlayEl = null, hintIds = {}, hintUntil = 0, ended = false;
+    var levelCache = {};
+
+    // ---------- 配置(論理座標) ----------
+    var QY = 8, QH = 58;              // 行列
+    var SY = 74, SH = 84;             // 乗り場
+    var LY = 170, LH = BASE_H - LY - 6; // 駐車場
+    var geo = { cell: 40, ox: 0, oy: 0 };
+    var SLOT_W = 52, SLOT_H = 76;
+    function layoutGeo() {
+      var cell = Math.floor(Math.min((BASE_W - 16) / lv.cols, LH / lv.rows));
+      geo.cell = cell;
+      geo.ox = Math.floor((BASE_W - cell * lv.cols) / 2);
+      geo.oy = LY + Math.floor((LH - cell * lv.rows) / 2);
+    }
+    function slotX(i) {
+      var n = lv.slots, gap = 10, total = n * SLOT_W + (n - 1) * gap;
+      return Math.floor((BASE_W - total) / 2) + i * (SLOT_W + gap);
+    }
+    function slotCenter(i) { return { x: slotX(i) + SLOT_W / 2, y: SY + SLOT_H / 2 + 2 }; }
+    function queuePos(k) { return { x: 22 + k * 27, y: QY + 32 }; }
+    // 車の中心(論理座標)と角度
+    function carCenter(c) {
+      var cells = BJ.carCells(c), sx = 0, sy = 0;
+      for (var i = 0; i < cells.length; i++) { sx += cells[i][0]; sy += cells[i][1]; }
+      return { x: geo.ox + (sx / cells.length + 0.5) * geo.cell, y: geo.oy + (sy / cells.length + 0.5) * geo.cell };
+    }
+
+    // ---------- 描画 ----------
+    var canvas = document.getElementById('cv');
+    var stg = H.canvasStage(canvas, BASE_W, BASE_H, function (cssW, cssH, ctx, scale) { ctx.scale(scale, scale); draw(); });
+
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function shade(hex, f) {
+      var n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      r = Math.max(0, Math.min(255, Math.round(r * f))); g = Math.max(0, Math.min(255, Math.round(g * f))); b = Math.max(0, Math.min(255, Math.round(b * f)));
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+    // 車: 中心 (cx,cy)、長さ L・幅 Wd、前が上向きの絵を angle 回転。alpha, glow
+    function drawCar(ctx, c, cx, cy, L, Wd, angle, opts) {
+      opts = opts || {};
+      var col = COLORS[c.color % COLORS.length];
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(angle);
+      if (opts.alpha !== undefined) ctx.globalAlpha = opts.alpha;
+      var w = Wd * 0.78, h = L * 0.92, x = -w / 2, y = -h / 2;
+      if (opts.glow) { ctx.shadowColor = '#fff6a0'; ctx.shadowBlur = 14; }
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; rr(ctx, x + 2, y + 3, w, h, 7); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = col; rr(ctx, x, y, w, h, 7); ctx.fill();
+      if (opts.glow) { ctx.lineWidth = 3; ctx.strokeStyle = '#fff6a0'; ctx.stroke(); }
+      // 窓
+      ctx.fillStyle = 'rgba(20,30,60,0.75)';
+      rr(ctx, x + 4, y + 6, w - 8, Math.max(8, h * 0.17), 3); ctx.fill();
+      rr(ctx, x + 4, y + h - 6 - Math.max(6, h * 0.11), w - 8, Math.max(6, h * 0.11), 3); ctx.fill();
+      if (c.cap >= 10) {  // バス: 横窓
+        ctx.fillRect(x + 2, y + h * 0.3, 3, h * 0.45); ctx.fillRect(x + w - 5, y + h * 0.3, 3, h * 0.45);
+      }
+      // 屋根の明るさ
+      ctx.fillStyle = 'rgba(255,255,255,0.14)'; rr(ctx, x + 3, y + 3, w * 0.35, h - 6, 5); ctx.fill();
+      // 進む向きの矢印(前端)
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.beginPath(); ctx.moveTo(0, y - 1); ctx.lineTo(-6, y + 7); ctx.lineTo(6, y + 7); ctx.closePath(); ctx.fill();
+      // 定員
+      ctx.fillStyle = shade(col, 0.55);
+      ctx.beginPath(); ctx.arc(0, 2, Math.min(w, h) * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.save(); ctx.translate(0, 2); ctx.rotate(-angle);
+      ctx.fillStyle = '#fff'; ctx.font = '700 ' + Math.round(Math.min(w, h) * 0.42) + 'px ' + 'system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(opts.label !== undefined ? opts.label : String(c.cap), 0, 1);
+      ctx.restore();
+      ctx.restore();
+    }
+    function drawPerson(ctx, x, y, color, scale, alpha) {
+      scale = scale || 1;
+      ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+      if (alpha !== undefined) ctx.globalAlpha = alpha;
+      var col = COLORS[color % COLORS.length];
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#2b2b3a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-4, 10); ctx.lineTo(-5, 20); ctx.moveTo(4, 10); ctx.lineTo(5, 20); ctx.stroke();
+      ctx.fillStyle = col; rr(ctx, -7, -2, 14, 14, 4); ctx.fill();
+      ctx.strokeStyle = col; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-7, 1); ctx.lineTo(-11, 9); ctx.moveTo(7, 1); ctx.lineTo(11, 9); ctx.stroke();
+      ctx.fillStyle = '#f3c89b'; ctx.beginPath(); ctx.arc(0, -9, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#3a2a1e'; ctx.beginPath(); ctx.arc(0, -11.5, 6.5, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // 見た目の状態(アニメ用)。論理 st とは別に、演出を消化しながら追いつく
+    var vis = null;     // { lot, slots, qi, anim }
+    var anims = [];     // 順に消化
+    var tNow = 0;
+    function resetVis() {
+      vis = { lot: st.lot.slice(), slots: st.slots.map(function (s) { return s ? { car: s.car, seated: s.seated } : null; }), qi: st.qi };
+      anims = [];
+    }
+
+    function draw() {
+      var ctx = stg.ctx();
+      if (!ctx || !lv || !vis) return;
+      ctx.clearRect(0, 0, BASE_W, BASE_H);
+      ctx.fillStyle = '#141428'; ctx.fillRect(0, 0, BASE_W, BASE_H);
+      var cur = anims.length ? anims[0] : null, prog = 0;
+      if (cur) prog = Math.max(0, Math.min(1, (tNow - cur.t0) / cur.dur));
+
+      // 行列
+      ctx.fillStyle = 'rgba(255,255,255,0.05)'; rr(ctx, 6, QY, BASE_W - 12, QH, 10); ctx.fill();
+      ctx.fillStyle = '#a9a9c9'; ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('先頭 →', 10, QY + 3);
+      var remain = lv.queue.length - vis.qi, shown = Math.min(remain, 11);
+      var skip = (cur && cur.type === 'board') ? 1 : 0;
+      for (var k = skip; k < shown; k++) {
+        var p = queuePos(k);
+        // 乗る人の分だけ詰める
+        var slide = skip ? prog * 27 : 0;
+        drawPerson(ctx, p.x - slide, p.y, lv.queue[vis.qi + k], 1);
+      }
+      if (remain > shown) {
+        ctx.fillStyle = '#f4f4ff'; ctx.font = '700 15px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText('+' + (remain - shown), queuePos(shown).x - 8, QY + 32);
+      }
+      // 乗り場
+      ctx.fillStyle = 'rgba(255,255,255,0.04)'; rr(ctx, 6, SY - 6, BASE_W - 12, SH + 8, 10); ctx.fill();
+      for (var i = 0; i < lv.slots; i++) {
+        var sx = slotX(i);
+        ctx.setLineDash([5, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5;
+        rr(ctx, sx, SY, SLOT_W, SLOT_H, 8); ctx.stroke(); ctx.setLineDash([]);
+        var s = vis.slots[i];
+        if (s) {
+          var c0 = slotCenter(i), dy = 0, al = 1;
+          if (cur && cur.type === 'depart' && cur.slot === i) { dy = -prog * 110; al = 1 - prog; }
+          drawCar(ctx, s.car, c0.x, c0.y + dy, SLOT_H - 6, SLOT_W, 0, { alpha: al, label: s.seated + '/' + s.car.cap });
+        } else if (!(cur && cur.type === 'exit' && cur.slot === i)) {
+          ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('空き', sx + SLOT_W / 2, SY + SLOT_H / 2);
+        }
+      }
+      // 駐車場
+      ctx.fillStyle = '#2a2a40'; rr(ctx, geo.ox - 6, geo.oy - 6, geo.cell * lv.cols + 12, geo.cell * lv.rows + 12, 10); ctx.fill();
+      ctx.fillStyle = '#34344e'; ctx.fillRect(geo.ox, geo.oy, geo.cell * lv.cols, geo.cell * lv.rows);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
+      for (var gx = 1; gx < lv.cols; gx++) { ctx.beginPath(); ctx.moveTo(geo.ox + gx * geo.cell, geo.oy); ctx.lineTo(geo.ox + gx * geo.cell, geo.oy + geo.cell * lv.rows); ctx.stroke(); }
+      for (var gy = 1; gy < lv.rows; gy++) { ctx.beginPath(); ctx.moveTo(geo.ox, geo.oy + gy * geo.cell); ctx.lineTo(geo.ox + geo.cell * lv.cols, geo.oy + gy * geo.cell); ctx.stroke(); }
+      var now = Date.now(), glowOn = now < hintUntil;
+      for (i = 0; i < vis.lot.length; i++) {
+        var c = vis.lot[i], cc = carCenter(c), ang = c.dir * Math.PI / 2, ox = 0, oy = 0;
+        if (cur && cur.type === 'bump' && cur.car === c) {
+          var b = Math.sin(prog * Math.PI) * Math.min(cur.dist * geo.cell + geo.cell * 0.25, geo.cell * 0.6);
+          ox = BJ.DX[c.dir] * b; oy = BJ.DY[c.dir] * b;
+        }
+        drawCar(ctx, c, cc.x + ox, cc.y + oy, c.len * geo.cell, geo.cell, ang, { glow: glowOn && hintIds[c.id] });
+      }
+      // 出ていく車(駐車場→乗り場)
+      if (cur && cur.type === 'exit') {
+        var c1 = cur.car, from = carCenter(c1), to = slotCenter(cur.slot);
+        var dist = (BJ.carPath(c1, lv.cols, lv.rows).length + c1.len / 2 + 0.5) * geo.cell;
+        var e1 = { x: from.x + BJ.DX[c1.dir] * dist, y: from.y + BJ.DY[c1.dir] * dist };
+        var px, py, pa, pL = c1.len * geo.cell, pW = geo.cell;
+        if (prog < 0.45) {
+          var q1 = prog / 0.45; px = from.x + (e1.x - from.x) * q1; py = from.y + (e1.y - from.y) * q1; pa = c1.dir * Math.PI / 2;
+        } else {
+          var q2 = (prog - 0.45) / 0.55, e2 = q2 * q2 * (3 - 2 * q2);
+          px = e1.x + (to.x - e1.x) * e2; py = e1.y + (to.y - e1.y) * e2;
+          var a0 = c1.dir * Math.PI / 2; if (a0 > Math.PI) a0 -= Math.PI * 2;
+          pa = a0 * (1 - e2);
+          pL = pL + (SLOT_H - 6 - pL) * e2; pW = pW + (SLOT_W - pW) * e2;
+        }
+        drawCar(ctx, c1, px, py, pL, pW, pa, {});
+      }
+      // 乗る人
+      if (cur && cur.type === 'board') {
+        var f = queuePos(0), t2 = slotCenter(cur.slot), ee = prog * prog * (3 - 2 * prog);
+        drawPerson(ctx, f.x + (t2.x - f.x) * ee, f.y + (t2.y - f.y) * ee, cur.color, 1 - ee * 0.5, 1 - ee * 0.6);
+      }
+      // ヒント文字
+      if (glowOn) {
+        ctx.fillStyle = '#fff6a0'; ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+        ctx.fillText('光る車を出す', BASE_W - 10, QY + 3);
+      }
+    }
+
+    // ---------- アニメの消化 ----------
+    function pushEvents(events) {
+      for (var i = 0; i < events.length; i++) {
+        var e = events[i];
+        e.dur = e.type === 'exit' ? 420 : e.type === 'board' ? 120 : e.type === 'depart' ? 260 : 220;
+        anims.push(e);
+      }
+      if (anims.length && !anims[0].t0) anims[0].t0 = tNow;
+    }
+    function applyEvent(e) {
+      if (e.type === 'exit') { vis.lot.splice(vis.lot.indexOf(e.car), 1); vis.slots[e.slot] = { car: e.car, seated: 0 }; }
+      else if (e.type === 'board') { vis.slots[e.slot].seated = e.seated; vis.qi++; H.audio.beep(520 + (e.seated * 40), 0.05, 'triangle', 0.03); }
+      else if (e.type === 'depart') { vis.slots[e.slot] = null; H.audio.good(); }
+    }
+    var loop = H.loop(function (dt) {
+      tNow += dt * 1000;
+      while (anims.length) {
+        var a = anims[0];
+        if (!a.t0) a.t0 = tNow;
+        if (tNow - a.t0 < a.dur) break;
+        anims.shift(); applyEvent(a);
+        if (anims.length) anims[0].t0 = tNow;
+        else afterAnims();
+      }
+    }, draw);
+    function afterAnims() {
+      hud();
+      if (ended) return;
+      var s = BJ.status(lv, st);
+      if (s === 'win') { ended = true; setTimeout(showClear, 150); }
+      else if (s === 'lose') { ended = true; setTimeout(showLose, 150); }
+      else {
+        // 進める手が無いか(ソルバーが読み切った場合だけ告げる)
+        var r = BJ.solve(lv, st, 6000);
+        if (!r.found && r.exhausted) H.toast('この先、手がありません。戻すか、やり直し');
+      }
+    }
+    function busy() { return anims.length > 0; }
+
+    // ---------- 進行 ----------
+    function hud() {
+      document.getElementById('level').textContent = lvIndex + 1;
+      document.getElementById('left').textContent = lv ? lv.queue.length - (vis ? vis.qi : 0) : 0;
+      document.getElementById('cars').textContent = vis ? vis.lot.length : 0;
+      document.getElementById('moves').textContent = moves;
+    }
+    function getLevel(i) {
+      if (!levelCache[i]) levelCache[i] = BJ.genLevel(i);
+      return levelCache[i];
+    }
+    function loadLevel(i) {
+      if (i < 0 || i >= BJ.LEVELS) return;
+      closeOverlay();
+      lvIndex = i; lv = getLevel(i);
+      store.set('last', i);
+      st = BJ.newState(lv); hist = []; moves = 0; ended = false; hintUntil = 0; hintIds = {};
+      layoutGeo(); resetVis(); hud(); draw();
+    }
+    function restart() { loadLevel(lvIndex); }
+    function tapCar(car) {
+      if (busy() || ended) return;
+      var m = BJ.canMove(lv, st.lot, car);
+      if (!m.ok) { H.audio.bad(); pushEvents([{ type: 'bump', car: car, dist: m.dist }]); return; }
+      if (BJ.freeSlot(st) < 0) { H.toast('乗り場がいっぱい'); H.audio.bad(); return; }
+      var ev = [];
+      var ns = BJ.release(lv, st, car, ev);
+      if (!ns) return;
+      hist.push(st); st = ns; moves++; hintUntil = 0;
+      H.audio.click();
+      pushEvents(ev);
+      hud();
+    }
+    function undo() {
+      if (!hist.length) { H.toast('戻せません'); return; }
+      closeOverlay();
+      st = hist.pop(); moves = Math.max(0, moves - 1); ended = false; hintUntil = 0;
+      resetVis(); hud(); draw();
+      H.audio.click();
+    }
+    function hint() {
+      if (busy() || ended) return;
+      var r = BJ.solve(lv, st, 30000);
+      hintIds = {};
+      if (r.found && r.path.length) {
+        hintIds[r.path[0].id] = true;
+      } else {
+        // 読み切れない / 詰み: 先頭の色で出せる車があればそれを
+        var mv = BJ.movable(lv, st.lot), front = lv.queue[st.qi], any = false;
+        for (var i = 0; i < mv.length; i++) if (mv[i].color === front) { hintIds[mv[i].id] = true; any = true; }
+        if (!any) { H.toast(r.exhausted ? 'ここからは解けません。戻すのがよさそう' : '良い手が見つかりません'); return; }
+      }
+      hintUntil = Date.now() + 2500;
+      H.audio.click();
+      draw();
+      setTimeout(draw, 2600);
+    }
+
+    H.onTap(canvas, function (cx, cy) {
+      if (!lv) return;
+      var p = stg.toBase(cx, cy);
+      var gx = Math.floor((p.x - geo.ox) / geo.cell), gy = Math.floor((p.y - geo.oy) / geo.cell);
+      if (gx < 0 || gy < 0 || gx >= lv.cols || gy >= lv.rows) return;
+      for (var i = 0; i < st.lot.length; i++) {
+        var cells = BJ.carCells(st.lot[i]);
+        for (var j = 0; j < cells.length; j++) if (cells[j][0] === gx && cells[j][1] === gy) { tapCar(st.lot[i]); return; }
+      }
+    });
+
+    // ---------- 終了画面 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function showClear() {
+      H.audio.win();
+      var first = !cleared[lvIndex];
+      cleared[lvIndex] = true; store.set('cleared', cleared);
+      var last = lvIndex >= BJ.LEVELS - 1, n = 0;
+      for (var i = 0; i < BJ.LEVELS; i++) if (cleared[i]) n++;
+      var html = lv.cars.length + ' 台、' + lv.queue.length + ' 人を運んだ' + (first ? '　<span style="color:var(--ok)">初クリア!</span>' : '');
+      if (n >= BJ.LEVELS) html += '<br>全 ' + BJ.LEVELS + ' 面クリア、おめでとう!';
+      var buttons = [];
+      if (!last) buttons.push({ label: '次の面へ', onClick: function () { overlayEl = null; loadLevel(lvIndex + 1); } });
+      buttons.push({ label: 'もう一度', secondary: true, onClick: function () { overlayEl = null; restart(); } });
+      buttons.push({ label: '面一覧', secondary: true, onClick: function () { overlayEl = null; showLevels(); } });
+      overlayEl = H.overlay({ title: last ? '最終面クリア!' : 'クリア!', big: moves + ' 手', html: html, buttons: buttons });
+    }
+    function showLose() {
+      H.audio.bad();
+      overlayEl = H.overlay({ title: '乗れなくなった…', html: '乗り場がふさがって、先頭の人が乗れません。<br>戻して別の車から出してみよう',
+        buttons: [{ label: '1 手戻す', onClick: function () { overlayEl = null; undo(); } },
+                  { label: 'やり直し', secondary: true, onClick: function () { overlayEl = null; restart(); } }] });
+    }
+    function showLevels() {
+      closeOverlay();
+      var n = 0;
+      for (var i = 0; i < BJ.LEVELS; i++) if (cleared[i]) n++;
+      var html = '<span class="sub">クリア ' + n + ' / ' + BJ.LEVELS + ' 面　✓ はクリア済み</span><br><span class="lv-grid">';
+      for (i = 0; i < BJ.LEVELS; i++) {
+        html += '<button type="button" class="lv-btn' + (cleared[i] ? ' done' : '') + (i === lvIndex ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + '</button>';
+      }
+      html += '</span>';
+      overlayEl = H.overlay({ title: '面を選ぶ', html: html,
+        buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; } }] });
+      overlayEl.className += ' lv scrollable';
+      var btns = overlayEl.querySelectorAll('.lv-btn');
+      for (i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+          H.audio.click();
+          loadLevel(idx);
+        });
+      }
+    }
+
+    // ---------- 入力 ----------
+    H.holdButton(document.getElementById('btn-undo'), undo);
+    H.holdButton(document.getElementById('btn-hint'), hint);
+    H.holdButton(document.getElementById('btn-restart'), function () { H.audio.click(); restart(); });
+    H.holdButton(document.getElementById('btn-list'), function () { H.audio.click(); showLevels(); });
+    document.getElementById('hud-level').addEventListener('click', function () { if (overlayEl) closeOverlay(); else showLevels(); });
+    H.keys({
+      z: undo, u: undo, h: hint, r: restart,
+      n: function () { loadLevel(lvIndex + 1); }, p: function () { loadLevel(lvIndex - 1); },
+      Escape: function () { closeOverlay(); }
+    });
+    window.resetGame = function () { restart(); H.toast('最初から'); };
+    H.pauseWhenHidden(function () { if (loop.isRunning()) loop.start(); });   // パズルなので止めない(rAF が自然に止まる)
+
+    window.__bj = { get: function () { return { lv: lv, st: st, geo: geo, moves: moves, busy: busy() }; }, load: loadLevel };   // 検証用
+    var startIdx = store.get('last', 0);
+    if (typeof startIdx !== 'number' || startIdx < 0 || startIdx >= BJ.LEVELS) startIdx = 0;
+    loadLevel(startIdx);
+    loop.start();
+  })();
+  </script>
+</body>
+</html>
