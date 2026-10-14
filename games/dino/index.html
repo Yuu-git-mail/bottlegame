@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>恐竜ランナー - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    canvas.stage-canvas { background: #f7f7f7; }
+    .app-controls .ctl-btn.wide { min-width: 120px; min-height: 56px; font-size: 17px; }
+    .hud-item.hi b { color: var(--warn); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="恐竜ランナー" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">スコア<b id="score">00000</b></span>
+      <span class="hud-item hi">ベスト<b id="best">00000</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>走り続ける恐竜をサボテンやプテラノドンにぶつけないように進む。</li>
+            <li>進んだ距離がスコア。だんだん速くなる。</li>
+            <li>ジャンプは押している長さで高さが変わる（短く押すと低く跳ぶ）。</li>
+            <li>低く飛ぶプテラノドンはしゃがんでくぐる。空中でしゃがむと急降下。</li>
+            <li>700 点ごとに昼と夜が入れ替わる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 画面タップ・ジャンプボタンでジャンプ（長押しで高く）、下スワイプ・しゃがむボタンでしゃがむ。</li>
+            <li>PC: スペース / ↑ でジャンプ、↓ でしゃがむ。</li>
+            <li>ぶつかったら画面タップかスペースでもう一度。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="ctl-group"><button type="button" class="ctl-btn wide" id="btn-duck">▼ しゃがむ</button></div>
+      <div class="ctl-group"><button type="button" class="ctl-btn wide" id="btn-jump">▲ ジャンプ</button></div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+
+    // ---------- 定数(論理座標 600x200。速度などは 60fps 1 フレーム基準の値を dt で換算) ----------
+    var W = 600, HGT = 200, GROUND_Y = 170;
+    var GRAVITY = 0.6, JUMP_FORCE = -12, MIN_JUMP_FORCE = -6.5;
+    var INITIAL_SPEED = 6, MAX_SPEED = 14;
+    var IDLE = 0, RUNNING = 1, GAMEOVER = 2;
+
+    // ---------- スプライト(2px 単位のドット) ----------
+    var S = {};
+    S.DINO_STAND = ["          11111111","         1111111111","         1111111111","         1111111111","         1111111111","         1111111111","         1111111","         1111111111"," 1      1111111"," 11    11111111"," 111  111111111"," 1111111111111","  111111111111","   1111111111","    111111111","     11111111","      111111","      11  11","      11  11","      11  11","      11  11","      111 111"];
+    S.DINO_RUN_1 = S.DINO_STAND.slice(0, 18).concat(["      11  111","      11   1","      11","      111"]);
+    S.DINO_RUN_2 = S.DINO_STAND.slice(0, 18).concat(["     111  11","       1  11","          11","          111"]);
+    S.DINO_DEAD = S.DINO_STAND.slice();
+    S.DINO_DEAD[2] = "         11 11 1111"; S.DINO_DEAD[4] = "         11 11 1111";
+    S.DINO_DUCK_1 = ["                    11111111111","                   111111111111","                   111111111111","                   111111111111","                   11111111"," 1      1111111111111111111"," 11    11111111111111111111"," 111  11111111111111111"," 1111111111111111111111","  1111111111111111111","   111111111111111","    111111111111","      111111111","      11   11","      11   111","      11    1","      11","      111"];
+    S.DINO_DUCK_2 = S.DINO_DUCK_1.slice(0, 14).concat(["     111   11","       1   11","           11","           111"]);
+    S.BIRD_1 = ["      1111","     111111","    11111111","   1111111111","  11111111111"," 111111111111111","11111111111111111"," 11111111111111","      11111111","       111111","        1111","         11"];
+    S.BIRD_2 = ["         11","        1111","       111111","      11111111"," 11111111111111","11111111111111111"," 111111111111111","  11111111111","   1111111111","    11111111","     111111","      1111"];
+    S.CACTUS_SMALL = ["    11","    11","11  11","11  11  11","11  11  11","1111111111"," 11111111","    11","    11","    11","    11","    11","    11","    11","    11","    11","    11"];
+    S.CACTUS_LARGE = ["      111","      111","      111","111   111","111   111   111","111   111   111","111   111   111","111111111111111"," 1111111111111","      111","      111","      111","      111","      111","      111","      111","      111","      111","      111","      111","      111","      111","      111"];
+    S.CLOUD = ["      1111111111","    11111111111111","  111111111111111111"," 11111111111111111111","1111111111111111111111"," 11111111111111111111","  111111111111111111"];
+    S.STARS = [[" 1 ","111"," 1 "],["1 1"," 1 ","1 1"],[" 1 "," 1 "]];
+    S.MOON = ["    111111    ","  1111111111  "," 111111111111 ","11111111111111","11111111111111","11111111111111","11111111111111"," 111111111111 ","  1111111111  ","    111111    "];
+
+    var DAY = { bg: [247, 247, 247], fg: '#535353', cloud: '#c4c4c4' };
+    var NIGHT = { bg: [26, 26, 46], fg: '#e0e0e0', cloud: '#666666', star: '#ffffff' };
+
+    function bitmap(ctx, x, y, bm, color) {
+      ctx.fillStyle = color;
+      for (var r = 0; r < bm.length; r++) {
+        var row = bm[r];
+        for (var c = 0; c < row.length; c++) {
+          if (row.charAt(c) === '1') ctx.fillRect(x + c * 2, y + r * 2, 2, 2);
+        }
+      }
+    }
+
+    // ---------- 音(Web Audio、失敗しても落ちない) ----------
+    var actx = null;
+    function ac() {
+      try {
+        if (H.audio.isMuted()) return null;
+        if (!actx) { var AC = window.AudioContext || window.webkitAudioContext; if (AC) actx = new AC(); }
+        if (actx && actx.state === 'suspended') actx.resume();
+        return actx;
+      } catch (e) { return null; }
+    }
+    function tone(type, f0, f1, t0, dur, vol) {
+      try {
+        var a = ac(); if (!a) return;
+        var o = a.createOscillator(), g = a.createGain(), now = a.currentTime + t0;
+        o.type = type;
+        o.frequency.setValueAtTime(f0, now);
+        if (f1) o.frequency.exponentialRampToValueAtTime(f1, now + dur);
+        g.gain.setValueAtTime(vol, now);
+        g.gain.exponentialRampToValueAtTime(0.01, now + dur);
+        o.connect(g); g.connect(a.destination);
+        o.start(now); o.stop(now + dur + 0.01);
+      } catch (e) { /* ignore */ }
+    }
+    var snd = {
+      jump: function () { tone('square', 450, 700, 0, 0.12, 0.12); },
+      score: function () { tone('square', 659.25, 0, 0, 0.08, 0.12); tone('square', 880, 0, 0.09, 0.16, 0.14); },
+      hit: function () { tone('sawtooth', 120, 40, 0, 0.25, 0.2); }
+    };
+
+    // ---------- 保存(旧キー chrome_dino_highscore を引き継ぐ) ----------
+    var store = H.store('dino');
+    var best = store.get('best', null);
+    if (best === null) {
+      best = 0;
+      try { var old = parseInt(localStorage.getItem('chrome_dino_highscore') || '0', 10); if (old > 0) best = old; } catch (e) { /* ignore */ }
+      store.set('best', best);
+    }
+
+    // ---------- 状態 ----------
+    var state = IDLE, score = 0, distance = 0, speed = INITIAL_SPEED;
+    var isNight = false, nightFactor = 0;
+    var flashTimer = 0, flashOn = true, lastMilestone = 0;
+    var dino = { x: 40, y: GROUND_Y - 44, vy: 0, grounded: true, ducking: false, animTimer: 0, frame: 0 };
+    var keys = { jump: false, duck: false };
+    var obstacles = [], clouds = [], stars = [], ground = [];
+    var obstacleTimer = 0, cloudTimer = 0;
+    var overlayEl = null;
+
+    function initGround() {
+      ground = [];
+      var x = 0;
+      while (x < W + 200) {
+        ground.push({ x: x, w: Math.random() * 20 + 20, bump: Math.random() > 0.4, type: Math.floor(Math.random() * 3) });
+        x += Math.random() * 25 + 15;
+      }
+    }
+    function initStars() {
+      stars = [];
+      for (var i = 0; i < 7; i++) stars.push({ x: Math.random() * W, y: Math.random() * (GROUND_Y - 100) + 15, type: Math.floor(Math.random() * 3) });
+    }
+    initGround(); initStars();
+
+    function pad5(n) { var s = String(Math.floor(n)); while (s.length < 5) s = '0' + s; return s; }
+    function hud() {
+      var el = document.getElementById('score');
+      el.textContent = pad5(score);
+      el.style.visibility = flashOn ? 'visible' : 'hidden';
+      document.getElementById('best').textContent = pad5(best);
+    }
+
+    // ---------- 入力 ----------
+    function closeOverlay() { if (overlayEl) { overlayEl.close(); overlayEl = null; } }
+    function jumpPress() {
+      keys.jump = true;
+      if (state !== RUNNING) { start(); return; }
+      if (dino.grounded && !dino.ducking) {
+        dino.vy = JUMP_FORCE; dino.grounded = false; snd.jump();
+      }
+    }
+    function jumpRelease() {
+      keys.jump = false;
+      if (dino.vy < MIN_JUMP_FORCE) dino.vy = MIN_JUMP_FORCE;
+    }
+    function duckPress() {
+      keys.duck = true;
+      if (state === RUNNING) {
+        if (!dino.grounded) dino.vy += 8; else dino.ducking = true;
+      }
+    }
+    function duckRelease() { keys.duck = false; dino.ducking = false; }
+
+    // ---------- 進行 ----------
+    function start() {
+      closeOverlay();
+      state = RUNNING; score = 0; distance = 0; speed = INITIAL_SPEED;
+      obstacles = []; obstacleTimer = 70; lastMilestone = 0;
+      isNight = false; nightFactor = 0; flashTimer = 0; flashOn = true;
+      dino.y = GROUND_Y - 44; dino.vy = 0; dino.grounded = true; dino.ducking = false; dino.animTimer = 0;
+      keys.duck = false;
+      hud();
+      loop.pause(false);
+    }
+    function gameOver() {
+      state = GAMEOVER;
+      snd.hit();
+      if (score > best) { best = Math.floor(score); store.set('best', best); }
+      flashOn = true; hud();
+      overlayEl = H.overlay({
+        title: 'ゲームオーバー', big: pad5(score),
+        html: 'ベスト ' + pad5(best) + '<br>タップかスペースでもう一度',
+        buttons: [{ label: 'もう一度', onClick: start }],
+        tapAnywhere: start
+      });
+    }
+    function showStart() {
+      closeOverlay();
+      overlayEl = H.overlay({
+        title: '恐竜ランナー',
+        html: 'タップ / スペースでジャンプ<br>長押しで高く跳ぶ。下スワイプでしゃがむ',
+        buttons: [{ label: 'スタート', onClick: start }],
+        tapAnywhere: start
+      });
+    }
+
+    function spawnObstacle() {
+      if (score > 250 && Math.random() < 0.3) {
+        var alts = [GROUND_Y - 26, GROUND_Y - 50, GROUND_Y - 80];
+        obstacles.push({ type: 'bird', x: W + 20, y: alts[Math.floor(Math.random() * 3)], w: 34, h: 24, frame: 0, anim: 0 });
+      } else {
+        var count = Math.min(3, Math.floor(Math.random() * (score > 300 ? 3 : 2)) + 1);
+        if (Math.random() > 0.5) {
+          count = Math.min(count, 2);
+          obstacles.push({ type: 'large', count: count, x: W + 20, y: GROUND_Y - 46, w: count * 30, h: 46 });
+        } else {
+          obstacles.push({ type: 'small', count: count, x: W + 20, y: GROUND_Y - 34, w: count * 20, h: 34 });
+        }
+      }
+    }
+
+    function update(dt) {
+      var f = dt * 60;   // 60fps 1 フレーム換算
+      if (state === RUNNING) {
+        speed = Math.min(MAX_SPEED, INITIAL_SPEED + score * 0.005);
+        distance += speed * 0.1 * f;
+        score = Math.floor(distance);
+
+        var ms = Math.floor(score / 100);
+        if (ms > 0 && ms > lastMilestone) { lastMilestone = ms; flashTimer = 60; snd.score(); }
+
+        isNight = Math.floor(score / 700) % 2 === 1;
+        if (isNight && nightFactor < 1) nightFactor = Math.min(1, nightFactor + 0.02 * f);
+        else if (!isNight && nightFactor > 0) nightFactor = Math.max(0, nightFactor - 0.02 * f);
+
+        // 恐竜
+        if (!dino.grounded) {
+          dino.vy += GRAVITY * f;
+          dino.y += dino.vy * f;
+          var hh = dino.ducking ? 28 : 44;
+          if (dino.y >= GROUND_Y - hh) { dino.y = GROUND_Y - hh; dino.vy = 0; dino.grounded = true; }
+        } else {
+          dino.ducking = keys.duck;
+          dino.y = GROUND_Y - (dino.ducking ? 28 : 44);
+        }
+        dino.animTimer += speed * 0.05 * f;
+        dino.frame = Math.floor(dino.animTimer) % 2;
+
+        // 障害物
+        obstacleTimer -= f;
+        if (obstacleTimer <= 0) {
+          spawnObstacle();
+          var minGap = Math.max(50, 95 - Math.floor(speed * 2.5));
+          obstacleTimer = Math.random() * 60 + minGap;
+        }
+        for (var i = obstacles.length - 1; i >= 0; i--) {
+          var o = obstacles[i];
+          o.x -= speed * f;
+          if (o.type === 'bird') { o.anim += 0.15 * f; o.frame = Math.floor(o.anim) % 2; }
+          if (o.x + o.w < -50) obstacles.splice(i, 1);
+        }
+
+        // 星
+        if (nightFactor > 0) {
+          for (var s = 0; s < stars.length; s++) {
+            stars[s].x -= speed * 0.05 * f;
+            if (stars[s].x < -10) { stars[s].x = W + Math.random() * 50; stars[s].y = Math.random() * (GROUND_Y - 100) + 15; }
+          }
+        }
+
+        // 衝突
+        var dw = dino.ducking ? 56 : 40, dh = dino.ducking ? 26 : 40, dx = dino.x + 4, dy = dino.y + 4;
+        for (var k = 0; k < obstacles.length; k++) {
+          var ob = obstacles[k];
+          var ox = ob.x + 6, oy = ob.y + 6, ow = ob.w - 12, oh = ob.h - 12;
+          if (dx < ox + ow && dx + dw > ox && dy < oy + oh && dy + dh > oy) { gameOver(); break; }
+        }
+        hud();
+      }
+
+      if (state !== GAMEOVER) {
+        // 雲
+        cloudTimer -= f;
+        if (cloudTimer <= 0) {
+          clouds.push({ x: W + 30, y: Math.random() * (GROUND_Y - 120) + 20, sp: Math.random() * 0.5 + 0.4 });
+          cloudTimer = Math.random() * 180 + 120;
+        }
+        for (var c = clouds.length - 1; c >= 0; c--) {
+          clouds[c].x -= (state === RUNNING ? speed * 0.2 + clouds[c].sp : clouds[c].sp) * f;
+          if (clouds[c].x < -60) clouds.splice(c, 1);
+        }
+        // 地面
+        var scroll = (state === RUNNING ? speed : 1) * f;
+        var rightmost = 0;
+        for (var g = 0; g < ground.length; g++) { ground[g].x -= scroll; rightmost = Math.max(rightmost, ground[g].x + ground[g].w); }
+        for (var g2 = 0; g2 < ground.length; g2++) {
+          var t = ground[g2];
+          if (t.x + t.w < 0) {
+            t.x = rightmost + Math.random() * 20; t.w = Math.random() * 20 + 20;
+            t.bump = Math.random() > 0.4; t.type = Math.floor(Math.random() * 3);
+            rightmost = t.x + t.w;
+          }
+        }
+      }
+
+      if (flashTimer > 0) {
+        var before = Math.floor(flashTimer / 10);
+        flashTimer -= f;
+        if (Math.floor(flashTimer / 10) !== before) flashOn = !flashOn;
+        if (flashTimer <= 0) { flashTimer = 0; flashOn = true; }
+        hud();
+      }
+    }
+
+    // ---------- 描画 ----------
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, W, HGT, function (cw, ch, ctx, scale) { ctx.scale(scale, scale); draw(); });
+
+    function mix(a, b, t) { return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ',' + Math.round(a[1] + (b[1] - a[1]) * t) + ',' + Math.round(a[2] + (b[2] - a[2]) * t) + ')'; }
+
+    function draw() {
+      if (!st) return;
+      var ctx = st.ctx();
+      if (!ctx) return;
+      var p = nightFactor > 0.5 ? NIGHT : DAY;
+      ctx.fillStyle = mix(DAY.bg, NIGHT.bg, nightFactor);
+      ctx.fillRect(0, 0, W, HGT);
+
+      if (nightFactor > 0) {
+        ctx.globalAlpha = nightFactor;
+        bitmap(ctx, W - 90, 15, S.MOON, NIGHT.star);
+        for (var s = 0; s < stars.length; s++) bitmap(ctx, stars[s].x, stars[s].y, S.STARS[stars[s].type], NIGHT.star);
+        ctx.globalAlpha = 1;
+      }
+      for (var c = 0; c < clouds.length; c++) bitmap(ctx, clouds[c].x, clouds[c].y, S.CLOUD, p.cloud);
+
+      ctx.fillStyle = p.fg;
+      ctx.fillRect(0, GROUND_Y, W, 2);
+      for (var g = 0; g < ground.length; g++) {
+        var t = ground[g];
+        if (!t.bump || t.x < -50 || t.x > W + 50) continue;
+        if (t.type === 0) ctx.fillRect(t.x, GROUND_Y + 4, 4, 2);
+        else if (t.type === 1) { ctx.fillRect(t.x, GROUND_Y + 6, 8, 2); ctx.fillRect(t.x + 3, GROUND_Y + 8, 4, 2); }
+        else { ctx.fillRect(t.x, GROUND_Y + 3, 2, 2); ctx.fillRect(t.x + 5, GROUND_Y + 7, 3, 2); }
+      }
+
+      for (var i = 0; i < obstacles.length; i++) {
+        var o = obstacles[i];
+        if (o.type === 'bird') bitmap(ctx, o.x, o.y, o.frame === 0 ? S.BIRD_1 : S.BIRD_2, p.fg);
+        else if (o.type === 'small') { for (var a = 0; a < o.count; a++) bitmap(ctx, o.x + a * 20, o.y, S.CACTUS_SMALL, p.fg); }
+        else { for (var b = 0; b < o.count; b++) bitmap(ctx, o.x + b * 30, o.y, S.CACTUS_LARGE, p.fg); }
+      }
+
+      var sp;
+      if (state === GAMEOVER) sp = S.DINO_DEAD;
+      else if (dino.ducking) sp = dino.frame === 0 ? S.DINO_DUCK_1 : S.DINO_DUCK_2;
+      else if (!dino.grounded || state === IDLE) sp = S.DINO_STAND;
+      else sp = dino.frame === 0 ? S.DINO_RUN_1 : S.DINO_RUN_2;
+      bitmap(ctx, dino.x, dino.y, sp, p.fg);
+    }
+
+    // ---------- ループ ----------
+    var loop = H.loop(update, draw);
+
+    // ---------- 操作の配線 ----------
+    // 盤面: 押した瞬間ジャンプ、下へ 30px 以上なぞるとしゃがみ、離すと解除
+    (function () {
+      var sy = 0, down = false, ducked = false;
+      function pd(y) { sy = y; down = true; ducked = false; if (state === RUNNING) jumpPress(); }
+      function pm(y) { if (down && !ducked && y - sy > 30 && state === RUNNING) { ducked = true; duckPress(); } }
+      function pu() { if (!down) return; down = false; jumpRelease(); if (ducked) duckRelease(); }
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', function (e) { if (e.pointerType === 'mouse' && e.button !== 0) return; pd(e.clientY); });
+        canvas.addEventListener('pointermove', function (e) { pm(e.clientY); });
+        canvas.addEventListener('pointerup', pu);
+        canvas.addEventListener('pointercancel', pu);
+      } else {
+        canvas.addEventListener('touchstart', function (e) { var t = e.touches[0]; if (t) pd(t.clientY); }, { passive: true });
+        canvas.addEventListener('touchmove', function (e) { var t = e.touches[0]; if (t) pm(t.clientY); }, { passive: true });
+        canvas.addEventListener('touchend', pu);
+        canvas.addEventListener('mousedown', function (e) { pd(e.clientY); });
+        canvas.addEventListener('mousemove', function (e) { pm(e.clientY); });
+        canvas.addEventListener('mouseup', pu);
+      }
+    })();
+    H.holdButton(document.getElementById('btn-jump'), jumpPress, jumpRelease);
+    H.holdButton(document.getElementById('btn-duck'), function () { if (state === RUNNING) duckPress(); }, duckRelease);
+    H.keys({
+      ' ': jumpPress, ArrowUp: jumpPress, Enter: function () { if (state !== RUNNING) start(); },
+      ArrowDown: duckPress
+    }, function (k) {
+      if (k === ' ' || k === 'ArrowUp') jumpRelease();
+      else if (k === 'ArrowDown') duckRelease();
+    });
+
+    window.resetGame = function () {
+      state = IDLE; score = 0; obstacles = []; nightFactor = 0; isNight = false; flashOn = true; flashTimer = 0;
+      dino.y = GROUND_Y - 44; dino.vy = 0; dino.grounded = true; dino.ducking = false;
+      loop.pause(false);
+      hud(); draw(); showStart();
+    };
+
+    // 画面を離れたら一時停止
+    H.pauseWhenHidden(function () {
+      if (state !== RUNNING || loop.isPaused()) return;
+      loop.pause(true);
+      keys.duck = false; keys.jump = false;
+      overlayEl = H.overlay({
+        title: '一時停止', html: 'タップで再開',
+        buttons: [{ label: '再開', onClick: function () { overlayEl = null; loop.pause(false); } }],
+        tapAnywhere: function () { overlayEl = null; loop.pause(false); }
+      });
+    });
+
+    hud(); draw(); showStart(); loop.start();
+  })();
+  </script>
+</body>
+</html>

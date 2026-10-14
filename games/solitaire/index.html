@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ソリティア - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .ctl-btn[disabled] { opacity: 0.35; }
+    .ctl-btn.go { background: var(--accent); border-color: var(--accent); }
+    .overlay .seg { margin: 4px 0 2px; }
+    .overlay .seg button { min-height: 40px; padding: 0 16px; font-size: 15px; }
+    .overlay .opt-label { font-size: 13px; color: var(--muted); }
+    canvas.stage-canvas { background: #1f5c3a; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ソリティア" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">手数<b id="moves">0</b></span>
+      <span class="hud-item">時間<b id="time">0:00</b></span>
+      <span class="hud-item">勝利<b id="wins">0</b></span>
+      <span class="hud-item">ベスト<b id="best">--</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>4 つの組札に、A から K まで同じマークを順に積めば勝ち。</li>
+            <li>場札は、赤と黒を交互に、数字が 1 つ小さいカードを重ねられる。空いた列には K だけ置ける。</li>
+            <li>山札をタップしてめくる。めくる枚数(1 枚 / 3 枚)は ↻ の画面で選べる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>カードをタップして選び、置きたい所をタップ。もう一度同じカードをタップすると、行き先が 1 つなら自動で動く。</li>
+            <li>組札に上げられるカードは 1 タップで上がる。ドラッグで動かしてもよい。</li>
+            <li>戻す: 何手でも戻せる。ヒント: 動かせる手を光らせる。</li>
+            <li>山札も手札も無くなり全部表向きになったら「仕上げる」で自動で積む。</li>
+            <li>PC: スペース = めくる、Z = 戻す、H = ヒント</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn wide" id="btn-undo">戻す</button>
+      <button type="button" class="ctl-btn wide" id="btn-hint">ヒント</button>
+      <button type="button" class="ctl-btn wide" id="btn-finish" disabled>仕上げる</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  // @core-start  (ルール部分。node のテストでもこの区間を読み込む)
+  var SolCore = (function () {
+    'use strict';
+    // カード id = suit*13 + (rank-1)  suit: 0♠ 1♥ 2♦ 3♣
+    function suit(id) { return Math.floor(id / 13); }
+    function rank(id) { return id % 13 + 1; }
+    function isRed(id) { var s = suit(id); return s === 1 || s === 2; }
+
+    function rng(seed) {
+      var a = seed >>> 0;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // state: { stock:[id], waste:[id], found:[[id]x4], tab:[[{id,up}]x7], passes }
+    function deal(seed) {
+      var r = rng(seed), deck = [], i, j, c;
+      for (i = 0; i < 52; i++) deck.push(i);
+      for (i = 51; i > 0; i--) { j = Math.floor(r() * (i + 1)); c = deck[i]; deck[i] = deck[j]; deck[j] = c; }
+      var st = { stock: [], waste: [], found: [[], [], [], []], tab: [[], [], [], [], [], [], []], passes: 0 };
+      var k = 0;
+      for (i = 0; i < 7; i++) for (j = 0; j <= i; j++) st.tab[i].push({ id: deck[k++], up: j === i });
+      while (k < 52) st.stock.push(deck[k++]);
+      return st;
+    }
+
+    function clone(st) { return JSON.parse(JSON.stringify(st)); }
+
+    function canToFound(id, pile) {
+      if (pile.length === 0) return rank(id) === 1;
+      var top = pile[pile.length - 1];
+      return suit(top) === suit(id) && rank(top) + 1 === rank(id);
+    }
+    function canToTab(id, col) {
+      if (col.length === 0) return rank(id) === 13;
+      var top = col[col.length - 1];
+      return top.up && rank(top.id) === rank(id) + 1 && isRed(top.id) !== isRed(id);
+    }
+
+    // 動かせる塊: from = {type:'waste'} | {type:'found', idx} | {type:'tab', col, idx}
+    function pickCards(st, from) {
+      if (from.type === 'waste') return st.waste.length ? [st.waste[st.waste.length - 1]] : null;
+      if (from.type === 'found') { var p = st.found[from.idx]; return p.length ? [p[p.length - 1]] : null; }
+      if (from.type !== 'tab') return null;
+      var col = st.tab[from.col];
+      if (from.idx < 0 || from.idx >= col.length || !col[from.idx].up) return null;
+      var out = [];
+      for (var i = from.idx; i < col.length; i++) out.push(col[i].id);
+      return out;
+    }
+
+    // to = {type:'found', idx} | {type:'tab', col}
+    function canMove(st, from, to) {
+      var cards = pickCards(st, from);
+      if (!cards) return false;
+      if (to.type === 'found') return cards.length === 1 && canToFound(cards[0], st.found[to.idx]);
+      if (from.type === 'tab' && from.col === to.col) return false;
+      return canToTab(cards[0], st.tab[to.col]);
+    }
+
+    // 戻り値: { flipped, cards }。呼ぶ前に canMove を見ること
+    function applyMove(st, from, to) {
+      var cards = pickCards(st, from), flipped = false;
+      if (from.type === 'waste') st.waste.pop();
+      else if (from.type === 'found') st.found[from.idx].pop();
+      else {
+        var col = st.tab[from.col];
+        col.splice(from.idx, cards.length);
+        if (col.length && !col[col.length - 1].up) { col[col.length - 1].up = true; flipped = true; }
+      }
+      if (to.type === 'found') st.found[to.idx].push(cards[0]);
+      else for (var i = 0; i < cards.length; i++) st.tab[to.col].push({ id: cards[i], up: true });
+      return { flipped: flipped, cards: cards };
+    }
+
+    // 山札: めくる or 戻す。戻り値 めくった枚数(0 なら手札を山へ戻した / 何も無い)
+    function draw(st, n) {
+      if (st.stock.length === 0) {
+        if (st.waste.length === 0) return 0;
+        while (st.waste.length) st.stock.push(st.waste.pop());
+        st.passes++;
+        return 0;
+      }
+      var k = 0;
+      while (k < n && st.stock.length) { st.waste.push(st.stock.pop()); k++; }
+      return k;
+    }
+
+    function foundIndexFor(st, id) {
+      for (var i = 0; i < 4; i++) if (canToFound(id, st.found[i])) return i;
+      return -1;
+    }
+
+    // 意味のある手を優先度順に列挙。[{from,to,score}]
+    function listMoves(st) {
+      var out = [], c, i, k, t;
+      function add(from, to, score) { out.push({ from: from, to: to, score: score }); }
+      if (st.waste.length) {
+        k = foundIndexFor(st, st.waste[st.waste.length - 1]);
+        if (k >= 0) add({ type: 'waste' }, { type: 'found', idx: k }, 100);
+      }
+      for (c = 0; c < 7; c++) {
+        var col = st.tab[c];
+        if (!col.length) continue;
+        k = foundIndexFor(st, col[col.length - 1].id);
+        if (k >= 0) add({ type: 'tab', col: c, idx: col.length - 1 }, { type: 'found', idx: k }, 90);
+      }
+      for (c = 0; c < 7; c++) {
+        var src = st.tab[c];
+        var first = -1;
+        for (i = 0; i < src.length; i++) if (src[i].up) { first = i; break; }
+        if (first < 0) continue;
+        for (i = first; i < src.length; i++) {
+          var id = src[i].id;
+          for (t = 0; t < 7; t++) {
+            if (t === c) continue;
+            if (!canToTab(id, st.tab[t])) continue;
+            var wholeStack = (i === first);
+            var hasDown = first > 0;
+            // 空列へ、裏の無い列全体を動かすのは無意味
+            if (st.tab[t].length === 0 && wholeStack && !hasDown) continue;
+            var score = 50;
+            if (wholeStack && hasDown) score = 80;        // 裏のカードが開く
+            else if (wholeStack) score = 60;             // 列が空く
+            if (st.tab[t].length === 0) score -= 5;
+            add({ type: 'tab', col: c, idx: i }, { type: 'tab', col: t }, score);
+          }
+        }
+      }
+      if (st.waste.length) {
+        var w = st.waste[st.waste.length - 1];
+        for (t = 0; t < 7; t++) if (canToTab(w, st.tab[t])) add({ type: 'waste' }, { type: 'tab', col: t }, 70);
+      }
+      out.sort(function (a, b) { return b.score - a.score; });
+      return out;
+    }
+
+    // 残り全部めくっても何も置けないか。山・手札の全カードを調べる(近似)
+    function isStuck(st) {
+      if (listMoves(st).length) return false;
+      var pool = st.stock.concat(st.waste), i, t;
+      for (i = 0; i < pool.length; i++) {
+        if (foundIndexFor(st, pool[i]) >= 0) return false;
+        for (t = 0; t < 7; t++) if (canToTab(pool[i], st.tab[t])) return false;
+      }
+      return true;
+    }
+
+    function isWon(st) {
+      return st.found[0].length + st.found[1].length + st.found[2].length + st.found[3].length === 52;
+    }
+    function canAutoFinish(st) {
+      if (st.stock.length || st.waste.length) return false;
+      for (var c = 0; c < 7; c++) for (var i = 0; i < st.tab[c].length; i++) if (!st.tab[c][i].up) return false;
+      return !isWon(st);
+    }
+    function nextAutoMove(st) {
+      for (var c = 0; c < 7; c++) {
+        var col = st.tab[c];
+        if (!col.length) continue;
+        var k = foundIndexFor(st, col[col.length - 1].id);
+        if (k >= 0) return { from: { type: 'tab', col: c, idx: col.length - 1 }, to: { type: 'found', idx: k } };
+      }
+      if (st.waste.length) {
+        var w = foundIndexFor(st, st.waste[st.waste.length - 1]);
+        if (w >= 0) return { from: { type: 'waste' }, to: { type: 'found', idx: w } };
+      }
+      return null;
+    }
+
+    return { suit: suit, rank: rank, isRed: isRed, rng: rng, deal: deal, clone: clone,
+      canToFound: canToFound, canToTab: canToTab, pickCards: pickCards, canMove: canMove,
+      applyMove: applyMove, draw: draw, foundIndexFor: foundIndexFor, listMoves: listMoves,
+      isStuck: isStuck, isWon: isWon, canAutoFinish: canAutoFinish, nextAutoMove: nextAutoMove };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = SolCore;
+  // @core-end
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = SolCore;
+    var store = H.store('solitaire');
+    var SUITS = ['♠', '♥', '♦', '♣'];
+    var RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+    // ---------- 進行 ----------
+    var seed = 0, drawN = store.get('drawN', 1);
+    var st = null, hist = [], moves = 0;
+    var elapsed = 0, runSince = 0;       // 停止中の累計 ms と、走り出した時刻
+    var won = false, finishing = false;
+    var wins = store.get('wins', 0);
+    var selected = null;                 // {type, col, idx}
+    var hint = null;                     // {from, to, until}
+    var flights = [];                    // {ids, up, x0,y0, x1,y1, t0, dur}
+    var rafId = 0, winParts = null, winT0 = 0, winSpawn = 0;
+    var drag = null;                     // {h, from, cards, ids, ox, oy, x, y, sx, sy, moved}
+
+    function bestKey() { return 'best' + drawN; }
+    function fmt(ms) {
+      var s = Math.floor(ms / 1000), m = Math.floor(s / 60); s %= 60;
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+    function nowElapsed() { return elapsed + (runSince ? Date.now() - runSince : 0); }
+    function timerStart() { if (!runSince && !won) runSince = Date.now(); }
+    function timerStop() { if (runSince) { elapsed += Date.now() - runSince; runSince = 0; } }
+
+    function hud() {
+      document.getElementById('moves').textContent = moves;
+      document.getElementById('time').textContent = fmt(nowElapsed());
+      document.getElementById('wins').textContent = wins;
+      var b = store.get(bestKey(), 0);
+      document.getElementById('best').textContent = b ? fmt(b) : '--';
+      var fb = document.getElementById('btn-finish');
+      var can = !!(st && !won && !finishing && C.canAutoFinish(st));
+      fb.disabled = !can;
+      fb.classList.toggle('go', can);
+      document.getElementById('btn-undo').disabled = !hist.length || finishing || won;
+    }
+    setInterval(function () { if (runSince) document.getElementById('time').textContent = fmt(nowElapsed()); }, 500);
+
+    function save() {
+      if (!st) return;
+      if (won) { store.remove('game'); return; }
+      store.set('game', { seed: seed, drawN: drawN, st: st, hist: hist.slice(-200), moves: moves, elapsed: nowElapsed() });
+    }
+
+    function newGame(sd, animate) {
+      seed = (sd === undefined) ? ((Math.random() * 4294967296) >>> 0) : sd;
+      st = C.deal(seed); hist = []; moves = 0; elapsed = 0; runSince = 0;
+      won = false; finishing = false; selected = null; hint = null; flights = []; winParts = null; drag = null;
+      if (animate && L) {
+        var k = 0, s0 = stockPos();
+        for (var c = 0; c < 7; c++) for (var i = 0; i < st.tab[c].length; i++) {
+          var p = tabPos(c, i);
+          flights.push({ ids: [st.tab[c][i].id], up: st.tab[c][i].up, x0: s0.x, y0: s0.y, x1: p.x, y1: p.y,
+            t0: performance.now() + k * 28, dur: 220 });
+          k++;
+        }
+        kick();
+      }
+      hud(); save(); draw();
+    }
+
+    function pushHist() { hist.push(C.clone(st)); if (hist.length > 400) hist.shift(); }
+
+    function afterChange(checkStuck) {
+      moves++;
+      timerStart();
+      selected = null; hint = null;
+      if (C.isWon(st)) { onWin(); return; }
+      hud(); save(); draw();
+      if (checkStuck && C.isStuck(st)) {
+        setTimeout(function () { if (st && !won && C.isStuck(st)) showStuck(); }, 450);
+      }
+    }
+
+    function doMove(from, to) {
+      if (!C.canMove(st, from, to)) return false;
+      pushHist();
+      var fromPos = posOfFrom(from);
+      var res = C.applyMove(st, from, to);
+      var dst = (to.type === 'found') ? foundPos(to.idx) : tabPos(to.col, st.tab[to.col].length - res.cards.length);
+      flights.push({ ids: res.cards, up: true, x0: fromPos.x, y0: fromPos.y, x1: dst.x, y1: dst.y, t0: performance.now(), dur: 160 });
+      kick();
+      if (to.type === 'found') H.audio.good(); else H.audio.click();
+      afterChange(true);
+      return true;
+    }
+
+    function doDraw() {
+      if (!st || won || finishing) return;
+      if (!st.stock.length && !st.waste.length) { H.audio.bad(); return; }
+      pushHist();
+      var fromStock = st.stock.length > 0;
+      var before = st.waste.length;
+      C.draw(st, drawN);
+      if (fromStock) {
+        var s0 = stockPos(), wv = wasteVisible();
+        for (var i = before; i < st.waste.length; i++) {
+          var wp = wastePos(wv - (st.waste.length - i));
+          flights.push({ ids: [st.waste[i]], up: true, x0: s0.x, y0: s0.y, x1: wp.x, y1: wp.y, t0: performance.now() + (i - before) * 40, dur: 160 });
+        }
+        kick();
+      }
+      H.audio.click();
+      afterChange(true);
+    }
+
+    function undo() {
+      if (!hist.length || finishing || won) return;
+      st = hist.pop(); moves++; selected = null; hint = null; drag = null;
+      H.audio.click(); hud(); save(); draw();
+    }
+
+    function showHint() {
+      if (!st || won || finishing) return;
+      selected = null;
+      var ms = C.listMoves(st);
+      if (ms.length) {
+        hint = { from: ms[0].from, to: ms[0].to, until: performance.now() + 1600 };
+        kick(); draw();
+      } else if ((st.stock.length || st.waste.length) && !C.isStuck(st)) {
+        hint = { from: { type: 'stock' }, to: null, until: performance.now() + 1600 };
+        kick(); H.toast('山札をめくろう');
+      } else showStuck();
+    }
+
+    function autoFinish() {
+      if (!st || !C.canAutoFinish(st)) return;
+      finishing = true; selected = null; hint = null; hud();
+      function step() {
+        if (!st || !finishing) return;
+        var mv = C.nextAutoMove(st);
+        if (!mv || C.isWon(st)) { finishing = false; if (C.isWon(st)) onWin(); else hud(); return; }
+        pushHist();
+        var fp = posOfFrom(mv.from);
+        var res = C.applyMove(st, mv.from, mv.to);
+        var dp = foundPos(mv.to.idx);
+        flights.push({ ids: res.cards, up: true, x0: fp.x, y0: fp.y, x1: dp.x, y1: dp.y, t0: performance.now(), dur: 140 });
+        moves++; kick(); draw();
+        H.audio.beep(600 + st.found[mv.to.idx].length * 40, 0.04);
+        setTimeout(step, 90);
+      }
+      step();
+    }
+
+    function onWin() {
+      won = true; finishing = false; timerStop();
+      var t = elapsed;
+      wins++; store.set('wins', wins);
+      var best = store.get(bestKey(), 0);
+      var isBest = !best || t < best;
+      if (isBest) store.set(bestKey(), t);
+      store.remove('game');
+      hud(); draw();
+      H.audio.win();
+      winParts = []; winT0 = performance.now(); winSpawn = 0; kick();
+      setTimeout(function () {
+        H.overlay({ title: 'クリア!', big: fmt(t), html: (isBest ? '<b>ベスト更新!</b> ' : '') + moves + ' 手 / 勝利 ' + wins + ' 回',
+          buttons: [
+            { label: '新しいゲーム', onClick: function () { newGame(undefined, true); } },
+            { label: '同じ配りでもう一度', secondary: true, onClick: function () { newGame(seed, true); } }
+          ] });
+      }, 2600);
+    }
+
+    var stuckShown = false;
+    function showStuck() {
+      if (won || stuckShown) return;
+      stuckShown = true;
+      timerStop(); hud();
+      var btns = [];
+      if (hist.length) btns.push({ label: '1 手戻す', onClick: function () { stuckShown = false; undo(); timerStart(); } });
+      btns.push({ label: '同じ配りでやり直す', secondary: !!hist.length, onClick: function () { stuckShown = false; newGame(seed, true); } });
+      btns.push({ label: '新しいゲーム', secondary: true, onClick: function () { stuckShown = false; newGame(undefined, true); } });
+      H.overlay({ title: '手詰まり', html: 'これ以上動かせる手が無い', buttons: btns });
+    }
+
+    function showMenu() {
+      timerStop(); hud();
+      var inProgress = st && !won && moves > 0;
+      var html = '<span class="opt-label">山札をめくる枚数</span><br><span class="seg" id="seg-draw">' +
+        '<button type="button" data-n="1"' + (drawN === 1 ? ' class="on"' : '') + '>1 枚</button>' +
+        '<button type="button" data-n="3"' + (drawN === 3 ? ' class="on"' : '') + '>3 枚</button></span>' +
+        '<br><span class="opt-label">配り番号 ' + seed + '</span>';
+      var btns = [{ label: '新しいゲーム', onClick: function () { newGame(undefined, true); } },
+        { label: '同じ配りでやり直す', secondary: true, onClick: function () { newGame(seed, true); } }];
+      if (inProgress) btns.push({ label: '続ける', secondary: true, onClick: function () { timerStart(); hud(); } });
+      var el = H.overlay({ title: 'ソリティア', html: html, buttons: btns });
+      var seg = el.querySelector('#seg-draw');
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          drawN = parseInt(b.getAttribute('data-n'), 10);
+          store.set('drawN', drawN);
+          Array.prototype.forEach.call(seg.querySelectorAll('button'), function (x) { x.classList.toggle('on', x === b); });
+          hud(); save(); draw();
+        });
+      });
+    }
+    window.resetGame = showMenu;
+
+    // ---------- レイアウト ----------
+    var canvas = document.getElementById('cv'), stage = document.getElementById('stage');
+    var ctx = null, L = null;   // L: 現在のレイアウト(論理座標)
+    var CW = 50, CH = 70, GAP = 5;
+
+    function computeLayout(landscape) {
+      var l = { landscape: landscape, cw: CW, ch: CH }, i;
+      if (!landscape) {
+        l.W = 7 * CW + 8 * GAP; l.H = 520;
+        l.stock = { x: GAP, y: GAP };
+        l.waste = { x: GAP * 2 + CW, y: GAP, dx: 11, dy: 0 };
+        l.found = []; for (i = 0; i < 4; i++) l.found.push({ x: GAP + (3 + i) * (CW + GAP), y: GAP });
+        l.tabY = GAP + CH + 12;
+        l.tabX = []; for (i = 0; i < 7; i++) l.tabX.push(GAP + i * (CW + GAP));
+      } else {
+        l.W = 7 * (CW + GAP) + 2 * (CW + GAP * 2) + GAP; l.H = 4 * (CH + GAP) + GAP + 6;
+        l.stock = { x: GAP, y: GAP };
+        l.waste = { x: GAP, y: GAP * 2 + CH, dx: 0, dy: 11 };
+        var fx = l.W - GAP - CW;
+        l.found = []; for (i = 0; i < 4; i++) l.found.push({ x: fx, y: GAP + i * (CH + GAP) });
+        l.tabY = GAP;
+        l.tabX = []; for (i = 0; i < 7; i++) l.tabX.push(CW + GAP * 3 + i * (CW + GAP));
+      }
+      l.tabH = l.H - l.tabY - GAP;
+      return l;
+    }
+
+    function layout() {
+      var main = stage.parentElement, r = main.getBoundingClientRect();
+      var landscape = r.width > r.height * 1.25;
+      L = computeLayout(landscape);
+      var f = H.fitStage(stage, L.W, L.H);
+      ctx = H.setupCanvas(canvas, f.width, f.height);
+      L.scale = f.scale;
+      ctx.scale(f.scale, f.scale);
+      draw();
+    }
+    H.onResize(layout);
+
+    function stockPos() { return { x: L.stock.x, y: L.stock.y }; }
+    function wasteVisible() {
+      if (!st || !st.waste.length) return 0;
+      if (drawN !== 3) return 1;
+      var r = st.waste.length % 3;
+      return r === 0 ? 3 : r;
+    }
+    function wastePos(k) { return { x: L.waste.x + L.waste.dx * k, y: L.waste.y + L.waste.dy * k }; }
+    function wasteTopPos() { var n = wasteVisible(); return wastePos(Math.max(0, n - 1)); }
+    function foundPos(i) { return { x: L.found[i].x, y: L.found[i].y }; }
+    function tabOffsets(c) {
+      var col = st.tab[c], nd = 0, nu = 0;
+      for (var i = 0; i < col.length; i++) { if (col[i].up) nu++; else nd++; }
+      var od = 12, ou = 24;
+      var need = nd * od + Math.max(0, nu - 1) * ou + CH;
+      if (need > L.tabH) {
+        var k = (L.tabH - CH) / (need - CH);
+        od = Math.max(5, od * k); ou = Math.max(13, ou * k);
+        need = nd * od + Math.max(0, nu - 1) * ou + CH;
+        if (need > L.tabH) { var k2 = (L.tabH - CH) / (need - CH); od *= k2; ou *= k2; }
+      }
+      return { od: od, ou: ou };
+    }
+    function tabPos(c, i) {
+      var col = st.tab[c], o = tabOffsets(c), y = L.tabY;
+      for (var k = 0; k < i && k < col.length; k++) y += col[k].up ? o.ou : o.od;
+      return { x: L.tabX[c], y: y };
+    }
+    function posOfFrom(from) {
+      if (from.type === 'waste') return wasteTopPos();
+      if (from.type === 'found') return foundPos(from.idx);
+      if (from.type === 'stock') return stockPos();
+      return tabPos(from.col, from.idx);
+    }
+
+    // ---------- 描画 ----------
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
+    }
+    function drawSlot(x, y, label) {
+      rrect(x, y, CW, CH, 5);
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1.5; ctx.stroke();
+      if (label) {
+        ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.font = 'bold 26px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(label, x + CW / 2, y + CH / 2);
+      }
+    }
+    function drawGlow(x, y, color) {
+      rrect(x - 1.5, y - 1.5, CW + 3, CH + 3, 6);
+      ctx.lineWidth = 3; ctx.strokeStyle = color; ctx.stroke();
+    }
+    function drawCard(id, x, y, up, glow) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+      rrect(x, y, CW, CH, 5);
+      ctx.fillStyle = up ? '#fbfbf6' : '#2f5fb3';
+      ctx.fill();
+      ctx.restore();
+      if (!up) {
+        rrect(x + 4, y + 4, CW - 8, CH - 8, 3);
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        for (var i = 8; i < CW - 8; i += 7) for (var j = 8; j < CH - 8; j += 7) ctx.fillRect(x + i, y + j, 3, 3);
+      } else {
+        var red = C.isRed(id), s = SUITS[C.suit(id)], r = RANKS[C.rank(id) - 1];
+        ctx.fillStyle = red ? '#d3202a' : '#1b1b2a';
+        ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+        ctx.font = 'bold 14px system-ui, sans-serif';
+        ctx.fillText(r, x + 4, y + 3);
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.fillText(s, x + 4, y + 18);
+        ctx.font = '26px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(s, x + CW / 2 + 4, y + CH / 2 + 8);
+      }
+      rrect(x, y, CW, CH, 5);
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
+      if (glow) drawGlow(x, y, glow);
+    }
+    function sameFrom(a, b, c, i) {
+      if (!a || a.type !== b.type) return false;
+      if (b.type === 'tab') return a.col === c && i >= a.idx;
+      if (b.type === 'found') return a.idx === b.idx;
+      return true;
+    }
+    function hintColor() { return 'rgba(80,230,255,' + (0.55 + 0.45 * Math.sin(performance.now() / 120)) + ')'; }
+    function glowFor(from, c, i) {
+      if (sameFrom(selected, from, c, i)) return 'rgba(255,220,60,0.95)';
+      if (hint && sameFrom(hint.from, from, c, i)) return hintColor();
+      return null;
+    }
+    function inFlight(id) {
+      for (var f = 0; f < flights.length; f++) if (flights[f].ids.indexOf(id) >= 0) return true;
+      return false;
+    }
+
+    function draw() {
+      if (!ctx || !L || !st) return;
+      ctx.clearRect(0, 0, L.W, L.H);
+      ctx.fillStyle = '#1f5c3a'; ctx.fillRect(0, 0, L.W, L.H);
+      var i, c, k, p, now = performance.now();
+      if (flights.length) flights = flights.filter(function (f) { return now < f.t0 + f.dur; });
+      var dragIds = (drag && drag.ids) ? drag.ids : [];
+      function hidden(id) { return inFlight(id) || dragIds.indexOf(id) >= 0; }
+      // 山札
+      drawSlot(L.stock.x, L.stock.y, st.stock.length ? '' : (st.waste.length ? '↻' : ''));
+      if (st.stock.length) {
+        var n = Math.min(3, Math.ceil(st.stock.length / 8));
+        for (k = 0; k < n; k++) drawCard(st.stock[0], L.stock.x - k, L.stock.y - k, false, null);
+        if (hint && hint.from.type === 'stock') drawGlow(L.stock.x - (n - 1), L.stock.y - (n - 1), hintColor());
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText(String(st.stock.length), L.stock.x + CW / 2 - (n - 1), L.stock.y + CH - 5 - (n - 1));
+      }
+      // 手札
+      drawSlot(L.waste.x, L.waste.y, '');
+      var wv = wasteVisible();
+      for (k = 0; k < wv; k++) {
+        var wid = st.waste[st.waste.length - wv + k];
+        if (hidden(wid)) continue;
+        p = wastePos(k);
+        drawCard(wid, p.x, p.y, true, (k === wv - 1) ? glowFor({ type: 'waste' }) : null);
+      }
+      // 組札
+      for (i = 0; i < 4; i++) {
+        p = foundPos(i);
+        drawSlot(p.x, p.y, st.found[i].length ? '' : 'A');
+        var pile = st.found[i], shown = -1;
+        for (k = pile.length - 1; k >= 0; k--) if (!hidden(pile[k])) { shown = k; break; }
+        if (shown >= 0) drawCard(pile[shown], p.x, p.y, true, glowFor({ type: 'found', idx: i }));
+        if (hint && hint.to && hint.to.type === 'found' && hint.to.idx === i) drawGlow(p.x, p.y, hintColor());
+      }
+      // 場札
+      for (c = 0; c < 7; c++) {
+        var col = st.tab[c];
+        p = tabPos(c, 0);
+        if (!col.length) drawSlot(p.x, p.y, 'K');
+        for (i = 0; i < col.length; i++) {
+          if (hidden(col[i].id)) continue;
+          p = tabPos(c, i);
+          drawCard(col[i].id, p.x, p.y, col[i].up, col[i].up ? glowFor({ type: 'tab' }, c, i) : null);
+        }
+        if (hint && hint.to && hint.to.type === 'tab' && hint.to.col === c) {
+          p = tabPos(c, Math.max(0, col.length - 1));
+          drawGlow(p.x, p.y, hintColor());
+        }
+      }
+      // 飛んでいるカード
+      for (k = 0; k < flights.length; k++) {
+        var f = flights[k], t = (now - f.t0) / f.dur;
+        if (t < 0) t = 0; if (t > 1) t = 1;
+        t = 1 - (1 - t) * (1 - t);
+        var fx = f.x0 + (f.x1 - f.x0) * t, fy = f.y0 + (f.y1 - f.y0) * t;
+        for (i = 0; i < f.ids.length; i++) drawCard(f.ids[i], fx, fy + i * 24, f.up, null);
+      }
+      // ドラッグ中
+      if (drag && drag.ids) {
+        for (i = 0; i < drag.ids.length; i++) drawCard(drag.ids[i], drag.x - drag.ox, drag.y - drag.oy + i * 24, true, 'rgba(255,220,60,0.95)');
+      }
+      // 勝利演出
+      if (winParts) for (k = 0; k < winParts.length; k++) drawCard(winParts[k].id, winParts[k].x, winParts[k].y, true, null);
+    }
+
+    // ---------- アニメーションループ(必要な時だけ) ----------
+    function kick() { if (!rafId) rafId = requestAnimationFrame(tick); }
+    function tick() {
+      rafId = 0;
+      var now = performance.now(), busy = false;
+      flights = flights.filter(function (f) { return now < f.t0 + f.dur; });
+      if (flights.length) busy = true;
+      if (hint) { if (now > hint.until) hint = null; else busy = true; }
+      if (winParts) { stepWin(); busy = true; }
+      if (drag && drag.ids) busy = true;
+      draw();
+      if (busy) kick();
+    }
+
+    function stepWin() {
+      var now = performance.now();
+      if (now - winT0 > 2800) { winParts = null; return; }
+      if (now - winT0 < 2200 && now > winSpawn) {
+        winSpawn = now + 70;
+        var pile = winParts.length % 4;
+        var p = foundPos(pile);
+        var pl = st.found[pile];
+        var id = pl[Math.floor(Math.random() * pl.length)];
+        winParts.push({ id: id, x: p.x, y: p.y, vx: (Math.random() - 0.5) * 7 - (L.landscape ? 2 : 0), vy: -2 - Math.random() * 3 });
+      }
+      for (var i = winParts.length - 1; i >= 0; i--) {
+        var w = winParts[i];
+        w.vy += 0.45; w.x += w.vx; w.y += w.vy;
+        if (w.y + CH > L.H) { w.y = L.H - CH; w.vy = -w.vy * 0.78; }
+        if (w.x < -CW - 10 || w.x > L.W + 10) winParts.splice(i, 1);
+      }
+    }
+
+    // ---------- 当たり判定 ----------
+    // 戻り値 {type:'stock'} | {type:'waste'} | {type:'found', idx} | {type:'tab', col, idx(-1=空)} | null
+    function hitTest(x, y) {
+      if (x >= L.stock.x && x < L.stock.x + CW && y >= L.stock.y && y < L.stock.y + CH) return { type: 'stock' };
+      var wp = wasteTopPos();
+      if (x >= L.waste.x && x < wp.x + CW && y >= L.waste.y && y < wp.y + CH) return { type: 'waste' };
+      for (var i = 0; i < 4; i++) {
+        var f = L.found[i];
+        if (x >= f.x && x < f.x + CW && y >= f.y && y < f.y + CH) return { type: 'found', idx: i };
+      }
+      for (var c = 0; c < 7; c++) {
+        var cx = L.tabX[c];
+        if (x < cx - GAP / 2 || x >= cx + CW + GAP / 2) continue;
+        if (y < L.tabY) return null;
+        var col = st.tab[c];
+        for (var k = col.length - 1; k >= 0; k--) {
+          var p = tabPos(c, k);
+          if (y >= p.y && y < p.y + CH) return { type: 'tab', col: c, idx: k };
+        }
+        return { type: 'tab', col: c, idx: -1 };
+      }
+      return null;
+    }
+    function toBase(clientX, clientY) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (clientX - r.left) / r.width * L.W, y: (clientY - r.top) / r.height * L.H };
+    }
+    function destOf(h) {
+      if (!h) return null;
+      if (h.type === 'found') return { type: 'found', idx: h.idx };
+      if (h.type === 'tab') return { type: 'tab', col: h.col };
+      return null;
+    }
+    function tabDestsFor(from) {
+      var out = [], cards = C.pickCards(st, from);
+      if (!cards) return out;
+      for (var t = 0; t < 7; t++) {
+        if (from.type === 'tab' && from.col === t) continue;
+        if (C.canToTab(cards[0], st.tab[t])) {
+          if (!st.tab[t].length && from.type === 'tab' && from.idx === 0) continue;   // 空列から空列へは無意味
+          out.push({ type: 'tab', col: t });
+        }
+      }
+      return out;
+    }
+    function sameSel(a, h) {
+      if (!a || !h || a.type !== h.type) return false;
+      if (h.type === 'tab') return a.col === h.col && a.idx === h.idx;
+      if (h.type === 'found') return a.idx === h.idx;
+      return true;
+    }
+
+    // タップ
+    function tap(h) {
+      if (!st || won || finishing) return;
+      hint = null;
+      if (!h) { selected = null; draw(); return; }
+      if (h.type === 'stock') { selected = null; doDraw(); return; }
+      var same = sameSel(selected, h);
+      if (selected && !same) {
+        var to = destOf(h);
+        if (to && C.canMove(st, selected, to)) { doMove(selected, to); return; }
+      }
+      var src = (h.type === 'tab') ? (h.idx >= 0 ? { type: 'tab', col: h.col, idx: h.idx } : null) : h;
+      var cards = src ? C.pickCards(st, src) : null;
+      if (!cards) { if (selected) H.audio.bad(); selected = null; draw(); return; }
+      if (same) {
+        // 2 回目: 行き先が 1 つなら自動
+        var k = cards.length === 1 ? C.foundIndexFor(st, cards[0]) : -1;
+        if (k >= 0) { doMove(src, { type: 'found', idx: k }); return; }
+        var ds = tabDestsFor(src);
+        if (ds.length === 1) { doMove(src, ds[0]); return; }
+        H.toast(ds.length === 0 ? '動かせる所が無い' : '移動先をタップ');
+        selected = null; draw(); return;
+      }
+      // 1 回目: 組札に上がるなら即
+      if (cards.length === 1 && src.type !== 'found') {
+        var fi = C.foundIndexFor(st, cards[0]);
+        if (fi >= 0) { doMove(src, { type: 'found', idx: fi }); return; }
+      }
+      selected = src; H.audio.click(); draw();
+    }
+
+    // ポインタ(タップ + ドラッグ)
+    function pDown(cx, cy) {
+      if (!st || !L) return;
+      var p = toBase(cx, cy), h = hitTest(p.x, p.y);
+      drag = { h: h, sx: p.x, sy: p.y, x: p.x, y: p.y, moved: false, ids: null, cards: null, from: null, ox: 0, oy: 0 };
+      if (h && !won && !finishing && (h.type === 'waste' || h.type === 'found' || (h.type === 'tab' && h.idx >= 0))) {
+        var from = h.type === 'tab' ? { type: 'tab', col: h.col, idx: h.idx } : h;
+        var cards = C.pickCards(st, from);
+        if (cards) {
+          var pos = posOfFrom(from);
+          drag.from = from; drag.cards = cards; drag.ox = p.x - pos.x; drag.oy = p.y - pos.y;
+        }
+      }
+    }
+    function pMove(cx, cy) {
+      if (!drag) return;
+      var p = toBase(cx, cy);
+      drag.x = p.x; drag.y = p.y;
+      if (!drag.moved && Math.abs(p.x - drag.sx) + Math.abs(p.y - drag.sy) > 7) {
+        drag.moved = true;
+        if (drag.cards) { drag.ids = drag.cards; selected = null; hint = null; kick(); }
+      }
+    }
+    function pUp(cx, cy) {
+      if (!drag) return;
+      var d = drag; drag = null;
+      if (cx !== undefined) { var pp = toBase(cx, cy); d.x = pp.x; d.y = pp.y; }
+      if (!d.moved) { tap(d.h); return; }
+      if (!d.ids) { draw(); return; }
+      // ドロップ先: 持っているカードの中心、だめなら指の位置
+      var h = hitTest(d.x - d.ox + CW / 2, d.y - d.oy + CH / 2) || hitTest(d.x, d.y);
+      var to = destOf(h);
+      if (to && C.canMove(st, d.from, to)) { doMove(d.from, to); return; }
+      var pos = posOfFrom(d.from);
+      flights.push({ ids: d.ids, up: true, x0: d.x - d.ox, y0: d.y - d.oy, x1: pos.x, y1: pos.y, t0: performance.now(), dur: 140 });
+      if (to) H.audio.bad();
+      kick(); draw();
+    }
+    if (window.PointerEvent) {
+      var activeId = null;
+      canvas.addEventListener('pointerdown', function (e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        if (activeId !== null) return;
+        activeId = e.pointerId;
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        pDown(e.clientX, e.clientY); e.preventDefault();
+      });
+      canvas.addEventListener('pointermove', function (e) { if (e.pointerId === activeId) pMove(e.clientX, e.clientY); });
+      canvas.addEventListener('pointerup', function (e) { if (e.pointerId !== activeId) return; activeId = null; pUp(e.clientX, e.clientY); });
+      canvas.addEventListener('pointercancel', function (e) { if (e.pointerId === activeId) { activeId = null; drag = null; draw(); } });
+    } else {
+      canvas.addEventListener('touchstart', function (e) { var t = e.changedTouches[0]; pDown(t.clientX, t.clientY); e.preventDefault(); }, { passive: false });
+      canvas.addEventListener('touchmove', function (e) { var t = e.changedTouches[0]; pMove(t.clientX, t.clientY); e.preventDefault(); }, { passive: false });
+      canvas.addEventListener('touchend', function (e) { var t = e.changedTouches[0]; pUp(t.clientX, t.clientY); e.preventDefault(); }, { passive: false });
+      canvas.addEventListener('mousedown', function (e) { if (e.button === 0) pDown(e.clientX, e.clientY); });
+      window.addEventListener('mousemove', function (e) { pMove(e.clientX, e.clientY); });
+      window.addEventListener('mouseup', function (e) { pUp(e.clientX, e.clientY); });
+    }
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    // ---------- ボタン・キー ----------
+    document.getElementById('btn-undo').addEventListener('click', undo);
+    document.getElementById('btn-hint').addEventListener('click', showHint);
+    document.getElementById('btn-finish').addEventListener('click', autoFinish);
+    H.keys({ ' ': function (e) { e.preventDefault(); doDraw(); }, z: undo, Z: undo, h: showHint, H: showHint,
+             Escape: function () { selected = null; draw(); } });
+
+    H.pauseWhenHidden(function () { timerStop(); save(); hud(); }, function () { /* 次の操作で再開 */ });
+
+    // 動作確認用(headless テストが盤面を読む)
+    window.solDebug = function () {
+      return { st: st, L: L, seed: seed, moves: moves, won: won, hist: hist.length, drawN: drawN,
+        tabPos: function (c, i) { return tabPos(c, i); }, wasteTop: function () { return wasteTopPos(); } };
+    };
+
+    // ---------- 起動 ----------
+    layout();
+    var saved = store.get('game', null);
+    if (saved && saved.st && saved.st.tab && saved.st.tab.length === 7) {
+      seed = saved.seed; drawN = saved.drawN || drawN; st = saved.st; hist = saved.hist || [];
+      moves = saved.moves || 0; elapsed = saved.elapsed || 0;
+      hud(); draw();
+      if (C.isStuck(st)) setTimeout(showStuck, 300);
+    } else {
+      newGame(undefined, false);   // 読み込み直後は配り終わった盤面を出す
+    }
+  })();
+  </script>
+</body>
+</html>

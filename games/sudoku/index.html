@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>数独 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .pad { display: flex; flex-direction: column; gap: 5px; width: 100%; max-width: 440px; }
+    .pad .ctl-row { gap: 5px; }
+    .pad .ctl-btn { flex: 1 1 0; min-width: 0; min-height: 44px; height: 44px; padding: 0; font-size: 20px; }
+    .pad .ctl-btn.fn { font-size: 14px; }
+    .pad .ctl-btn.on { background: var(--accent); border-color: var(--accent); }
+    .pad .ctl-btn:disabled { opacity: 0.45; }
+    .app-controls { padding: 4px 8px 8px; }
+    .app-hud { padding: 3px 8px; gap: 2px 14px; }
+    .hud-item b { font-size: 17px; }
+    #diff { font-weight: 700; color: var(--text); }
+    .diff-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="数独" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item"><span id="diff">ふつう</span></span>
+      <span class="hud-item">タイム<b id="time">0:00</b></span>
+      <span class="hud-item">ミス<b id="miss">0</b></span>
+      <span class="hud-item">ヒント<b id="hint">0</b></span>
+      <span class="hud-item">ベスト<b id="best">--</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>縦・横・3×3 の枠に 1〜9 を 1 つずつ入れる。</li>
+            <li>問題は毎回その場で作られ、答えは 1 つだけ。</li>
+            <li>「メモ」を押すと候補の数字を小さく書き込める。</li>
+            <li>「ヒント」は空きマスを 1 つ答えで埋める。回数が記録される。</li>
+            <li>「ミス表示」が入っていると、間違った数字が赤くなる。</li>
+            <li>途中でページを閉じても、開き直せば続きから。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: マスをタップ → 下の数字を押す。「消す」で空に。</li>
+            <li>PC: クリック・矢印キーで選ぶ、数字キーで入力、Backspace で消す、M でメモ切替、Z で戻す、H でヒント。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <div class="pad">
+        <div class="ctl-row">
+          <button type="button" class="ctl-btn num" data-n="1">1</button>
+          <button type="button" class="ctl-btn num" data-n="2">2</button>
+          <button type="button" class="ctl-btn num" data-n="3">3</button>
+          <button type="button" class="ctl-btn num" data-n="4">4</button>
+          <button type="button" class="ctl-btn num" data-n="5">5</button>
+        </div>
+        <div class="ctl-row">
+          <button type="button" class="ctl-btn num" data-n="6">6</button>
+          <button type="button" class="ctl-btn num" data-n="7">7</button>
+          <button type="button" class="ctl-btn num" data-n="8">8</button>
+          <button type="button" class="ctl-btn num" data-n="9">9</button>
+          <button type="button" class="ctl-btn num fn" data-n="0">消す</button>
+        </div>
+        <div class="ctl-row">
+          <button type="button" class="ctl-btn fn" id="btn-memo">メモ</button>
+          <button type="button" class="ctl-btn fn" id="btn-undo">戻す</button>
+          <button type="button" class="ctl-btn fn" id="btn-hint">ヒント</button>
+          <button type="button" class="ctl-btn fn on" id="btn-err">ミス表示</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  //<engine>
+  // 数独エンジン: 完成盤の生成・解の数え上げ(2 で打ち切り)・一意解の問題生成
+  var SudokuEngine = (function () {
+    'use strict';
+    var PEER_BOX = [];
+    for (var i = 0; i < 81; i++) PEER_BOX.push(((i / 9 | 0) / 3 | 0) * 3 + ((i % 9) / 3 | 0));
+
+    function shuffle(a) {
+      for (var i = a.length - 1; i > 0; i--) {
+        var j = Math.random() * (i + 1) | 0; var t = a[i]; a[i] = a[j]; a[j] = t;
+      }
+      return a;
+    }
+
+    // 解の数を数える(limit で打ち切り)。grid は 0〜9 の配列(81)。fill=true なら最初に見つけた解を grid に残す
+    function countSolutions(grid, limit, fill) {
+      var rows = [0, 0, 0, 0, 0, 0, 0, 0, 0], cols = rows.slice(), boxes = rows.slice();
+      var g = grid.slice(), empties = [];
+      for (var i = 0; i < 81; i++) {
+        var v = g[i];
+        if (v) {
+          var b = 1 << v, r = i / 9 | 0, c = i % 9, bx = PEER_BOX[i];
+          if ((rows[r] & b) || (cols[c] & b) || (boxes[bx] & b)) return 0;
+          rows[r] |= b; cols[c] |= b; boxes[bx] |= b;
+        } else empties.push(i);
+      }
+      var count = 0, n = empties.length;
+      function rec(k) {
+        if (k === n) {
+          count++;
+          if (fill && count === 1) for (var q = 0; q < 81; q++) grid[q] = g[q];
+          return count >= limit;
+        }
+        // 候補が最も少ないマスを選ぶ(MRV)
+        var bestIdx = -1, bestMask = 0, bestCnt = 10;
+        for (var t = k; t < n; t++) {
+          var p = empties[t];
+          var m = ~(rows[p / 9 | 0] | cols[p % 9] | boxes[PEER_BOX[p]]) & 0x3fe;
+          var cnt = 0, mm = m;
+          while (mm) { mm &= mm - 1; cnt++; }
+          if (cnt < bestCnt) { bestCnt = cnt; bestIdx = t; bestMask = m; if (cnt <= 1) break; }
+        }
+        if (bestCnt === 0) return false;
+        var tmp = empties[k]; empties[k] = empties[bestIdx]; empties[bestIdx] = tmp;
+        var pos = empties[k], r = pos / 9 | 0, c = pos % 9, bx = PEER_BOX[pos];
+        for (var d = 1; d <= 9; d++) {
+          var bit = 1 << d;
+          if (!(bestMask & bit)) continue;
+          rows[r] |= bit; cols[c] |= bit; boxes[bx] |= bit; g[pos] = d;
+          var stop = rec(k + 1);
+          rows[r] &= ~bit; cols[c] &= ~bit; boxes[bx] &= ~bit; g[pos] = 0;
+          if (stop) { empties[bestIdx] = empties[k]; empties[k] = tmp; return true; }
+        }
+        empties[bestIdx] = empties[k]; empties[k] = tmp;
+        return false;
+      }
+      rec(0);
+      return count;
+    }
+
+    // 完成盤をランダムに作る
+    function makeSolution() {
+      var g = [];
+      for (var i = 0; i < 81; i++) g.push(0);
+      var rows = [0, 0, 0, 0, 0, 0, 0, 0, 0], cols = rows.slice(), boxes = rows.slice();
+      function rec(pos) {
+        if (pos === 81) return true;
+        var r = pos / 9 | 0, c = pos % 9, bx = PEER_BOX[pos];
+        var used = rows[r] | cols[c] | boxes[bx];
+        var ds = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        for (var k = 0; k < 9; k++) {
+          var d = ds[k], bit = 1 << d;
+          if (used & bit) continue;
+          rows[r] |= bit; cols[c] |= bit; boxes[bx] |= bit; g[pos] = d;
+          if (rec(pos + 1)) return true;
+          rows[r] &= ~bit; cols[c] &= ~bit; boxes[bx] &= ~bit; g[pos] = 0;
+        }
+        return false;
+      }
+      rec(0);
+      return g;
+    }
+
+    // 1 回の掘り: 完成盤からランダム順に抜いて、一意性を保てるものだけ抜く
+    function dig(solution, targetClues, deadline) {
+      var puzzle = solution.slice(), clues = 81;
+      var order = shuffle(Array.apply(null, Array(81)).map(function (_, i) { return i; }));
+      for (var k = 0; k < 81 && clues > targetClues; k++) {
+        if (Date.now() > deadline) break;
+        var p = order[k], keep = puzzle[p];
+        puzzle[p] = 0;
+        if (countSolutions(puzzle, 2, false) === 1) clues--;
+        else puzzle[p] = keep;
+      }
+      return { puzzle: puzzle, clues: clues };
+    }
+
+    // 問題生成。targetClues まで抜く。budgetMs を超えたらそれまでで一番良いものを返す
+    function generate(targetClues, budgetMs) {
+      var start = Date.now(), deadline = start + (budgetMs || 800);
+      var best = null, attempts = 0;
+      do {
+        attempts++;
+        var sol = makeSolution();
+        var d = dig(sol, targetClues, deadline);
+        if (!best || d.clues < best.clues) best = { puzzle: d.puzzle, solution: sol, clues: d.clues };
+        if (best.clues <= targetClues) break;
+      } while (Date.now() < deadline);
+      best.attempts = attempts;
+      best.ms = Date.now() - start;
+      return best;
+    }
+
+    return { generate: generate, countSolutions: countSolutions, makeSolution: makeSolution };
+  })();
+  //</engine>
+
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var E = SudokuEngine;
+    var BASE = 450, CELL = 50;
+    var store = H.store('sudoku');
+    var DIFFS = { easy: { label: 'やさしい', clues: 40 }, normal: { label: 'ふつう', clues: 32 }, hard: { label: 'むずかしい', clues: 26 } };
+
+    var G = null;          // 進行中のゲーム {diff, puzzle, solution, board, notes, miss, hints, elapsed, done}
+    var sel = -1, memo = false, showErr = store.get('showErr', true);
+    var undo = [];
+    var timer = null, lastTick = 0;
+
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, BASE, BASE, function (w, h, ctx, scale) { ctx.scale(scale, scale); draw(); });
+
+    function $(id) { return document.getElementById(id); }
+    function fmt(ms) {
+      var s = Math.floor(ms / 1000), m = Math.floor(s / 60); s %= 60;
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+    function hud() {
+      $('diff').textContent = G ? DIFFS[G.diff].label : '';
+      $('time').textContent = G ? fmt(G.elapsed) : '0:00';
+      $('miss').textContent = G ? G.miss : 0;
+      $('hint').textContent = G ? G.hints : 0;
+      var b = G ? store.get('best_' + G.diff, 0) : 0;
+      $('best').textContent = b ? fmt(b) : '--';
+      $('btn-memo').classList.toggle('on', memo);
+      $('btn-err').classList.toggle('on', showErr);
+      $('btn-undo').disabled = !undo.length;
+    }
+    function save() {
+      if (G) store.set('game', G); else store.remove('game');
+    }
+
+    // ---------- 描画 ----------
+    function draw() {
+      var ctx = st.ctx();
+      if (!ctx) return;
+      ctx.clearRect(0, 0, BASE, BASE);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, BASE, BASE);
+      if (!G) return;
+      var selV = sel >= 0 ? G.board[sel] : 0;
+      var sr = sel / 9 | 0, sc = sel % 9, sb = sel >= 0 ? (sr / 3 | 0) * 3 + (sc / 3 | 0) : -1;
+      var i, r, c, x, y;
+      // ハイライト
+      for (i = 0; i < 81; i++) {
+        r = i / 9 | 0; c = i % 9; x = c * CELL; y = r * CELL;
+        var fill = null;
+        if (sel >= 0) {
+          var b = (r / 3 | 0) * 3 + (c / 3 | 0);
+          if (r === sr || c === sc || b === sb) fill = 'rgba(255,255,255,0.07)';
+        }
+        if (selV && G.board[i] === selV) fill = 'rgba(138,43,226,0.35)';
+        if (i === sel) fill = 'rgba(138,43,226,0.6)';
+        if (fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, CELL, CELL); }
+      }
+      // 数字とメモ
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (i = 0; i < 81; i++) {
+        r = i / 9 | 0; c = i % 9; x = c * CELL + CELL / 2; y = r * CELL + CELL / 2;
+        var v = G.board[i];
+        if (v) {
+          var given = G.puzzle[i] !== 0;
+          var wrong = showErr && !given && v !== G.solution[i];
+          ctx.font = (given ? '700 ' : '500 ') + '28px system-ui, sans-serif';
+          ctx.fillStyle = wrong ? '#ff5f6d' : (given ? '#f4f4ff' : '#a7c7ff');
+          ctx.fillText(String(v), x, y + 1);
+        } else if (G.notes[i]) {
+          ctx.font = '600 12px system-ui, sans-serif';
+          ctx.fillStyle = '#a9a9c9';
+          for (var d = 1; d <= 9; d++) {
+            if (!(G.notes[i] & (1 << d))) continue;
+            var nx = c * CELL + 9 + ((d - 1) % 3) * 16, ny = r * CELL + 10 + ((d - 1) / 3 | 0) * 15;
+            ctx.fillText(String(d), nx, ny);
+          }
+        }
+      }
+      // 罫線
+      for (i = 0; i <= 9; i++) {
+        var thick = i % 3 === 0;
+        ctx.strokeStyle = thick ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = thick ? 2.5 : 1;
+        var p = i * CELL; if (i === 0) p = 1.25; if (i === 9) p = BASE - 1.25;
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, BASE); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(BASE, p); ctx.stroke();
+      }
+    }
+
+    // ---------- 操作 ----------
+    function pushUndo() {
+      undo.push({ board: G.board.slice(), notes: G.notes.slice() });
+      if (undo.length > 200) undo.shift();
+    }
+    function doUndo() {
+      if (!G || G.done || !undo.length) return;
+      var u = undo.pop();
+      G.board = u.board; G.notes = u.notes;
+      H.audio.click(); save(); hud(); draw();
+    }
+    function input(n) {
+      if (!G || G.done || sel < 0 || G.puzzle[sel]) { if (sel < 0) H.toast('マスを選んでください'); return; }
+      pushUndo();
+      if (n === 0) {
+        G.board[sel] = 0; G.notes[sel] = 0;
+      } else if (memo && !G.board[sel]) {
+        G.notes[sel] ^= (1 << n);
+      } else {
+        if (G.board[sel] === n) { G.board[sel] = 0; }
+        else {
+          G.board[sel] = n; G.notes[sel] = 0;
+          if (n !== G.solution[sel]) { G.miss++; H.audio.bad(); }
+          else { H.audio.click(); clearPeerNotes(sel, n); }
+        }
+      }
+      save(); hud(); draw();
+      checkClear();
+    }
+    function clearPeerNotes(pos, n) {
+      var r = pos / 9 | 0, c = pos % 9, br = (r / 3 | 0) * 3, bc = (c / 3 | 0) * 3;
+      for (var i = 0; i < 81; i++) {
+        var rr = i / 9 | 0, cc = i % 9;
+        if (rr === r || cc === c || ((rr / 3 | 0) * 3 === br && (cc / 3 | 0) * 3 === bc)) G.notes[i] &= ~(1 << n);
+      }
+    }
+    function hint() {
+      if (!G || G.done) return;
+      var target = -1;
+      if (sel >= 0 && !G.puzzle[sel] && G.board[sel] !== G.solution[sel]) target = sel;
+      else {
+        var cands = [];
+        for (var i = 0; i < 81; i++) if (!G.puzzle[i] && G.board[i] !== G.solution[i]) cands.push(i);
+        if (!cands.length) return;
+        target = cands[Math.random() * cands.length | 0];
+      }
+      pushUndo();
+      G.board[target] = G.solution[target]; G.notes[target] = 0;
+      clearPeerNotes(target, G.solution[target]);
+      G.hints++; sel = target;
+      H.audio.good(); save(); hud(); draw();
+      checkClear();
+    }
+    function move(dr, dc) {
+      if (!G) return;
+      if (sel < 0) { sel = 0; }
+      else {
+        var r = (sel / 9 | 0) + dr, c = sel % 9 + dc;
+        r = (r + 9) % 9; c = (c + 9) % 9; sel = r * 9 + c;
+      }
+      draw();
+    }
+    function checkClear() {
+      for (var i = 0; i < 81; i++) if (G.board[i] !== G.solution[i]) return;
+      G.done = true; stopTimer(); save();
+      var key = 'best_' + G.diff, best = store.get(key, 0), isBest = false;
+      if (!best || G.elapsed < best) { store.set(key, G.elapsed); isBest = true; }
+      hud(); sel = -1; draw();
+      H.audio.win();
+      H.overlay({
+        title: 'クリア!', big: fmt(G.elapsed),
+        html: DIFFS[G.diff].label + ' / ミス ' + G.miss + ' 回 / ヒント ' + G.hints + ' 回<br>' +
+              (isBest ? '<b style="color:var(--warn)">ベストタイム!</b>' : 'ベスト ' + fmt(store.get(key, 0))),
+        buttons: [
+          { label: 'もう一度', onClick: function () { newGame(G.diff); } },
+          { label: '難易度を選ぶ', secondary: true, onClick: showStart },
+          { label: '一覧へ', secondary: true, onClick: function () { location.href = '../index.html'; } }
+        ]
+      });
+    }
+
+    // ---------- タイマー ----------
+    function startTimer() {
+      stopTimer();
+      lastTick = Date.now();
+      timer = setInterval(function () {
+        if (!G || G.done) return;
+        var now = Date.now(), dt = Math.min(now - lastTick, 2000);
+        lastTick = now; G.elapsed += dt;
+        $('time').textContent = fmt(G.elapsed);
+        if ((G.elapsed / 1000 | 0) % 5 === 0) save();
+      }, 1000);
+    }
+    function stopTimer() { if (timer) { clearInterval(timer); timer = null; } if (G) save(); }
+
+    // ---------- 開始 ----------
+    function newGame(diff) {
+      stopTimer();
+      H.toast('問題を作成中…', 3000);
+      setTimeout(function () {
+        var gen = E.generate(DIFFS[diff].clues, 900);
+        G = { diff: diff, puzzle: gen.puzzle, solution: gen.solution, board: gen.puzzle.slice(),
+              notes: gen.puzzle.map(function () { return 0; }), miss: 0, hints: 0, elapsed: 0, done: false };
+        undo = []; sel = -1;
+        save(); hud(); draw(); startTimer();
+        H.toast(DIFFS[diff].label + '  最初から入っている数字 ' + gen.clues + ' 個', 1500);
+      }, 30);
+    }
+    function resume(g) {
+      G = g; undo = []; sel = -1;
+      hud(); draw(); startTimer();
+    }
+    function showStart() {
+      stopTimer();
+      var saved = G && !G.done ? G : null;
+      var btns = [
+        { label: 'やさしい', onClick: function () { newGame('easy'); } },
+        { label: 'ふつう', onClick: function () { newGame('normal'); } },
+        { label: 'むずかしい', onClick: function () { newGame('hard'); } }
+      ];
+      if (saved) btns.push({ label: '続きから', secondary: true, onClick: function () { resume(saved); } });
+      var bestHtml = ['easy', 'normal', 'hard'].map(function (k) {
+        var b = store.get('best_' + k, 0); return DIFFS[k].label + ' ' + (b ? fmt(b) : '--');
+      }).join(' / ');
+      H.overlay({ title: '数独', html: '難易度を選んでください<br><small>ベスト: ' + bestHtml + '</small>', buttons: btns });
+    }
+    window.resetGame = showStart;
+
+    // ---------- 入力の配線 ----------
+    H.onTap(canvas, function (cx, cy) {
+      if (!G || G.done) return;
+      var p = st.toBase(cx, cy);
+      var c = p.x / CELL | 0, r = p.y / CELL | 0;
+      if (c < 0 || c > 8 || r < 0 || r > 8) return;
+      var i = r * 9 + c;
+      sel = (sel === i) ? -1 : i;
+      draw();
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.pad .num'), function (b) {
+      b.addEventListener('click', function () { input(parseInt(b.getAttribute('data-n'), 10)); });
+    });
+    $('btn-memo').addEventListener('click', function () { memo = !memo; hud(); });
+    $('btn-undo').addEventListener('click', doUndo);
+    $('btn-hint').addEventListener('click', hint);
+    $('btn-err').addEventListener('click', function () { showErr = !showErr; store.set('showErr', showErr); hud(); draw(); });
+
+    var keymap = {
+      ArrowLeft: function () { move(0, -1); }, ArrowRight: function () { move(0, 1); },
+      ArrowUp: function () { move(-1, 0); }, ArrowDown: function () { move(1, 0); },
+      Backspace: function () { input(0); }, Delete: function () { input(0); }, '0': function () { input(0); },
+      m: function () { memo = !memo; hud(); }, M: function () { memo = !memo; hud(); },
+      z: doUndo, Z: doUndo, h: hint, H: hint
+    };
+    for (var k = 1; k <= 9; k++) (function (n) { keymap[String(n)] = function () { input(n); }; })(k);
+    H.keys(keymap);
+
+    function resumeTimer() { if (G && !G.done && !timer && !document.querySelector('.overlay')) startTimer(); }
+    H.pauseWhenHidden(function () { stopTimer(); }, resumeTimer);
+    window.addEventListener('focus', resumeTimer);
+
+    // 起動: 保存があれば続きから
+    var savedGame = store.get('game', null);
+    hud(); draw();
+    if (savedGame && savedGame.board && savedGame.board.length === 81 && !savedGame.done) {
+      resume(savedGame);
+      H.toast('続きから', 1200);
+    } else {
+      showStart();
+    }
+  })();
+  </script>
+</body>
+</html>

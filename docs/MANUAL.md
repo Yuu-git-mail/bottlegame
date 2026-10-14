@@ -1,26 +1,45 @@
-# Magic Sort Puzzle - User Manual
+# ボトルソート 遊び方
 
-## How to Start
-1. Ensure you have Node.js installed.
-2. Run `npm install` to install dependencies.
-3. Run `npm run dev` to start the development server.
-4. To access on mobile via local network, use the printed local IP (e.g., `http://192.168.x.x:5173`).
+https://yuu-git-mail.github.io/bottlegame/
 
-## Gameplay Rules
-- Tap a bottle to select it.
-- Tap another bottle to pour liquid into it.
-- **Rules**:
-  - You can only pour liquid if the destination bottle is empty OR its top liquid matches the color you are pouring.
-  - The destination bottle must have enough empty space.
-- The goal is to sort all colors so that each bottle contains only one color.
-- **Level Progression**: Start from Level 1 with 4 colors. As you advance, the game dynamically scales difficulty by increasing color counts and varying bottle capacities (e.g., short 3-slot bottles, tall 6-slot bottles) while ensuring all puzzles remain solvable.
+## 基本
 
-## Controls
-- **Undo**: Reverts your last move.
-- **Reset**: Restarts the current level from the beginning.
-- **Add Bottle**: Adds an extra empty bottle to make the puzzle easier.
-- **Colorblind Mode**: Toggles patterns/icons to help distinguish colors.
+- 瓶をタップして選び、別の瓶をタップすると上の色が移ります。
+- 移せるのは、相手の瓶が空か、相手の一番上と同じ色のときだけ。入る分だけ移ります。
+- 全部の瓶が 1 色ずつにそろったらクリア。
 
-## Building and Deploying
-- Run `npm run build` to compile TypeScript and bundle the application for production deployment into the `dist/` directory.
-- The project is pre-configured with `base: './'` in `vite.config.ts`, making the `dist` folder fully compatible with **GitHub Pages** out-of-the-box. Simply upload the `dist` folder contents to a static hosting provider or configure GitHub Actions to deploy it to Pages.
+## 画面の上のボタン
+
+- 面 … プルダウンで好きな面に移れます。クリアした面には ✓ か ★ が付きます。
+- 手数 … 今の面で動かした回数。手数制限の面では「/ 上限 (残り)」も出ます。
+- 戻す … 1 手前に戻します（何手でも）。
+- やり直し … この面を最初の並びからやり直します。
+- ヒント … 次の 1 手を ▲（出す瓶）と ▼（入れる瓶）で教えます。かくし色の面では使えません。
+- +瓶 … 空の瓶を 1 本足します（1 面につき 2 本まで）。詰まったときに。
+- メニュー … 面を選ぶ画面と見え方の設定へ。
+
+## 続きから
+
+遊んでいる途中の面と並びは自動で保存されます。開き直すとメニューに「続きから (面 N)」が出ます。
+
+## 面の種類
+
+- 1〜20 面 … クラシック。開くたびに並びが変わります。
+- 21〜25 面 … 色が多い（9〜12 色）。
+- 26〜30 面 … かくし色。上の 1 層しか見えません。注いで減ると下の色が見えます。
+- 31〜35 面 … 鍵付きの瓶。🔒 の下にある色の瓶を 1 本そろえると使えるようになります。
+- 36〜40 面 … 手数制限。最短手数 + 少しの余裕で解きます。切れたら「1 手戻す」か「最初から」。
+- 41〜45 面 … 背の高い瓶（5〜6 層）が混ざり、下 2 層がかくし色。
+- 46〜50 面 … 空き瓶が 1 本だけ。
+- 51〜60 面 … 上の仕掛けの混合。
+- 61 面以降 … エンドレス。仕掛けを順に回しながら続きます。
+
+21 面以降は毎回同じ並びです。クリアすると最短手数との差で ★ が 1〜3 個付きます。
+
+## 見え方サポート
+
+メニューの「選べる見え方サポート」で、色の上に数字や記号や模様を出す、見分けやすい配色にする、選んだ色と同じ色を光らせる、を切り替えられます。
+
+## 他のゲーム
+
+メニューの「他のゲームで遊ぶ」から、ゲーム集（https://yuu-git-mail.github.io/bottlegame/games/）に行けます。
