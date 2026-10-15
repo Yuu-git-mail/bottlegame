@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>仲間分け - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: manipulation; }
+    .board { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); gap: 6px; width: 100%; height: 100%; }
+    .card {
+      border: 0; border-radius: 10px; background: #efe8d8; color: #1d1d2b; font-weight: 800;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+      padding: 4px; line-height: 1.15; overflow-wrap: anywhere; font-family: var(--font);
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+      transition: background 0.12s, color 0.12s, transform 0.12s; min-width: 0; min-height: 0;
+    }
+    .card.sel { background: #5b5480; color: #fff; transform: scale(0.95); }
+    .card.hint { box-shadow: inset 0 0 0 4px var(--warn); }
+    .card.cur { outline: 3px solid var(--info); outline-offset: 1px; }
+    .card.shake { animation: wshake 0.4s; }
+    .card.pop { animation: wpop 0.35s; }
+    @keyframes wshake { 0%,100% { transform: translateX(0) scale(0.95); } 20% { transform: translateX(-7px) scale(0.95); } 40% { transform: translateX(7px) scale(0.95); } 60% { transform: translateX(-5px) scale(0.95); } 80% { transform: translateX(5px) scale(0.95); } }
+    @keyframes wpop { 0% { transform: scale(0.95); } 50% { transform: scale(1.08) translateY(-4px); } 100% { transform: scale(1); } }
+    .band {
+      grid-column: 1 / -1; border-radius: 10px; color: #1a1a2e; text-align: center;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4px 10px; min-height: 0; overflow: hidden;
+      animation: wband 0.35s;
+    }
+    .band b { font-size: 21px; line-height: 1.2; }
+    .band span { font-size: 18px; line-height: 1.25; font-weight: 600; }
+    .band.lost { opacity: 0.85; }
+    .band .nw { font-style: normal; white-space: nowrap; }
+    .card .ln { display: block; font-style: normal; white-space: nowrap; }
+    @keyframes wband { 0% { transform: scaleY(0.6); opacity: 0.3; } 100% { transform: scaleY(1); opacity: 1; } }
+    .app-controls { gap: 6px; flex-wrap: nowrap; }
+    .ctl-btn.sm { min-width: 0; font-size: 16px; padding: 0 10px; }
+    .ctl-btn.go { background: var(--accent); border-color: var(--accent); min-width: 72px; }
+    .ctl-btn.go.off { opacity: 0.45; }
+    #mist { letter-spacing: 1px; }
+    .setting-btn { margin-top: 4px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="仲間分け" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">問題<b id="level">1</b></span>
+      <span class="hud-item">組<b id="found">0/4</b></span>
+      <span class="hud-item">まちがい<b id="mist">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <div class="board" id="board"></div>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>16 個の言葉を、4 つずつの仲間 4 組に分けます。</li>
+            <li>仲間だと思う 4 つをタップして「決定」。当たると色の帯になって上にまとまります。</li>
+            <li>3 つ合っているときは「あと 1 つ！」と出ます。</li>
+            <li>仲間は「果物」のような分かりやすい物から、「読みが『ばん』で終わる」のような言葉遊びまであります。</li>
+            <li>帯の色は易しい順に 黄 → 緑 → 青 → 紫。</li>
+            <li>ヒントは何度でも。1 回目は仲間の名前、2 回目からその仲間の言葉を 1 つずつ光らせます。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 言葉をタップ。まぜる・解除・ヒント・決定・問題一覧は下のボタン。</li>
+            <li>PC: クリック、または矢印キーで選んで Space。Enter = 決定、S = まぜる、D = 解除、H = ヒント、L = 問題一覧。</li>
+          </ul>
+          <h3>設定</h3>
+          <button type="button" class="btn secondary setting-btn" id="btn-limit">まちがい: 無制限</button>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-shuffle">まぜる</button>
+      <button type="button" class="ctl-btn sm" id="btn-clear">解除</button>
+      <button type="button" class="ctl-btn sm" id="btn-hint">ヒント</button>
+      <button type="button" class="ctl-btn sm go off" id="btn-go">決定</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // お題の表と問題の作り方。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var WordsCore = (function () {
+    'use strict';
+    var LEVEL_COUNT = 60;
+
+    // id, n=組の名前, d=難しさ(1 易しい / 2 少し考える / 3 言葉遊び), tags=系統(同じ系統は 1 問に 1 つ),
+    // avoid=一緒に出さないカテゴリ, w=語(漢字を含む語は「表記|よみ」), also={語: [他にも当てはまるカテゴリ]}, rule=言葉遊びの決まり
+    var CATS = [
+      // ---- 易しい ----
+      { id: 'fruit', n: '果物', d: 1, tags: '果菜', w: 'りんご みかん ぶどう 桃|もも バナナ いちご 梨|なし メロン' },
+      { id: 'veg', n: '野菜', d: 1, tags: '果菜', w: 'キャベツ にんじん 大根|だいこん ねぎ なす きゅうり ピーマン かぼちゃ' },
+      { id: 'ride', n: '乗り物', d: 1, tags: '乗り物', w: '電車|でんしゃ バス 飛行機|ひこうき 船|ふね 自転車|じてんしゃ タクシー 新幹線|しんかんせん オートバイ',
+        also: { '飛行機': ['sky'] } },
+      { id: 'inst', n: '楽器', d: 1, tags: '音楽', w: 'ピアノ ギター 太鼓|たいこ 笛|ふえ バイオリン トランペット 木琴|もっきん ハーモニカ' },
+      { id: 'weather', n: '天気', d: 1, tags: '天気', w: '晴れ|はれ 雨|あめ 雪|ゆき 曇り|くもり 雷|かみなり 霧|きり あられ 台風|たいふう' },
+      { id: 'kitchen', n: '台所の道具', d: 1, tags: '料理', w: '包丁|ほうちょう まな板|まないた なべ フライパン おたま やかん ざる しゃもじ' },
+      { id: 'zodiac', n: '十二支の動物', d: 1, tags: '動物 暦', w: '牛|うし 虎|とら うさぎ 竜|たつ へび 羊|ひつじ 猿|さる いのしし' },
+      { id: 'bird', n: '鳥', d: 1, tags: '動物', w: 'すずめ からす はと つばめ わし ペンギン ふくろう かもめ', also: { 'ペンギン': ['sea'] } },
+      { id: 'fish', n: '魚', d: 1, tags: '海 動物', w: 'さんま いわし さば あじ 鯛|たい ひらめ かつお ぶり' },
+      { id: 'color', n: '色', d: 1, tags: '色', w: '赤|あか 青|あお 黄色|きいろ 緑|みどり 白|しろ 黒|くろ 紫|むらさき 茶色|ちゃいろ' },
+      { id: 'body', n: '体の部分', d: 1, tags: '体', w: '頭|あたま 手|て 足|あし 目|め 耳|みみ 鼻|はな 口|くち 肩|かた' },
+      { id: 'stat', n: '文房具', d: 1, tags: '学校', w: '鉛筆|えんぴつ 消しゴム|けしごむ はさみ 定規|じょうぎ ホチキス 筆箱|ふでばこ 分度器|ぶんどき コンパス' },
+      { id: 'sport', n: 'スポーツ', d: 1, tags: '運動', w: '野球|やきゅう サッカー テニス 相撲|すもう 柔道|じゅうどう 水泳|すいえい ゴルフ 卓球|たっきゅう' },
+      { id: 'flower', n: '花', d: 1, tags: '植物', w: '桜|さくら ひまわり チューリップ バラ 菊|きく あさがお すみれ たんぽぽ' },
+      { id: 'bug', n: '虫', d: 1, tags: '動物', w: 'ちょう とんぼ せみ かぶとむし あり はち ほたる こおろぎ', also: { 'はち': ['digit'] } },
+      { id: 'house', n: '家具', d: 1, tags: '家', w: '机|つくえ いす たんす 本棚|ほんだな ベッド ソファ こたつ テーブル' },
+      { id: 'drink', n: '飲み物', d: 1, tags: '飲', w: 'お茶|おちゃ 牛乳|ぎゅうにゅう コーヒー ジュース 紅茶|こうちゃ 水|みず ココア ビール' },
+      { id: 'sea', n: '海の生き物', d: 1, tags: '海 動物', w: 'たこ いか くじら イルカ かに えび くらげ ひとで' },
+      { id: 'animal', n: '動物', d: 1, tags: '動物', w: '犬|いぬ 猫|ねこ ねずみ 馬|うま ぞう きりん ライオン くま' },
+      { id: 'sushi', n: '寿司ネタ', d: 1, tags: '海 和食', w: 'まぐろ サーモン いくら うに 玉子|たまご トロ 穴子|あなご ほたて', also: { '玉子': ['tamas'] } },
+      { id: 'spice', n: '調味料', d: 1, tags: '味', w: '塩|しお 砂糖|さとう しょうゆ 酢|す みそ こしょう ソース マヨネーズ' },
+      { id: 'school', n: '学校', d: 1, tags: '学校', w: '黒板|こくばん 校庭|こうてい 給食|きゅうしょく 教室|きょうしつ ランドセル 体育館|たいいくかん 先生|せんせい 宿題|しゅくだい',
+        also: { '先生': ['job'] } },
+      { id: 'cloth', n: '服', d: 1, tags: '服', w: 'シャツ ズボン スカート セーター コート 着物|きもの 浴衣|ゆかた ジャケット' },
+      { id: 'sweet', n: 'お菓子', d: 1, tags: '甘', w: 'せんべい チョコ ケーキ プリン クッキー だんご まんじゅう ようかん' },
+      { id: 'appl', n: '家電', d: 1, tags: '家', w: 'テレビ 冷蔵庫|れいぞうこ 洗濯機|せんたくき 掃除機|そうじき 電子レンジ|でんしれんじ エアコン 扇風機|せんぷうき 炊飯器|すいはんき' },
+      { id: 'planet', n: '惑星', d: 1, tags: '空', w: '水星|すいせい 金星|きんせい 火星|かせい 木星|もくせい 土星|どせい 地球|ちきゅう 天王星|てんのうせい 海王星|かいおうせい' },
+      { id: 'job', n: '仕事', d: 1, tags: '人', w: '医者|いしゃ 警察官|けいさつかん 大工|だいく 消防士|しょうぼうし 看護師|かんごし 料理人|りょうりにん 農家|のうか 運転手|うんてんしゅ' },
+      { id: 'family', n: '家族', d: 1, tags: '人', w: '父|ちち 母|はは 兄|あに 姉|あね 弟|おとうと 妹|いもうと 祖父|そふ 祖母|そぼ' },
+      { id: 'pref', n: '都道府県', d: 1, tags: '地名', w: '北海道|ほっかいどう 青森|あおもり 東京|とうきょう 大阪|おおさか 京都|きょうと 沖縄|おきなわ 福岡|ふくおか 広島|ひろしま' },
+      { id: 'bath', n: 'お風呂の物', d: 1, tags: '家', w: 'せっけん シャンプー タオル 桶|おけ 湯船|ゆぶね スポンジ 軽石|かるいし', also: { 'スポンジ': ['kitchen'] } },
+      { id: 'sky', n: '空にある物', d: 1, tags: '空 天気', w: '太陽|たいよう 月|つき 星|ほし 虹|にじ 天の川|あまのがわ オーロラ 気球|ききゅう', also: { '気球': ['ride'] } },
+      { id: 'tale', n: '昔話・童話', d: 1, tags: '話', w: '桃太郎|ももたろう 浦島太郎|うらしまたろう 金太郎|きんたろう 一寸法師|いっすんぼうし かぐや姫|かぐやひめ シンデレラ 白雪姫|しらゆきひめ 花咲かじいさん|はなさかじいさん' },
+      { id: 'oldplay', n: '昔の遊び', d: 1, tags: '遊び', w: 'けん玉|けんだま おはじき お手玉|おてだま あやとり めんこ かるた こま 竹馬|たけうま' },
+      { id: 'japfood', n: '和食', d: 1, tags: '和食', w: '天ぷら|てんぷら そば うどん 刺身|さしみ 味噌汁|みそしる 茶碗蒸し|ちゃわんむし 肉じゃが|にくじゃが 親子丼|おやこどん' },
+      { id: 'western', n: '洋食', d: 1, tags: '洋食', w: 'カレー ハンバーグ オムライス グラタン スパゲティ ピザ シチュー コロッケ' },
+      { id: 'chinese', n: '中華料理', d: 1, tags: '中華', w: 'ラーメン ぎょうざ 麻婆豆腐|まーぼーどうふ しゅうまい チャーハン 春巻き|はるまき 酢豚|すぶた 杏仁豆腐|あんにんどうふ' },
+      { id: 'greet', n: 'あいさつ', d: 1, tags: '言葉', w: 'おはよう こんにちは こんばんは ありがとう さようなら いただきます ごちそうさま おやすみ' },
+      { id: 'clean', n: '掃除の道具', d: 1, tags: '家', w: 'ほうき ちりとり はたき モップ バケツ たわし', also: { 'たわし': ['kitchen'] } },
+      { id: 'park', n: '公園にある物', d: 1, tags: '場所', avoid: 'oldplay', w: 'すべり台|すべりだい ぶらんこ 砂場|すなば 鉄棒|てつぼう ベンチ シーソー 噴水|ふんすい 花壇|かだん',
+        also: { '鉄棒': ['sport'], '花壇': ['flower'] } },
+      { id: 'voice', n: '動物の鳴き声', d: 1, tags: '音', w: 'ワン ニャー モー ヒヒーン コケコッコー ケロケロ メェー ブーブー' },
+
+      // ---- 少し考える ----
+      { id: 'red', n: '赤い物', d: 2, tags: '色', avoid: 'fruit veg sushi sea fish flower gem planet chinese autumn summer fest western newyear',
+        w: 'ポスト 消防車|しょうぼうしゃ 夕焼け|ゆうやけ 金魚|きんぎょ 口紅|くちべに 紅葉|もみじ だるま',
+        also: { '消防車': ['ride'], '夕焼け': ['sky'], '金魚': ['animal'], 'だるま': ['oldplay'] } },
+      { id: 'white', n: '白い物', d: 2, tags: '色', avoid: 'weather spice drink veg japfood gem bird chinese sweet winter onigiri sushi',
+        w: '豆腐|とうふ 白鳥|はくちょう 綿|わた ご飯|ごはん 紙|かみ 雲|くも 歯|は 包帯|ほうたい',
+        also: { '雲': ['sky'], '歯': ['body'], '紙': ['stat'] } },
+      { id: 'yellow', n: '黄色い物', d: 2, tags: '色', avoid: 'fruit flower spring autumn bird western spice sky planet gem sweet japfood yaki',
+        w: 'レモン ひよこ 黄身|きみ 菜の花|なのはな からし たくあん いちょう', also: { 'ひよこ': ['animal'] } },
+      { id: 'round', n: '丸い物', d: 2, tags: '形', avoid: 'fruit veg planet sky newyear sweet autumn gem chinese western sushi oldplay tamas sport inst body bodyk yaki',
+        w: 'ボール 満月|まんげつ 十円玉|じゅうえんだま ドーナツ 風船|ふうせん 指輪|ゆびわ 車輪|しゃりん', also: { '風船': ['fest'], '車輪': ['ride'] } },
+      { id: 'square', n: '四角い物', d: 2, tags: '形', avoid: 'house appl stat school kitchen white newyear oldplay shogi sweet clean park japfood chinese bath',
+        w: 'サイコロ 窓|まど 畳|たたみ はがき 将棋盤|しょうぎばん 弁当箱|べんとうばこ 座布団|ざぶとん' },
+      { id: 'winter', n: '冬の物', d: 2, tags: '冬', avoid: 'weather cloth house appl sport japfood newyear fruit veg flower bug fish white kitchen sea',
+        w: '手袋|てぶくろ マフラー ストーブ 雪だるま|ゆきだるま おでん 湯たんぽ|ゆたんぽ スキー' },
+      { id: 'summer', n: '夏の物', d: 2, tags: '夏', avoid: 'fruit veg flower bug cloth appl sport sweet fest red drink sea fish',
+        w: '風鈴|ふうりん かき氷|かきごおり 花火|はなび うちわ すいか 麦わら帽子|むぎわらぼうし 蚊取り線香|かとりせんこう 海水浴|かいすいよく' },
+      { id: 'spring', n: '春の物', d: 2, tags: '春', avoid: 'flower bug bird school sweet fruit veg fish nanakusa yellow month',
+        w: 'お花見|おはなみ ひな祭り|ひなまつり 入学式|にゅうがくしき つくし うぐいす 桜餅|さくらもち 卒業式|そつぎょうしき こいのぼり' },
+      { id: 'autumn', n: '秋の物', d: 2, tags: '秋', avoid: 'fruit veg flower bug fish red yellow round sky month school sport japfood',
+        w: 'お月見|おつきみ 栗|くり さつまいも 運動会|うんどうかい 稲刈り|いねかり 松茸|まつたけ 鈴虫|すずむし 落ち葉|おちば' },
+      { id: 'newyear', n: 'お正月の物', d: 2, tags: '正月', avoid: 'winter oldplay nanakusa month zodiac red round square japfood cloth sea sweet',
+        w: '門松|かどまつ 鏡餅|かがみもち お年玉|おとしだま 年賀状|ねんがじょう おせち 初詣|はつもうで 羽根つき|はねつき 獅子舞|ししまい' },
+      { id: 'rainy', n: '雨の日の物', d: 2, tags: '天気', avoid: 'bug flower cloth',
+        w: '傘|かさ 長靴|ながぐつ レインコート 水たまり|みずたまり てるてる坊主|てるてるぼうず かたつむり あじさい' },
+      { id: 'shogi', n: '将棋の駒', d: 2, tags: '遊び', w: '王将|おうしょう 飛車|ひしゃ 角|かく 金|きん 銀|ぎん 桂馬|けいま 香車|きょうしゃ 歩|ふ',
+        also: { '金': ['color'], '銀': ['color'] } },
+      { id: 'nanakusa', n: '春の七草', d: 2, tags: '植物', avoid: 'spring newyear veg', w: 'せり なずな ごぎょう はこべら ほとけのざ すずな すずしろ' },
+      { id: 'gods', n: '七福神', d: 2, tags: '神', w: '恵比寿|えびす 大黒天|だいこくてん 毘沙門天|びしゃもんてん 弁財天|べんざいてん 福禄寿|ふくろくじゅ 寿老人|じゅろうじん 布袋|ほてい' },
+      { id: 'gem', n: '宝石', d: 2, tags: '宝', w: 'ダイヤ ルビー 真珠|しんじゅ ヒスイ サファイア エメラルド オパール 水晶|すいしょう' },
+      { id: 'unit', n: '単位', d: 2, tags: '単位', w: 'メートル グラム リットル センチ キロ トン 坪|つぼ 尺|しゃく' },
+      { id: 'counter', n: '物の数え方', d: 2, tags: '言葉', w: '匹|ひき 枚|まい 冊|さつ 台|だい 杯|はい 羽|わ 着|ちゃく' },
+      { id: 'cook', n: '料理の仕方', d: 2, tags: '料理', avoid: 'yaki', w: '焼く|やく 煮る|にる 蒸す|むす 揚げる|あげる 炒める|いためる ゆでる 炊く|たく' },
+      { id: 'fest', n: 'お祭り', d: 2, tags: '夏', avoid: 'oldplay red sweet inst cloth yaki round',
+        w: '金魚すくい|きんぎょすくい 綿あめ|わたあめ 盆踊り|ぼんおどり 屋台|やたい 神輿|みこし ヨーヨー お面|おめん 提灯|ちょうちん' },
+      { id: 'month', n: '月の昔の呼び名', d: 2, tags: '暦', avoid: 'spring autumn newyear winter summer',
+        w: '睦月|むつき 如月|きさらぎ 弥生|やよい 卯月|うづき 皐月|さつき 水無月|みなづき 文月|ふみづき 師走|しわす' },
+      { id: 'mountain', n: '日本の山', d: 2, tags: '地名', w: '富士山|ふじさん 阿蘇山|あそさん 浅間山|あさまやま 高尾山|たかおさん 立山|たてやま 比叡山|ひえいざん 筑波山|つくばさん' },
+      { id: 'onigiri', n: 'おにぎりの具', d: 2, tags: '和食', avoid: 'fish red sushi white yellow',
+        w: '梅干し|うめぼし 鮭|さけ 昆布|こんぶ おかか ツナマヨ 明太子|めんたいこ 高菜|たかな' },
+      { id: 'laugh', n: '笑い方', d: 2, tags: '音', w: 'にこにこ げらげら くすくす にやにや けらけら わはは' },
+      { id: 'cry', n: '泣き方', d: 2, tags: '音', w: 'しくしく めそめそ わんわん おいおい ぽろぽろ えんえん' },
+      { id: 'yaki', n: '〜焼き', d: 2, tags: '焼', avoid: 'japfood sweet fest cook sea fish', rule: { type: 'end', v: ['やき'] },
+        w: 'たこ焼き|たこやき 卵焼き|たまごやき すき焼き|すきやき たい焼き|たいやき お好み焼き|おこのみやき 今川焼き|いまがわやき 目玉焼き|めだまやき' },
+      { id: 'tamas', n: '〜玉', d: 2, tags: '玉', avoid: 'oldplay round', rule: { type: 'end', v: ['だま', 'たま'] },
+        w: 'シャボン玉|しゃぼんだま ビー玉|びーだま 水玉|みずたま 目玉|めだま 火の玉|ひのたま 替え玉|かえだま 親玉|おやだま' },
+      { id: 'digit', n: '数字の字が入っている', d: 2, tags: '数', rule: { type: 'kanji', v: '一二三四五六七八九十百千万' },
+        w: '三日月|みかづき 七夕|たなばた 八百屋|やおや 十五夜|じゅうごや 万歩計|まんぽけい 一輪車|いちりんしゃ 九九|くく 二重跳び|にじゅうとび',
+        also: { '七夕': ['summer', 'autumn', 'fest'], '十五夜': ['autumn'], '三日月': ['sky'], '一輪車': ['ride'], '八百屋': ['job'], '九九': ['school'], '二重跳び': ['sport'] } },
+      { id: 'bodyk', n: '体の部分の字が入っている', d: 2, tags: '体', rule: { type: 'kanji', v: '手目耳口歯首足鼻頭肩腕指胸腹顔背爪舌' },
+        w: '手紙|てがみ 耳かき|みみかき 口笛|くちぶえ 歯ブラシ|はぶらし 首輪|くびわ 足跡|あしあと 鼻歌|はなうた',
+        also: { '歯ブラシ': ['bath'], '首輪': ['round'], '口笛': ['inst'] } },
+      { id: 'colk', n: '色の字が入っている', d: 2, tags: '色', rule: { type: 'kanji', v: '赤青白黒緑黄紫紅茶金銀桃' },
+        w: '赤ちゃん|あかちゃん 青空|あおぞら 白菜|はくさい 緑茶|りょくちゃ 黒豆|くろまめ 赤とんぼ|あかとんぼ 黄金|おうごん',
+        also: { '白菜': ['veg'], '緑茶': ['drink'], '黒豆': ['newyear'], '赤とんぼ': ['bug', 'autumn'], '青空': ['sky'], '赤ちゃん': ['family'] } },
+
+      // ---- 言葉遊び ----
+      { id: 'ban', n: '読みが「ばん」で終わる', d: 3, tags: '番', rule: { type: 'end', v: ['ばん'] },
+        w: '看板|かんばん 交番|こうばん 順番|じゅんばん 留守番|るすばん 当番|とうばん 鍵盤|けんばん 一番|いちばん', also: { '鍵盤': ['inst'] } },
+      { id: 'pan', n: '「パン」で終わる', d: 3, tags: 'パン', avoid: 'sweet western cloth', rule: { type: 'end', v: ['ぱん'] },
+        w: 'メロンパン あんパン ジーパン 短パン|たんぱん 食パン|しょくぱん 乾パン|かんぱん' },
+      { id: 'bou', n: '読みが「ぼう」で終わる', d: 3, tags: '棒', rule: { type: 'end', v: ['ぼう'] },
+        w: '綿棒|めんぼう 泥棒|どろぼう 相棒|あいぼう 赤ん坊|あかんぼう 食いしん坊|くいしんぼう 甘えん坊|あまえんぼう 寝坊|ねぼう',
+        also: { '綿棒': ['white'], '赤ん坊': ['family'], '泥棒': ['job'] } },
+      { id: 'ohead', n: '頭に「お」を付けると別の言葉', d: 3, tags: 'お', rule: { type: 'o' },
+        w: '数|かず 負け|まけ 柿|かき 袋|ふくろ 倒産|とうさん 蔵|くら しゃれ 亀|かめ',
+        also: { '柿': ['fruit', 'autumn'], '亀': ['animal', 'sea', 'zodiac'], '数': ['counter', 'digit'] } },
+      { id: 'ahead', n: '読みの頭に動物がいる', d: 3, tags: '動物', rule: { type: 'start' },
+        w: 'トランプ カメラ 雑巾|ぞうきん 四角|しかく 後ろ|うしろ かばん 草履|ぞうり いかだ',
+        also: { 'トランプ': ['oldplay'], '雑巾': ['clean'], '四角': ['square'], '草履': ['cloth'], 'いかだ': ['ride'] } },
+      { id: 'palin', n: '上から読んでも下から読んでも同じ', d: 3, tags: '回文', rule: { type: 'pal' },
+        w: 'トマト 新聞紙|しんぶんし キツツキ 子猫|こねこ 印|しるし 逆さ|さかさ 南|みなみ',
+        also: { 'トマト': ['veg', 'red'], '新聞紙': ['white', 'square'], 'キツツキ': ['bird'], '子猫': ['animal'] } }
+    ];
+
+    // 頭に付く動物(読み)。「読みの頭に動物がいる」と他の語がぶつからないかを見る
+    var ANIMALS = ('いぬ ねこ うし うま とら かめ ぞう しか かば さる くま りす へび たこ いか かに えび たか わし はと かも つる きじ とり ぶた ' +
+      'ひつじ うさぎ たぬき きつね ねずみ くじら いるか あり はち せみ たい あじ さば さけ ぶり らいおん きりん ひよこ すずめ からす つばめ ' +
+      'かえる ちょう とんぼ あゆ こい ふな ろば やぎ').split(' ');
+    // 頭に「お」を付けると言葉になる読み(別の意味のもの + 丁寧語で紛らわしいもの)。この読みの語は「お」の組と同じ問に出さない
+    var O_WORDS = ('かず まけ かき ふくろ とうさん くら しゃれ かめ しろ て はな あし す うし かみ さつ だい に なか やつ もり でこ しめ ' +
+      'ちゃ かね こめ さけ ゆ はし さら みず てら つき ふろ もち いも かし かゆ まつり めん みそ すし そば さる うま ほし くすり にく ' +
+      'ひる へそ かあさん じさん ばさん にいさん ねえさん いしゃ すもう ちゃわん みやげ べんとう ゆき せち しり なべ たま かま こと め ' +
+      'かお しお とうふ さしみ まんじゅう だんご せんべい てんき しょうゆ さとう にわ ふとん ざぶとん てがみ みこし はなみ つきみ ' +
+      'うどん ひなさま しょうがつ ぼん かし ちょこ ふだ たく へや みせ きゃく かわり やすみ ひさま かぜ かげ かたづけ むすび').split(' ');
+
+    function toHira(s) {
+      return s.replace(/[ァ-ヶ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); });
+    }
+    var byId = {};
+    CATS.forEach(function (c, i) {
+      c.idx = i;
+      c.tagList = c.tags ? c.tags.split(' ') : [];
+      c.avoidList = c.avoid ? c.avoid.split(' ') : [];
+      c.also = c.also || {};
+      c.words = c.w.split(' ').map(function (s) {
+        var p = s.split('|');
+        return { t: p[0], r: p.length > 1 ? p[1] : toHira(p[0]), cat: c.id, also: c.also[p[0]] || [] };
+      });
+      byId[c.id] = c;
+    });
+
+    // 語 w が言葉遊びカテゴリ c の決まりに当てはまるか
+    function ruleMatch(c, w) {
+      var r = c.rule;
+      if (!r) return false;
+      var rd = w.r, i;
+      if (r.type === 'end') {
+        for (i = 0; i < r.v.length; i++) if (rd.length > r.v[i].length && rd.slice(-r.v[i].length) === r.v[i]) return true;
+        return false;
+      }
+      if (r.type === 'kanji') {
+        for (i = 0; i < w.t.length; i++) if (r.v.indexOf(w.t.charAt(i)) >= 0) return true;
+        return false;
+      }
+      if (r.type === 'start') {
+        for (i = 0; i < ANIMALS.length; i++) if (rd.indexOf(ANIMALS[i]) === 0) return true;
+        return false;
+      }
+      if (r.type === 'pal') {
+        return rd.length >= 2 && rd.split('').reverse().join('') === rd;
+      }
+      if (r.type === 'o') return O_WORDS.indexOf(rd) >= 0;
+      return false;
+    }
+    // カテゴリどうしが同じ問に入れるか
+    function catsCompatible(a, b) {
+      if (a.id === b.id) return false;
+      for (var i = 0; i < a.tagList.length; i++) if (b.tagList.indexOf(a.tagList[i]) >= 0) return false;
+      if (a.avoidList.indexOf(b.id) >= 0 || b.avoidList.indexOf(a.id) >= 0) return false;
+      return true;
+    }
+    // 語 w (カテゴリ own) が、同じ問の別カテゴリ other とぶつかるか
+    function wordConflicts(w, other) {
+      if (w.also.indexOf(other.id) >= 0) return true;
+      if (ruleMatch(other, w)) return true;
+      return false;
+    }
+    // 4 カテゴリの組で、それぞれ使える語
+    function eligible(cats) {
+      return cats.map(function (c) {
+        return c.words.filter(function (w) {
+          for (var k = 0; k < cats.length; k++) if (cats[k] !== c && wordConflicts(w, cats[k])) return false;
+          return true;
+        });
+      });
+    }
+
+    // 面ごとの難しさの配分 [易しい, 少し考える, 言葉遊び]
+    function mix(lv) {
+      if (lv < 10) return [4, 0, 0];
+      if (lv < 20) return [3, 1, 0];
+      if (lv < 30) return [2, 2, 0];
+      if (lv < 40) return lv % 2 ? [1, 3, 0] : [2, 1, 1];
+      if (lv < 50) return [1, 2, 1];
+      return lv % 2 ? [0, 3, 1] : [1, 1, 2];
+    }
+    function mulberry(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function shuffle(a, rnd) {
+      for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(rnd() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+      return a;
+    }
+
+    // 全面をまとめて作る(前の面で使ったカテゴリほど選ばれにくくする)
+    var LEVELS = null;
+    function buildAll() {
+      var use = {}, out = [], lv;
+      CATS.forEach(function (c) { use[c.id] = 0; });
+      for (lv = 0; lv < LEVEL_COUNT; lv++) {
+        var rnd = mulberry(20261015 + lv * 7919), m = mix(lv), pick = null;
+        for (var tries = 0; tries < 400 && !pick; tries++) {
+          var chosen = [], ok = true;
+          for (var d = 1; d <= 3 && ok; d++) {
+            var need = m[d - 1];
+            if (!need) continue;
+            var pool = CATS.filter(function (c) { return c.d === d; })
+              .map(function (c) { return { c: c, k: use[c.id] + rnd() * 2.5 }; })
+              .sort(function (a, b) { return a.k - b.k; }).map(function (x) { return x.c; });
+            for (var i = 0; i < pool.length && need > 0; i++) {
+              var c = pool[i], fit = true;
+              for (var j = 0; j < chosen.length; j++) if (!catsCompatible(c, chosen[j])) { fit = false; break; }
+              if (fit) { chosen.push(c); need--; }
+            }
+            if (need > 0) ok = false;
+          }
+          if (!ok) continue;
+          var el = eligible(chosen);
+          if (el.some(function (e) { return e.length < 4; })) { use[chosen[0].id] += 0.5; continue; }
+          // 読みが同じ語を同じ問に入れない
+          var groups = [], seen = {};
+          for (var g = 0; g < 4 && ok; g++) {
+            var cand = shuffle(el[g].slice(), rnd), ws = [];
+            for (var q = 0; q < cand.length && ws.length < 4; q++) {
+              if (seen[cand[q].r]) continue;
+              seen[cand[q].r] = 1; ws.push(cand[q]);
+            }
+            if (ws.length < 4) ok = false;
+            groups.push({ id: chosen[g].id, n: chosen[g].n, d: chosen[g].d, words: ws.map(function (w) { return w.t; }) });
+          }
+          if (!ok) continue;
+          pick = groups;
+        }
+        if (!pick) throw new Error('面 ' + (lv + 1) + ' を作れない');
+        // 色の順(易しい順)。同じ難しさは表の順
+        pick.sort(function (a, b) { return a.d - b.d || byId[a.id].idx - byId[b.id].idx; });
+        pick.forEach(function (g, i) { g.color = i; use[g.id] += 1; });
+        var deal = [];
+        pick.forEach(function (g) { g.words.forEach(function (w) { deal.push(w); }); });
+        out.push({ lv: lv, groups: pick, deal: shuffle(deal, rnd) });
+      }
+      return out;
+    }
+    function makeLevel(lv) {
+      if (!LEVELS) LEVELS = buildAll();
+      var L = LEVELS[lv];
+      // 呼び出し側が書き換えても困らないよう写しを返す
+      return JSON.parse(JSON.stringify(L));
+    }
+    // 4 語を出したときの判定: {ok: 組の番号 | -1, near: 3 つ合っているか}
+    function judge(L, sel, solved) {
+      var best = 0, bestG = -1;
+      for (var g = 0; g < L.groups.length; g++) {
+        if (solved.indexOf(g) >= 0) continue;
+        var n = 0;
+        for (var i = 0; i < sel.length; i++) if (L.groups[g].words.indexOf(sel[i]) >= 0) n++;
+        if (n > best) { best = n; bestG = g; }
+      }
+      return { ok: best === 4 ? bestG : -1, near: best === 3 };
+    }
+    return { LEVEL_COUNT: LEVEL_COUNT, CATS: CATS, byId: byId, ANIMALS: ANIMALS, O_WORDS: O_WORDS, toHira: toHira,
+             ruleMatch: ruleMatch, catsCompatible: catsCompatible, wordConflicts: wordConflicts, makeLevel: makeLevel, judge: judge };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = WordsCore;
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = WordsCore;
+    var store = H.store('words');
+    var cleared = store.get('cleared', {});     // {lv: まちがい数}
+    var limit = store.get('limit', 0);          // 0 = 無制限、4 = 4 回まで
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var L, order, solved, sel, mistakes, tried, over, hint, cursor = -1, busy = false;
+    var BAND = ['#f2cf5b', '#8fcf72', '#7fb0e8', '#c39be0'];
+    var board = document.getElementById('board'), stage = document.getElementById('stage');
+    var cardW = 80, cardH = 80;
+
+    function $(id) { return document.getElementById(id); }
+
+    function layout() {
+      var main = stage.parentElement, r = main.getBoundingClientRect();
+      var cs = window.getComputedStyle(main);
+      var aw = r.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      var ah = r.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      var w = Math.floor(Math.max(200, Math.min(aw, 900)));
+      var h = Math.floor(Math.max(200, Math.min(ah, w * 1.3)));
+      stage.style.width = w + 'px'; stage.style.height = h + 'px';
+      cardW = (w - 18) / 4; cardH = (h - 18) / 4;
+      sizeCards();
+    }
+    // 字の大きさ: 1 行に収まれば大きく、長い語は 2 行。どちらも 18px 以上
+    function fontFor(text) {
+      var n = text.length;
+      var f1 = Math.min(cardW * 0.84 / n, cardH * 0.42, 34);
+      if (f1 >= 18 || n <= 2) return Math.max(18, f1);
+      var per = Math.ceil(n / 2);
+      var f2 = Math.min(cardW * 0.84 / per, cardH * 0.3, 30);
+      return Math.max(18, Math.max(f1, f2));
+    }
+    function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+    // 2 行に分ける。行頭に来てはいけない字(ー・小さい字・ん)は前の行へ
+    var NOHEAD = 'ーッャュョァィゥェォっゃゅょぁぃぅぇぉん・';
+    function split2(w) {
+      var k = Math.ceil(w.length / 2);
+      while (k < w.length - 1 && NOHEAD.indexOf(w.charAt(k)) >= 0) k++;
+      return '<i class="ln">' + esc(w.slice(0, k)) + '</i><i class="ln">' + esc(w.slice(k)) + '</i>';
+    }
+    function sizeCards() {
+      var cs = board.querySelectorAll('.card');
+      for (var i = 0; i < cs.length; i++) {
+        var w = cs[i].getAttribute('data-w'), f = fontFor(w);
+        cs[i].style.fontSize = f + 'px';
+        cs[i].innerHTML = f * w.length <= cardW * 0.86 ? esc(w) : split2(w);
+      }
+      var bs = board.querySelectorAll('.band');
+      for (i = 0; i < bs.length; i++) {
+        var big = Math.max(18, Math.min(24, cardH * 0.24));
+        bs[i].querySelector('b').style.fontSize = Math.max(20, big + 2) + 'px';
+        bs[i].querySelector('span').style.fontSize = big + 'px';
+      }
+    }
+
+    function load(i) {
+      lvIdx = i; store.set('last', i);
+      L = C.makeLevel(i);
+      order = L.deal.slice(); solved = []; sel = []; mistakes = 0; tried = {}; over = false; hint = null; cursor = -1; busy = false;
+      render(); hud();
+    }
+    function hud() {
+      $('level').textContent = lvIdx + 1;
+      $('found').textContent = solved.length + '/4';
+      var m = '';
+      if (limit) { for (var i = 0; i < limit; i++) m += i < limit - mistakes ? '●' : '○'; }
+      else m = String(mistakes);
+      $('mist').textContent = m;
+      $('btn-go').classList.toggle('off', sel.length !== 4);
+      $('btn-limit').textContent = 'まちがい: ' + (limit ? limit + ' 回まで' : '無制限') + '（タップで切り替え）';
+    }
+    function groupOf(w) {
+      for (var g = 0; g < L.groups.length; g++) if (L.groups[g].words.indexOf(w) >= 0) return g;
+      return -1;
+    }
+    function render() {
+      var html = '';
+      solved.forEach(function (g) { html += bandHtml(g, false); });
+      if (over) {
+        L.groups.forEach(function (gr, g) { if (solved.indexOf(g) < 0) html += bandHtml(g, true); });
+      } else {
+        order.forEach(function (w, i) {
+          var cls = 'card' + (sel.indexOf(w) >= 0 ? ' sel' : '') + (hint && hint.words.indexOf(w) >= 0 ? ' hint' : '') + (i === cursor ? ' cur' : '');
+          html += '<button type="button" class="' + cls + '" data-w="' + w + '">' + w + '</button>';
+        });
+      }
+      board.innerHTML = html;
+      sizeCards();
+    }
+    function bandHtml(g, lost) {
+      var gr = L.groups[g];
+      return '<div class="band' + (lost ? ' lost' : '') + '" style="background:' + BAND[gr.color] + '"><b>' + gr.n + '</b><span>' + gr.words.map(function (w) { return '<i class="nw">' + esc(w) + '</i>'; }).join('・') + '</span></div>';
+    }
+
+    function toggle(w) {
+      if (over || busy) return;
+      var k = sel.indexOf(w);
+      if (k >= 0) sel.splice(k, 1);
+      else if (sel.length < 4) sel.push(w);
+      else { H.toast('選べるのは 4 つまで'); return; }
+      H.audio.click();
+      render(); hud();
+    }
+    function cardEls(words) {
+      var out = [], cs = board.querySelectorAll('.card');
+      for (var i = 0; i < cs.length; i++) if (words.indexOf(cs[i].getAttribute('data-w')) >= 0) out.push(cs[i]);
+      return out;
+    }
+    function submit() {
+      if (over || busy) return;
+      if (sel.length !== 4) { H.toast('4 つ選んでから「決定」'); return; }
+      var key = sel.slice().sort().join(',');
+      if (tried[key]) { H.toast('さっき試した組み合わせです'); return; }
+      var r = C.judge(L, sel, solved);
+      if (r.ok >= 0) {
+        busy = true;
+        cardEls(sel).forEach(function (el) { el.classList.add('pop'); });
+        H.audio.good();
+        setTimeout(function () {
+          solved.push(r.ok);
+          order = order.filter(function (w) { return L.groups[r.ok].words.indexOf(w) < 0; });
+          sel = []; busy = false; cursor = -1;
+          if (hint && hint.g === r.ok) hint = null;
+          render(); hud();
+          if (solved.length === 4) win();
+        }, 380);
+        return;
+      }
+      tried[key] = 1;
+      mistakes++;
+      H.audio.bad();
+      cardEls(sel).forEach(function (el) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); });
+      H.toast(r.near ? 'あと 1 つ！' : 'ちがうみたい');
+      hud();
+      if (limit && mistakes >= limit) {
+        busy = true;
+        setTimeout(function () { busy = false; lose(); }, 700);
+      }
+    }
+    function deselect() { if (over) return; sel = []; render(); hud(); }
+    function doShuffle() {
+      if (over || busy) return;
+      var a = order;
+      for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+      cursor = -1; H.audio.click(); render();
+    }
+    function doHint() {
+      if (over || busy) return;
+      if (!hint || solved.indexOf(hint.g) >= 0) {
+        for (var g = 0; g < 4; g++) if (solved.indexOf(g) < 0) break;
+        hint = { g: g, words: [] };
+        H.toast('「' + L.groups[g].n + '」の仲間を探そう', 3000);
+        return;
+      }
+      var gw = L.groups[hint.g].words, next = null;
+      for (var i = 0; i < gw.length; i++) if (hint.words.indexOf(gw[i]) < 0) { next = gw[i]; break; }
+      if (next) { hint.words.push(next); render(); H.toast('光っているのが「' + L.groups[hint.g].n + '」'); }
+      else H.toast('光っている 4 つを選んで「決定」');
+    }
+    function win() {
+      over = true;
+      var prev = cleared[lvIdx];
+      if (prev === undefined || mistakes < prev) { cleared[lvIdx] = mistakes; store.set('cleared', cleared); }
+      setTimeout(function () {
+        H.audio.win();
+        var btns = [];
+        if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の問題', onClick: function () { load(lvIdx + 1); } });
+        btns.push({ label: '問題一覧', secondary: true, onClick: showList });
+        btns.push({ label: 'もう一度', secondary: true, onClick: function () { load(lvIdx); } });
+        H.overlay({ title: mistakes ? 'できました！' : 'まちがい無しで完成！', big: mistakes ? '' : '★',
+          html: '問題 ' + (lvIdx + 1) + '　まちがい ' + mistakes + ' 回', buttons: btns });
+      }, 500);
+    }
+    function lose() {
+      over = true; sel = []; render(); hud();
+      H.audio.bad();
+      var btns = [{ label: 'もう一度', onClick: function () { load(lvIdx); } }];
+      if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の問題', secondary: true, onClick: function () { load(lvIdx + 1); } });
+      btns.push({ label: '答えを見る', secondary: true });
+      H.overlay({ title: 'ざんねん', html: 'まちがいが ' + limit + ' 回になりました。<br>答えは盤に出ています。', buttons: btns });
+    }
+    function showList() {
+      H.levelPicker({ count: C.LEVEL_COUNT, current: lvIdx, title: '問題を選ぶ',
+        done: function (i) { return cleared[i] !== undefined; },
+        label: function (i) { return cleared[i] === 0 ? '★' : ''; },
+        onPick: function (i) { load(i); } });
+    }
+
+    board.addEventListener('click', function (e) {
+      var t = e.target;
+      while (t && t !== board && !(t.classList && t.classList.contains('card'))) t = t.parentNode;
+      if (!t || t === board) return;
+      cursor = -1;
+      toggle(t.getAttribute('data-w'));
+    });
+    $('btn-go').addEventListener('click', submit);
+    $('btn-clear').addEventListener('click', deselect);
+    $('btn-shuffle').addEventListener('click', doShuffle);
+    $('btn-hint').addEventListener('click', doHint);
+    $('btn-list').addEventListener('click', showList);
+    $('btn-limit').addEventListener('click', function () {
+      limit = limit ? 0 : 4; store.set('limit', limit);
+      if (limit && mistakes >= limit && !over) mistakes = limit - 1;
+      hud();
+      H.toast(limit ? 'まちがいは 4 回まで' : 'まちがいは無制限');
+    });
+    function moveCur(dx, dy) {
+      if (over || !order.length) return;
+      if (cursor < 0) { cursor = 0; render(); return; }
+      var x = cursor % 4 + dx, y = Math.floor(cursor / 4) + dy;
+      var rows = Math.ceil(order.length / 4);
+      x = Math.max(0, Math.min(3, x)); y = Math.max(0, Math.min(rows - 1, y));
+      cursor = Math.min(order.length - 1, y * 4 + x);
+      render();
+    }
+    H.keys({
+      ArrowLeft: function () { moveCur(-1, 0); }, ArrowRight: function () { moveCur(1, 0); },
+      ArrowUp: function () { moveCur(0, -1); }, ArrowDown: function () { moveCur(0, 1); },
+      ' ': function () { if (cursor >= 0 && order[cursor]) toggle(order[cursor]); },
+      Enter: submit, s: doShuffle, S: doShuffle, d: deselect, D: deselect, Escape: deselect,
+      h: doHint, H: doHint, l: showList, L: showList
+    });
+    H.onResize(layout);
+    window.resetGame = function () {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      load(lvIdx);
+    };
+    window.__dbg = {
+      state: function () {
+        return JSON.stringify({ level: lvIdx + 1, solved: solved.map(function (g) { return L.groups[g].n; }), mistakes: mistakes, limit: limit,
+          over: over, selected: sel, remaining: order, groups: L.groups.map(function (g) { return { n: g.n, d: g.d, words: g.words }; }),
+          cardFont: (board.querySelector('.card') || {}).style ? board.querySelector('.card').style.fontSize : null });
+      },
+      cmd: function (name, a) {
+        if (name === 'level') { document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); }); load(a - 1); }
+        else if (name === 'solve') {
+          // 残っている組を 1 つ選んで決定する
+          for (var g = 0; g < 4; g++) if (solved.indexOf(g) < 0) break;
+          if (g < 4 && !over) { busy = false; sel = L.groups[g].words.slice(); render(); submit(); }
+        }
+        else if (name === 'wrong') {
+          // わざと 3 つ合いの組を出す(確認用)
+          var gw = L.groups.filter(function (x, i) { return solved.indexOf(i) < 0; });
+          if (gw.length >= 2) { sel = gw[0].words.slice(0, 3).concat([gw[1].words[0]]); render(); submit(); }
+        }
+        else if (name === 'tap') toggle(a);
+        else if (name === 'reset') window.resetGame();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        return this.state();
+      }
+    };
+    load(lvIdx);
+    layout();
+    setTimeout(layout, 0);
+    setTimeout(layout, 350);
+    if (!store.get('seen', false)) {
+      store.set('seen', true);
+      H.overlay({ title: '仲間分け', html: '16 の言葉を、4 つずつの仲間に分けよう。<br>4 つ選んで「決定」。<br>まちがいは何回でも大丈夫（設定で 4 回までにもできます）。', buttons: [{ label: 'はじめる' }] });
+    }
+  })();
+  </script>
+</body>
+</html>
