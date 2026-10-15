@@ -407,7 +407,7 @@
       html += '</span>';
       overlayEl = H.overlay({ title: '面を選ぶ', html: html,
         buttons: [{ label: '閉じる', secondary: true, onClick: function () { overlayEl = null; if (!lv) showStart(); } }] });
-      overlayEl.className += ' lv';
+      overlayEl.className += ' lv scrollable';
       var btns = overlayEl.querySelectorAll('.lv-btn');
       for (i = 0; i < btns.length; i++) {
         btns[i].addEventListener('click', function (e) {
