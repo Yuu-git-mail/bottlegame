@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>穴の街 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .app-hud { gap: 2px 14px; }
+    .hud-item.goal b { color: var(--warn); }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 12px; min-height: 44px; }
+    .app-controls { padding: 4px 8px 6px; }
+    .app-main { padding: 4px; }
+    .overlay .stars { font-size: 34px; color: var(--warn); letter-spacing: 4px; }
+    .overlay .stars .off { color: rgba(255,255,255,0.18); }
+    .overlay .goalbig { font-size: 22px; font-weight: 800; color: var(--warn); }
+    canvas.stage-canvas { background: #22301f; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="穴の街" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">面<b id="hud-lv">1</b></span>
+      <span class="hud-item">のこり<b id="hud-time">2:00</b></span>
+      <span class="hud-item goal">目標<b id="hud-goal">-</b></span>
+      <span class="hud-item">大きさ<b id="hud-size">4.0m</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>あなたは青いふちの穴。街の物の上に行くと、穴より小さい物は落ちて、穴が大きくなります。</li>
+            <li>穴より大きい物にはぶつかって止まります。人やコーン → 車 → 家 → ビルの順に食べられるようになります。</li>
+            <li>赤と黄色のふちは敵の穴。自分より小さい穴は飲み込めます。大きい穴に飲まれると、少しして小さく戻ります(点は減ります)。</li>
+            <li>面ごとの目標を 2 分のうちに達成するとクリア。早いほど星が増えます。「一番大きく」の面は 2 分後に一番大きければクリア。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 画面に指を置いて、行きたい方へずらす(離すと止まる)</li>
+            <li>PC: 矢印キー / WASD。P か Esc で一時停止、L で面一覧</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-pause">⏸ 一時停止</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 穴の街の論理。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var HoleCore = (function () {
+    'use strict';
+    var BLOCK = 300, ROAD = 90, PITCH = BLOCK + ROAD, CELL = 160;
+    var R0 = 20;        // 穴の最初の半径
+    var EAT = 1.6;      // 物の長い辺 < 半径 × EAT なら食べられる
+    var GROW = 0.05;     // 食べた物の面積 × GROW を穴の面積(r^2)に足す
+    var TIME = 120;
+    var SW = 1.2;       // 半径がこの倍以上あれば相手の穴を飲める
+    // 物の種類: w,h(上から見た大きさ) z(高さ。影と描く順) name
+    var KIND = {
+      person: { w: 10, h: 10, z: 4, name: '人' },
+      cone: { w: 10, h: 10, z: 3, name: 'コーン' },
+      hydrant: { w: 9, h: 9, z: 3, name: '消火栓' },
+      bin: { w: 12, h: 12, z: 4, name: 'ごみ箱' },
+      bench: { w: 26, h: 10, z: 3, name: 'ベンチ' },
+      tree: { w: 32, h: 32, z: 14, name: '木' },
+      car: { w: 20, h: 40, z: 6, name: '車' },
+      fountain: { w: 58, h: 58, z: 4, name: '噴水' },
+      bus: { w: 26, h: 76, z: 10, name: 'バス' },
+      house: { w: 70, h: 64, z: 20, name: '家' },
+      shop: { w: 110, h: 90, z: 26, name: '店' },
+      building: { w: 150, h: 140, z: 50, name: 'ビル' },
+      tower: { w: 220, h: 220, z: 90, name: 'タワー' }
+    };
+    // 面: nb=街の区画数(一辺) mix=[公園,住宅,駐車場,店,ビル街] en=敵の数 es=敵の強さ(0..1) goal
+    var LEVELS = [
+      { nb: 3, mix: [3, 2, 1, 0, 0], en: 0, goal: { k: 'eat', t: ['person'], n: 15 } },
+      { nb: 3, mix: [2, 2, 2, 0, 0], en: 0, goal: { k: 'eat', t: ['car'], n: 10 } },
+      { nb: 3, mix: [3, 2, 1, 0, 0], en: 0, goal: { k: 'all', t: ['tree'] } },
+      { nb: 4, mix: [2, 2, 3, 1, 0], en: 2, es: 0.0, goal: { k: 'eat', t: ['car'], n: 20 } },
+      { nb: 4, mix: [2, 3, 2, 1, 0], en: 2, es: 0.1, goal: { k: 'size', r: 70 } },
+      { nb: 4, mix: [1, 4, 1, 1, 0], en: 2, es: 0.15, goal: { k: 'eat', t: ['house'], n: 10 } },
+      { nb: 4, mix: [2, 3, 2, 1, 1], en: 2, es: 0.0, goal: { k: 'rank' } },
+      { nb: 5, mix: [2, 2, 3, 1, 1], en: 2, es: 0.25, goal: { k: 'eat', t: ['bus'], n: 5 } },
+      { nb: 5, mix: [2, 3, 2, 1, 1], en: 2, es: 0.15, goal: { k: 'holes', n: 2 } },
+      { nb: 5, mix: [2, 3, 2, 2, 1], en: 2, es: 0.1, goal: { k: 'size', r: 90 } },
+      { nb: 5, mix: [4, 2, 1, 1, 0], en: 2, es: 0.4, goal: { k: 'all', t: ['tree'] } },
+      { nb: 5, mix: [1, 2, 4, 1, 1], en: 2, es: 0.45, goal: { k: 'eat', t: ['car'], n: 50 } },
+      { nb: 5, mix: [1, 5, 1, 1, 1], en: 2, es: 0.5, goal: { k: 'eat', t: ['house'], n: 30 } },
+      { nb: 6, mix: [2, 3, 2, 2, 1], en: 2, es: 0.55, goal: { k: 'rank' } },
+      { nb: 6, mix: [1, 2, 2, 2, 3], en: 2, es: 0.6, goal: { k: 'eat', t: ['building', 'tower'], n: 4 } },
+      { nb: 6, mix: [2, 3, 2, 2, 1], en: 2, es: 0.65, goal: { k: 'holes', n: 3 } },
+      { nb: 6, mix: [1, 3, 2, 2, 2], en: 2, es: 0.6, goal: { k: 'size', r: 160 } },
+      { nb: 6, mix: [2, 3, 2, 2, 2], en: 2, es: 0.75, goal: { k: 'score', n: 5000 } },
+      { nb: 7, mix: [1, 2, 2, 2, 4], en: 2, es: 0.85, goal: { k: 'eat', t: ['building', 'tower'], n: 12 } },
+      { nb: 7, mix: [2, 3, 2, 2, 2], en: 2, es: 1.0, goal: { k: 'rank' } }
+    ];
+    var LEVEL_COUNT = LEVELS.length;
+    var BKIND = ['park', 'houses', 'parking', 'shops', 'downtown'];
+    var COLS = ['#e74c3c', '#3d7bf0', '#f5f5f5', '#2ecc71', '#f39c12', '#9b59b6', '#34495e', '#1abc9c'];
+
+    function rng(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function pickW(rnd, ws) {
+      var s = 0, i; for (i = 0; i < ws.length; i++) s += ws[i];
+      var v = rnd() * s;
+      for (i = 0; i < ws.length; i++) { v -= ws[i]; if (v < 0) return i; }
+      return ws.length - 1;
+    }
+    function rc(k) { return k * PITCH + ROAD / 2; }   // k 本目の道の中心
+    function pts(o) { return Math.max(1, Math.round(o.w * o.h / 80)); }
+
+    function makeLevel(idx) {
+      var def = LEVELS[idx];
+      var rnd = rng(1000 + idx * 7919);
+      var nb = def.nb, W = nb * PITCH + ROAD;
+      var objs = [], blocks = [];
+      function add(type, x, y, w, h, extra) {
+        var k = KIND[type];
+        var o = { id: objs.length, t: type, x: x, y: y, w: w || k.w, h: h || k.h, z: k.z, c: (rnd() * COLS.length) | 0, vx: 0, vy: 0 };
+        if (extra) for (var key in extra) o[key] = extra[key];
+        objs.push(o);
+        return o;
+      }
+      // 区画
+      var bx, by, i, j;
+      // 目標に要る種類の区画が必ずあるように、最初の数区画は目標向きにする
+      var need = null, gt = def.goal.t ? def.goal.t[0] : null;
+      if (gt === 'house') need = 1; else if (gt === 'building' || gt === 'tower') need = 4; else if (gt === 'car' || gt === 'bus') need = 2; else if (gt === 'tree') need = 0;
+      var order = [];
+      for (i = 0; i < nb * nb; i++) order.push(i);
+      for (i = order.length - 1; i > 0; i--) { j = (rnd() * (i + 1)) | 0; var tmp = order[i]; order[i] = order[j]; order[j] = tmp; }
+      for (i = 0; i < nb * nb; i++) blocks.push(BKIND[pickW(rnd, def.mix)]);
+      if (need !== null) { var m = Math.max(1, Math.round(nb * nb / 4)); for (i = 0; i < m; i++) blocks[order[i]] = BKIND[need]; }
+      for (by = 0; by < nb; by++) for (bx = 0; bx < nb; bx++) genBlock(blocks[by * nb + bx], ROAD + bx * PITCH, ROAD + by * PITCH);
+
+      function genBlock(kind, x0, y0) {
+        var rects = [];
+        function free(x, y, w, h, mg) {
+          if (x - w / 2 < x0 + 6 || y - h / 2 < y0 + 6 || x + w / 2 > x0 + BLOCK - 6 || y + h / 2 > y0 + BLOCK - 6) return false;
+          for (var q = 0; q < rects.length; q++) {
+            var r = rects[q];
+            if (Math.abs(x - r[0]) * 2 < w + r[2] + mg * 2 && Math.abs(y - r[1]) * 2 < h + r[3] + mg * 2) return false;
+          }
+          return true;
+        }
+        function put(type, x, y, w, h, extra, mg) {
+          var k = KIND[type]; w = w || k.w; h = h || k.h;
+          if (!free(x, y, w, h, mg === undefined ? 3 : mg)) return null;
+          rects.push([x, y, w, h]);
+          return add(type, x, y, w, h, extra);
+        }
+        function scatter(type, n, rot) {
+          var k = KIND[type], got = 0;
+          for (var tries = 0; tries < n * 25 && got < n; tries++) {
+            var rr = rot && rnd() < 0.5, w = rr ? k.h : k.w, h = rr ? k.w : k.h;
+            if (put(type, x0 + w / 2 + 6 + rnd() * (BLOCK - w - 12), y0 + h / 2 + 6 + rnd() * (BLOCK - h - 12), w, h)) got++;
+          }
+        }
+        function walker(x, y, axis, len) {
+          var o = put('person', x, y, 0, 0, null, 1);
+          if (!o) return;
+          var sp = 8 + rnd() * 10;
+          if (axis === 0) { o.vx = rnd() < 0.5 ? sp : -sp; o.b0 = x - len; o.b1 = x + len; }
+          else { o.vy = rnd() < 0.5 ? sp : -sp; o.b0 = y - len; o.b1 = y + len; }
+        }
+        var cx = x0 + BLOCK / 2, cy = y0 + BLOCK / 2, a, b;
+        if (kind === 'park') {
+          if (rnd() < 0.6) put('fountain', cx, cy);
+          scatter('tree', 10 + ((rnd() * 6) | 0));
+          scatter('bench', 4, true);
+          scatter('bin', 2);
+          for (a = 0; a < 4; a++) walker(x0 + 30 + rnd() * 240, y0 + 30 + rnd() * 240, a & 1, 30);
+          scatter('person', 3);
+        } else if (kind === 'houses') {
+          for (a = 0; a < 3; a++) for (b = 0; b < 3; b++) {
+            var hx = x0 + 52 + b * 98, hy = y0 + 52 + a * 98;
+            if (rnd() < 0.8) put('house', hx, hy, 58 + ((rnd() * 22) | 0), 54 + ((rnd() * 18) | 0), null, 2);
+            else put('tree', hx, hy);
+          }
+          scatter('car', 3, true);
+          scatter('tree', 5);
+          scatter('person', 3);
+        } else if (kind === 'parking') {
+          for (a = 0; a < 3; a++) {
+            var ry = y0 + 50 + a * 95;
+            if (a === 1 && rnd() < 0.7) {
+              for (b = 0; b < 3; b++) put('bus', x0 + 60 + b * 90, ry, 76, 26);
+            } else {
+              for (b = 0; b < 9; b++) if (rnd() < 0.8) put('car', x0 + 30 + b * 30, ry, 20, 40, null, 1);
+            }
+          }
+          scatter('cone', 6);
+          scatter('person', 3);
+        } else if (kind === 'shops') {
+          for (a = 0; a < 2; a++) for (b = 0; b < 2; b++) {
+            if (rnd() < 0.85) put('shop', x0 + 75 + b * 150, y0 + 75 + a * 150, 96 + ((rnd() * 24) | 0), 84 + ((rnd() * 16) | 0), null, 4);
+          }
+          scatter('car', 2, true);
+          scatter('bin', 3);
+          scatter('hydrant', 2);
+          scatter('person', 6);
+        } else {
+          if (rnd() < 0.35) {
+            put('tower', cx, cy, 200 + ((rnd() * 30) | 0), 200 + ((rnd() * 30) | 0));
+          } else {
+            for (a = 0; a < 2; a++) for (b = 0; b < 2; b++) {
+              if (rnd() < 0.8) put('building', x0 + 76 + b * 148, y0 + 76 + a * 148, 120 + ((rnd() * 22) | 0), 118 + ((rnd() * 22) | 0), null, 2);
+              else put('shop', x0 + 76 + b * 148, y0 + 76 + a * 148, 100, 90);
+            }
+          }
+          scatter('hydrant', 2);
+          scatter('bin', 2);
+          scatter('person', 6);
+          scatter('tree', 3);
+        }
+      }
+      // 道の車とバス(走る)
+      for (i = 0; i <= nb; i++) {
+        for (var lane = 0; lane < 2; lane++) {
+          var dir = lane === 0 ? 1 : -1, sp = (45 + rnd() * 30) * dir, off = lane === 0 ? 20 : -20;
+          var n = 1 + ((rnd() * 3) | 0), start = rnd() * W;
+          for (j = 0; j < n; j++) {
+            var pos = (start + j * W / n) % W, bus = rnd() < 0.15;
+            var len = bus ? 76 : 40, wid = bus ? 26 : 20;
+            // 縦の道
+            add(bus ? 'bus' : 'car', rc(i) + off, pos, wid, len, { vy: sp, wrap: 1 });
+            // 横の道
+            pos = (start * 0.7 + j * W / n + 97) % W; bus = rnd() < 0.15; len = bus ? 76 : 40; wid = bus ? 26 : 20;
+            add(bus ? 'bus' : 'car', pos, rc(i) - off, len, wid, { vx: -sp, wrap: 1 });
+          }
+        }
+      }
+      // 交差点のコーン
+      for (i = 0; i < nb * 2; i++) {
+        var ix = rc((rnd() * (nb + 1)) | 0) + (rnd() - 0.5) * 50, iy = rc((rnd() * (nb + 1)) | 0) + (rnd() - 0.5) * 50;
+        add('cone', ix, iy);
+      }
+      return { idx: idx, def: def, nb: nb, W: W, blocks: blocks, objs: objs, goal: def.goal, time: TIME };
+    }
+
+    // ---------- 進行 ----------
+    function cellOf(G, x, y) {
+      var cx = Math.max(0, Math.min(G.gw - 1, (x / CELL) | 0)), cy = Math.max(0, Math.min(G.gw - 1, (y / CELL) | 0));
+      return cy * G.gw + cx;
+    }
+    function gridAdd(G, o) { o.ci = cellOf(G, o.x, o.y); G.cells[o.ci].push(o); }
+    function gridDel(G, o) { var a = G.cells[o.ci], i = a.indexOf(o); if (i >= 0) { a[i] = a[a.length - 1]; a.pop(); } }
+    function near(G, x0, y0, x1, y1, fn) {
+      var cx0 = Math.max(0, (x0 / CELL) | 0), cy0 = Math.max(0, (y0 / CELL) | 0);
+      var cx1 = Math.min(G.gw - 1, (x1 / CELL) | 0), cy1 = Math.min(G.gw - 1, (y1 / CELL) | 0);
+      for (var cy = cy0; cy <= cy1; cy++) for (var cx = cx0; cx <= cx1; cx++) {
+        var a = G.cells[cy * G.gw + cx];
+        for (var i = 0; i < a.length; i++) fn(a[i]);
+      }
+    }
+    var HOLE_NAME = ['あなた', 'あか', 'きいろ'];
+    function newGame(L, opts) {
+      opts = opts || {};
+      var G = { L: L, W: L.W, objs: L.objs, t: 0, time: L.time, ev: [], done: false, win: false, rnd: rng(77 + L.idx * 131 + (opts.seed || 0) * 7777),
+                gw: Math.ceil(L.W / CELL), cells: [], holes: [], remain: {}, total: {}, falling: [] };
+      var i;
+      for (i = 0; i < G.gw * G.gw; i++) G.cells.push([]);
+      for (i = 0; i < G.objs.length; i++) {
+        var o = G.objs[i]; o.fall = -1; o.gone = false;
+        gridAdd(G, o);
+        G.remain[o.t] = (G.remain[o.t] || 0) + 1; G.total[o.t] = (G.total[o.t] || 0) + 1;
+      }
+      var nb = L.nb, mid = Math.floor(nb / 2);
+      var spots = [[rc(mid), rc(mid)], [rc(0), rc(0)], [rc(nb), rc(nb)]];
+      var es = L.def.es || 0;
+      for (i = 0; i < 1 + L.def.en; i++) {
+        G.holes.push({ id: i, name: HOLE_NAME[i], x: spots[i][0], y: spots[i][1], r: R0, area: R0 * R0, vx: 0, vy: 0, score: 0, eaten: {}, swallowed: 0, lost: 0,
+          dead: 0, safe: 0, player: i === 0, auto: i === 0 ? !!opts.auto : true,
+          spd: i === 0 ? 1 : 0.8 + 0.17 * es, thinkInt: i === 0 ? 0.2 : 0.7 - 0.45 * es, greed: i === 0 ? 1 : 0.4 + 0.6 * es,
+          ai: { t: 0, tx: spots[i][0], ty: spots[i][1], tgt: null, prey: null, ban: {}, sx: spots[i][0], sy: spots[i][1], st: 0, detour: 0, dx: 0, dy: 0 } });
+      }
+      return G;
+    }
+    function size(o) { return o.w > o.h ? o.w : o.h; }
+    function canEat(h, o) { return size(o) < h.r * EAT; }
+    function speedOf(h) { return (150 + Math.min(h.r, 110) * 1.3) * h.spd; }
+
+    function goalTypes(G) { return G.L.goal.t || null; }
+    function think(G, h) {
+      var ai = h.ai, i, best = null, bs = 0;
+      ai.prey = null; ai.danger = null;
+      var gk = G.L.goal.k, gts = h.player ? goalTypes(G) : null;
+      var dd = 1e9;
+      for (i = 0; i < G.holes.length; i++) {
+        var o = G.holes[i];
+        if (o === h || o.dead > 0) continue;
+        var dz0 = o.safe > 0;
+        var d = Math.hypot(o.x - h.x, o.y - h.y);
+        if (o.r > h.r * SW * 0.95 && d < o.r + h.r + 220 && d < dd) { dd = d; ai.danger = o; }
+        var chase = h.player ? (gk === 'holes' ? 900 : 260) : 200 + 250 * h.greed;
+        // 敵はずっと小さい穴(自分の 1/3 未満)は追わない
+        if (!dz0 && !(ai.calm > G.t) && h.r > o.r * SW && (h.player || o.r * 3 > h.r) && d < chase + h.r * 2) {
+          if (!ai.prey || d < Math.hypot(ai.prey.x - h.x, ai.prey.y - h.y)) ai.prey = o;
+        }
+      }
+      if (ai.prey) {
+        // 敵は 4 秒追って捕まえられなければ、しばらくあきらめる(人が逃げ切れるように)
+        if (!h.player) { ai.chase = (ai.chase || 0) + ai.lastInt; if (ai.chase > 4) { ai.chase = 0; ai.calm = G.t + 8; ai.prey = null; } }
+        if (ai.prey) { ai.tgt = null; ai.tx = ai.prey.x; ai.ty = ai.prey.y; return; }
+      } else ai.chase = 0;
+      var rad = 260 + h.r * 3;
+      for (var pass = 0; pass < 2 && !best; pass++) {
+        if (pass === 1) rad = G.W;
+        near(G, h.x - rad, h.y - rad, h.x + rad, h.y + rad, function (o) {
+          if (o.gone || o.fall >= 0 || !canEat(h, o)) return;
+          if (ai.ban[o.id] && ai.ban[o.id] > G.t) return;
+          var d = Math.hypot(o.x - h.x, o.y - h.y);
+          if (d > rad) return;
+          var v = Math.pow(o.w * o.h, 0.75);
+          if (gts && gts.indexOf(o.t) >= 0) v *= 8;
+          // 危ない穴の近くは避ける
+          if (ai.danger) { var dz = Math.hypot(o.x - ai.danger.x, o.y - ai.danger.y); if (dz < ai.danger.r + h.r + 80) v *= 0.1; }
+          var s = v / (d + 60);
+          if (s > bs) { bs = s; best = o; }
+        });
+      }
+      ai.tgt = best;
+      if (best) { ai.tx = best.x; ai.ty = best.y; }
+      else { ai.tx = rc((G.rnd() * (G.L.nb + 1)) | 0); ai.ty = rc((G.rnd() * (G.L.nb + 1)) | 0); }
+    }
+    function aiDir(G, h, dt) {
+      var ai = h.ai;
+      ai.t -= dt;
+      if (ai.t <= 0 || (ai.tgt && (ai.tgt.gone || ai.tgt.fall >= 0)) || (ai.prey && ai.prey.dead > 0)) { ai.lastInt = Math.max(0, h.thinkInt - ai.t); think(G, h); ai.t = h.thinkInt; }
+      if (ai.prey) { ai.tx = ai.prey.x; ai.ty = ai.prey.y; }
+      else if (ai.tgt) { ai.tx = ai.tgt.x; ai.ty = ai.tgt.y; }
+      // 動けていない → 目標を外して回り道
+      ai.st += dt;
+      if (ai.st > 0.6) {
+        var moved = Math.hypot(h.x - ai.sx, h.y - ai.sy);
+        if (moved < speedOf(h) * 0.6 * 0.25 && ai.detour <= 0) {
+          if (ai.tgt) ai.ban[ai.tgt.id] = G.t + 4;
+          var ang = G.rnd() * Math.PI * 2;
+          ai.dx = Math.cos(ang); ai.dy = Math.sin(ang); ai.detour = 0.5 + G.rnd() * 0.4;
+          ai.t = ai.detour;
+        }
+        ai.sx = h.x; ai.sy = h.y; ai.st = 0;
+      }
+      if (ai.detour > 0) { ai.detour -= dt; return [ai.dx, ai.dy]; }
+      var dx = ai.tx - h.x, dy = ai.ty - h.y, d = Math.hypot(dx, dy) || 1;
+      dx /= d; dy /= d;
+      if (ai.danger && ai.danger.dead <= 0) {
+        var ex = h.x - ai.danger.x, ey = h.y - ai.danger.y, ed = Math.hypot(ex, ey) || 1;
+        if (ed < ai.danger.r + h.r + 160) {
+          dx = dx * 0.4 + ex / ed; dy = dy * 0.4 + ey / ed;
+          var n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
+        }
+      }
+      return [dx, dy];
+    }
+    function respawn(G, h) {
+      var best = null, bd = -1;
+      for (var k = 0; k < 8; k++) {
+        var x = rc((G.rnd() * (G.L.nb + 1)) | 0), y = rc((G.rnd() * (G.L.nb + 1)) | 0), md = 1e9;
+        for (var i = 0; i < G.holes.length; i++) { var o = G.holes[i]; if (o !== h && o.dead <= 0) md = Math.min(md, Math.hypot(o.x - x, o.y - y) - o.r); }
+        if (md > bd) { bd = md; best = [x, y]; }
+      }
+      h.x = best[0]; h.y = best[1]; h.safe = 3; h.area = Math.max(R0 * R0, (h.keep || 0)); h.r = Math.sqrt(h.area); h.vx = h.vy = 0; h.ai.tgt = null; h.ai.prey = null; h.ai.t = 0; h.ai.detour = 0;
+      G.ev.push({ k: 'respawn', h: h.id });
+    }
+    function eatObj(G, h, o) {
+      o.fall = 0; o.fh = h; o.fx = o.x; o.fy = o.y;
+      gridDel(G, o);
+      G.falling.push(o);
+      G.remain[o.t]--;
+      h.area += o.w * o.h * GROW;
+      var p = pts(o);
+      h.score += p;
+      h.eaten[o.t] = (h.eaten[o.t] || 0) + 1;
+      G.ev.push({ k: 'eat', h: h.id, t: o.t, p: p, x: o.x, y: o.y });
+    }
+
+    function step(G, dt, inp) {
+      if (G.done) return;
+      G.ev.length = 0;
+      G.t += dt;
+      var i, j, h;
+      // 動く物
+      var mv = G.moving || (G.moving = G.objs.filter(function (o) { return o.vx || o.vy; }));
+      for (i = 0; i < mv.length; i++) {
+        var o = mv[i];
+        if (o.gone || o.fall >= 0) continue;
+        o.x += o.vx * dt; o.y += o.vy * dt;
+        if (o.wrap) {
+          if (o.x < 0) o.x += G.W; else if (o.x > G.W) o.x -= G.W;
+          if (o.y < 0) o.y += G.W; else if (o.y > G.W) o.y -= G.W;
+        } else if (o.vx) { if ((o.x < o.b0 && o.vx < 0) || (o.x > o.b1 && o.vx > 0)) o.vx = -o.vx; }
+        else if ((o.y < o.b0 && o.vy < 0) || (o.y > o.b1 && o.vy > 0)) o.vy = -o.vy;
+        var ci = cellOf(G, o.x, o.y);
+        if (ci !== o.ci) { gridDel(G, o); o.ci = ci; G.cells[ci].push(o); }
+      }
+      // 穴を動かす
+      for (i = 0; i < G.holes.length; i++) {
+        h = G.holes[i];
+        if (h.dead > 0) { h.dead -= dt; if (h.dead <= 0) respawn(G, h); continue; }
+        if (h.safe > 0) h.safe -= dt;
+        var d = (h.player && !h.auto) ? (inp || [0, 0]) : aiDir(G, h, dt);
+        var sp = speedOf(h), k = Math.min(1, dt * 8);
+        h.vx += (d[0] * sp - h.vx) * k; h.vy += (d[1] * sp - h.vy) * k;
+        h.x += h.vx * dt; h.y += h.vy * dt;
+        h.x = Math.max(0, Math.min(G.W, h.x)); h.y = Math.max(0, Math.min(G.W, h.y));
+      }
+      // 物との当たり: 小さい物は落ちる、大きい物は押し返す
+      for (i = 0; i < G.holes.length; i++) {
+        h = G.holes[i];
+        if (h.dead > 0) continue;
+        var reach = h.r + 130;
+        var hit = [];
+        near(G, h.x - reach, h.y - reach, h.x + reach, h.y + reach, function (o) { hit.push(o); });
+        for (j = 0; j < hit.length; j++) {
+          var ob = hit[j];
+          if (ob.fall >= 0) continue;
+          if (canEat(h, ob)) {
+            var dc = Math.hypot(ob.x - h.x, ob.y - h.y);
+            if (dc < h.r - size(ob) * 0.3) eatObj(G, h, ob);
+          } else {
+            var hw = ob.w / 2, hh = ob.h / 2;
+            var px = Math.max(ob.x - hw, Math.min(ob.x + hw, h.x)), py = Math.max(ob.y - hh, Math.min(ob.y + hh, h.y));
+            var ex = h.x - px, ey = h.y - py, ed = Math.hypot(ex, ey), md = h.r * 0.5;
+            if (ed < md) {
+              if (ed > 1e-6) { h.x += ex / ed * (md - ed); h.y += ey / ed * (md - ed); }
+              else {
+                var l = h.x - (ob.x - hw), r = ob.x + hw - h.x, t = h.y - (ob.y - hh), b = ob.y + hh - h.y, mn = Math.min(l, r, t, b);
+                if (mn === l) h.x = ob.x - hw - md; else if (mn === r) h.x = ob.x + hw + md; else if (mn === t) h.y = ob.y - hh - md; else h.y = ob.y + hh + md;
+              }
+            }
+          }
+        }
+      }
+      // 穴どうし
+      for (i = 0; i < G.holes.length; i++) for (j = 0; j < G.holes.length; j++) {
+        var a = G.holes[i], b2 = G.holes[j];
+        if (i === j || a.dead > 0 || b2.dead > 0 || b2.safe > 0) continue;
+        if (a.r > b2.r * SW && Math.hypot(a.x - b2.x, a.y - b2.y) < a.r - b2.r * 0.3) {
+          a.area += b2.area * (a.player ? 0.7 : 0.5); a.swallowed++;
+          a.score += Math.round(b2.score * 0.3) + 20;
+          b2.score = Math.round(b2.score * 0.7); b2.lost++;
+          b2.dead = 3; b2.vx = b2.vy = 0; b2.keep = b2.area * 0.45;
+          if (!a.player) a.ai.calm = G.t + (b2.player ? 20 : 12);   // 敵は飲んだ後しばらく穴を追わない
+          G.ev.push({ k: 'swallow', a: a.id, b: b2.id, x: b2.x, y: b2.y, r: b2.r });
+        }
+      }
+      // 落ちていく物
+      for (i = G.falling.length - 1; i >= 0; i--) {
+        var f = G.falling[i];
+        f.fall += dt;
+        if (f.fall > 0.4) { f.gone = true; G.falling.splice(i, 1); }
+      }
+      // 大きさはなめらかに
+      for (i = 0; i < G.holes.length; i++) { h = G.holes[i]; var tr = Math.sqrt(h.area); h.r += (tr - h.r) * Math.min(1, dt * 5); }
+      // 目標
+      var gi = goalInfo(G);
+      if (gi.done && G.L.goal.k !== 'rank') { G.done = true; G.win = true; }
+      else if (G.t >= G.time) { G.done = true; G.win = G.L.goal.k === 'rank' ? gi.done : false; }
+    }
+
+    function goalInfo(G) {
+      var g = G.L.goal, p = G.holes[0], cur = 0, need = 0, text = '', i;
+      if (g.k === 'eat') {
+        for (i = 0; i < g.t.length; i++) cur += p.eaten[g.t[i]] || 0;
+        need = g.n; text = KIND[g.t[0]].name + 'を ' + g.n + ' 食べる';
+      } else if (g.k === 'all') {
+        var tot = 0, rem = 0;
+        for (i = 0; i < g.t.length; i++) { tot += G.total[g.t[i]] || 0; rem += G.remain[g.t[i]] || 0; }
+        cur = tot - rem; need = tot; text = '街の' + KIND[g.t[0]].name + 'を全部';
+      } else if (g.k === 'size') {
+        cur = Math.round(p.r * 2) / 10; need = g.r * 2 / 10; text = '大きさ ' + need + 'm';
+        return { text: text, cur: cur, need: need, done: p.r >= g.r, short: (p.r >= g.r ? need : cur.toFixed(1)) + '/' + need + 'm' };
+      } else if (g.k === 'holes') {
+        cur = p.swallowed; need = g.n; text = '敵の穴を ' + g.n + ' 回飲む';
+      } else if (g.k === 'score') {
+        cur = p.score; need = g.n; text = g.n + ' 点';
+      } else {
+        var rank = 1;
+        for (i = 1; i < G.holes.length; i++) if (G.holes[i].r >= p.r) rank++;
+        return { text: '2 分後に一番大きい', cur: rank, need: 1, done: rank === 1, short: rank + '位' };
+      }
+      return { text: text, cur: Math.min(cur, need), need: need, done: cur >= need, short: Math.min(cur, need) + '/' + need };
+    }
+    function stars(G) {
+      if (!G.win) return 0;
+      if (G.L.goal.k === 'rank') {
+        var p = G.holes[0].r, second = 0;
+        for (var i = 1; i < G.holes.length; i++) second = Math.max(second, G.holes[i].r);
+        var q = p / Math.max(1, second);
+        return q >= 1.5 ? 3 : (q >= 1.2 ? 2 : 1);
+      }
+      var left = (G.time - G.t) / G.time;
+      return left >= 0.4 ? 3 : (left >= 0.15 ? 2 : 1);
+    }
+    function goalText(g) {
+      return goalInfo({ L: { goal: g }, holes: [{ eaten: {}, r: R0, swallowed: 0, score: 0 }], total: {}, remain: {} }).text;
+    }
+
+    return { LEVEL_COUNT: LEVEL_COUNT, LEVELS: LEVELS, KIND: KIND, BLOCK: BLOCK, ROAD: ROAD, PITCH: PITCH, R0: R0, EAT: EAT,
+             SW: SW, makeLevel: makeLevel, newGame: newGame, step: step, goalInfo: goalInfo, goalText: goalText, stars: stars, canEat: canEat, near: near, rc: rc };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = HoleCore;
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = HoleCore, KIND = C.KIND;
+    var store = H.store('hole');
+    var cleared = store.get('cleared', {});
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var G = null, running = false, autoOn = false, pauseEl = null;
+    var canvas = document.getElementById('cv'), stage = document.getElementById('stage'), main = document.querySelector('.app-main');
+    var ctx = null, cssW = 300, cssH = 300, dpr = 1;
+    var cam = { x: 0, y: 0, z: 1 };
+    var pops = [], shake = 0, notice = { car: 0 }, goalPtr = null, goalPtrT = 0, lastBeep = -1;
+    var HOLE_COL = ['#56b4e9', '#e74c3c', '#f5b041'];
+
+    function $(id) { return document.getElementById(id); }
+
+    function layout() {
+      var r = main.getBoundingClientRect(), cs = window.getComputedStyle(main);
+      var w = Math.floor(r.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+      var h = Math.floor(r.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0));
+      w = Math.max(50, w); h = Math.max(50, h);
+      stage.style.width = w + 'px'; stage.style.height = h + 'px';
+      ctx = H.setupCanvas(canvas, w, h);
+      cssW = w; cssH = h; dpr = canvas.width / w;
+      draw();
+    }
+
+    // ---------- 入力 ----------
+    var stick = { on: false, id: null, ox: 0, oy: 0, x: 0, y: 0 };
+    var keyDown = {};
+    function canvasPos(e) { var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    canvas.addEventListener('pointerdown', function (e) {
+      if (stick.on) return;
+      var p = canvasPos(e);
+      stick.on = true; stick.id = e.pointerId; stick.ox = stick.x = p.x; stick.oy = stick.y = p.y;
+      try { canvas.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+      e.preventDefault();
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (!stick.on || e.pointerId !== stick.id) return;
+      var p = canvasPos(e);
+      stick.x = p.x; stick.y = p.y;
+      // 指が遠くへ行ったら原点もついていく(逆向きにすぐ戻れる)
+      var dx = stick.x - stick.ox, dy = stick.y - stick.oy, d = Math.hypot(dx, dy), M = 60;
+      if (d > M) { stick.ox = stick.x - dx / d * M; stick.oy = stick.y - dy / d * M; }
+      e.preventDefault();
+    });
+    function stickEnd(e) { if (e.pointerId === stick.id) { stick.on = false; stick.id = null; } }
+    canvas.addEventListener('pointerup', stickEnd);
+    canvas.addEventListener('pointercancel', stickEnd);
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    var KEYMAP = { ArrowLeft: 'l', ArrowRight: 'r', ArrowUp: 'u', ArrowDown: 'd', a: 'l', d: 'r', w: 'u', s: 'd', A: 'l', D: 'r', W: 'u', S: 'd' };
+    document.addEventListener('keydown', function (e) {
+      var k = KEYMAP[e.key];
+      if (k) { keyDown[k] = true; e.preventDefault(); return; }
+      if (e.repeat) return;
+      if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') togglePause();
+      else if (e.key === 'l' || e.key === 'L') showList();
+    });
+    document.addEventListener('keyup', function (e) { var k = KEYMAP[e.key]; if (k) keyDown[k] = false; });
+    window.addEventListener('blur', function () { keyDown = {}; stick.on = false; });
+
+    function inputDir() {
+      var x = (keyDown.r ? 1 : 0) - (keyDown.l ? 1 : 0), y = (keyDown.d ? 1 : 0) - (keyDown.u ? 1 : 0);
+      if (x || y) { var n = Math.hypot(x, y); return [x / n, y / n]; }
+      if (stick.on) {
+        var dx = stick.x - stick.ox, dy = stick.y - stick.oy, d = Math.hypot(dx, dy);
+        if (d < 6) return [0, 0];
+        var m = Math.min(1, (d - 6) / 40);
+        return [dx / d * m, dy / d * m];
+      }
+      return [0, 0];
+    }
+
+    // ---------- 進行 ----------
+    function load(i, autostart) {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      pauseEl = null;
+      lvIdx = i; store.set('last', i);
+      G = C.newGame(C.makeLevel(i), { auto: autoOn });
+      running = false; pops = []; notice = {}; goalPtr = null; lastBeep = -1;
+      var p = G.holes[0];
+      cam.x = p.x; cam.y = p.y; cam.z = targetZoom(p.r);
+      hud(); draw();
+      if (autostart) { running = true; return; }
+      var gi = C.goalInfo(G);
+      var en = G.holes.length - 1;
+      H.overlay({ title: '面 ' + (i + 1), html: '<span class="goalbig">' + gi.text + '</span><br>' + (en ? '敵の穴が ' + en + ' つ。大きい穴に気をつけて。' : 'まずは小さい物から食べよう。') + '<br>指を置いてずらすと穴が動く',
+        buttons: [{ label: 'スタート', onClick: function () { running = true; } }, { label: '面一覧', secondary: true, onClick: showList }] });
+    }
+    function finish() {
+      running = false;
+      var st = C.stars(G), gi = C.goalInfo(G);
+      if (G.win) {
+        var prev = cleared[lvIdx] || 0;
+        if (st > prev) { cleared[lvIdx] = st; store.set('cleared', cleared); }
+        var best = store.get('best', {});
+        var sz = Math.round(G.holes[0].r * 2) / 10;
+        if (!best[lvIdx] || sz > best[lvIdx]) { best[lvIdx] = sz; store.set('best', best); }
+        H.audio.win();
+        var s = '';
+        for (var i = 0; i < 3; i++) s += i < st ? '★' : '<span class="off">★</span>';
+        var btns = [];
+        if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の面', onClick: function () { load(lvIdx + 1); } });
+        btns.push({ label: 'もう一度', secondary: true, onClick: function () { load(lvIdx); } });
+        btns.push({ label: '面一覧', secondary: true, onClick: showList });
+        H.overlay({ title: lvIdx < C.LEVEL_COUNT - 1 ? 'クリア!' : '全面クリア!', html: '<span class="stars">' + s + '</span><br>' + gi.text + '<br>大きさ ' + sz + 'm・' + G.holes[0].score + ' 点・' + Math.ceil(G.t) + ' 秒', buttons: btns });
+      } else {
+        H.audio.bad();
+        H.overlay({ title: '時間切れ', html: gi.text + '<br>' + (G.L.goal.k === 'rank' ? gi.short + 'でした' : 'あと ' + (gi.need - gi.cur > 0 ? (Math.round((gi.need - gi.cur) * 10) / 10) : 0) + (G.L.goal.k === 'size' ? 'm' : '')),
+          buttons: [{ label: 'もう一度', onClick: function () { load(lvIdx); } }, { label: '面一覧', secondary: true, onClick: showList }] });
+      }
+    }
+    function showList() {
+      if (pauseEl) { pauseEl.close(); pauseEl = null; }
+      var resumable = G && !G.done && G.t > 0; running = false;
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      H.levelPicker({ count: C.LEVEL_COUNT, current: lvIdx,
+        done: function (i) { return !!cleared[i]; },
+        label: function (i) { return cleared[i] ? '★★★'.slice(0, cleared[i]) : ''; },
+        onPick: function (i) { load(i); },
+        onClose: function () { if (resumable) { running = true; pause(); } else load(lvIdx); } });
+    }
+    function pause() {
+      if (!G || G.done || pauseEl || !running) return;
+      running = false;
+      pauseEl = H.overlay({ title: '一時停止', html: C.goalInfo(G).text,
+        buttons: [{ label: '続ける', onClick: function () { pauseEl = null; running = true; } },
+                  { label: 'やり直し', secondary: true, onClick: function () { pauseEl = null; load(lvIdx); } },
+                  { label: '面一覧', secondary: true, onClick: function () { pauseEl = null; showList(); } }] });
+    }
+    function togglePause() {
+      if (pauseEl) { pauseEl.close(); pauseEl = null; running = true; return; }
+      if (running) pause();
+    }
+
+    function targetZoom(r) {
+      var viewMin = Math.max(400, r * 12);
+      return Math.min(cssW, cssH) / viewMin;
+    }
+
+    function update(dt) {
+      if (!G) return;
+      if (running && !G.done) {
+        var n = dt > 1 / 40 ? 2 : 1, inp = inputDir();
+        for (var s = 0; s < n && !G.done; s++) {
+          C.step(G, dt / n, inp);
+          handleEvents();
+        }
+        if (G.done) { var g0 = G; setTimeout(function () { if (G === g0) finish(); }, 350); }
+        var left = Math.ceil(G.time - G.t);
+        if (left <= 10 && left !== lastBeep && left > 0) { lastBeep = left; H.audio.beep(880, 0.06, 'square', 0.04); }
+        hud();
+      }
+      var p = G.holes[0], k = Math.min(1, dt * 6);
+      cam.x += (p.x - cam.x) * k; cam.y += (p.y - cam.y) * k;
+      cam.z += (targetZoom(p.r) - cam.z) * Math.min(1, dt * 2);
+      for (var i = pops.length - 1; i >= 0; i--) { pops[i].t += dt; if (pops[i].t > 0.9) pops.splice(i, 1); }
+      if (shake > 0) shake = Math.max(0, shake - dt);
+      goalPtrT -= dt;
+      if (goalPtrT <= 0) { goalPtrT = 0.5; findGoalPtr(); }
+    }
+    var NOTICE = [['car', '車'], ['bus', 'バス'], ['house', '家'], ['shop', 'お店'], ['building', 'ビル'], ['tower', 'タワー']];
+    function handleEvents() {
+      var p = G.holes[0];
+      for (var i = 0; i < G.ev.length; i++) {
+        var e = G.ev[i];
+        if (e.k === 'eat' && e.h === 0) {
+          if (pops.length < 30) pops.push({ x: e.x, y: e.y, t: 0, txt: '+' + e.p });
+          if (e.p >= 5) H.audio.beep(300 + Math.min(500, e.p * 4), 0.07, 'triangle', 0.05);
+          else if (Math.random() < 0.5) H.audio.beep(520 + Math.random() * 120, 0.04, 'sine', 0.03);
+        } else if (e.k === 'swallow') {
+          if (e.a === 0) { H.audio.good(); H.toast(G.holes[e.b].name + 'の穴を飲み込んだ!'); shake = 0.3; }
+          else if (e.b === 0) { H.audio.bad(); H.toast(G.holes[e.a].name + 'に飲まれた… 3 秒で戻ります'); shake = 0.4; }
+        } else if (e.k === 'respawn' && e.h === 0) {
+          cam.x = p.x; cam.y = p.y;
+        }
+      }
+      for (var j = 0; j < NOTICE.length; j++) {
+        var t = NOTICE[j][0];
+        if (!notice[t] && KIND[t].w * 0 + Math.max(KIND[t].w, KIND[t].h) < p.r * C.EAT) {
+          notice[t] = 1;
+          if (G.t > 1) H.toast(NOTICE[j][1] + 'が食べられる大きさになった!');
+        }
+      }
+    }
+    function findGoalPtr() {
+      goalPtr = null;
+      if (!G) return;
+      var g = G.L.goal;
+      if (g.k !== 'eat' && g.k !== 'all') return;
+      var p = G.holes[0], bd = 1e18;
+      for (var i = 0; i < G.objs.length; i++) {
+        var o = G.objs[i];
+        if (o.gone || o.fall >= 0 || g.t.indexOf(o.t) < 0) continue;
+        var d = (o.x - p.x) * (o.x - p.x) + (o.y - p.y) * (o.y - p.y);
+        if (d < bd) { bd = d; goalPtr = o; }
+      }
+    }
+
+    function fmtTime(s) { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+    function hud() {
+      if (!G) return;
+      $('hud-lv').textContent = lvIdx + 1;
+      $('hud-time').textContent = fmtTime(G.time - G.t);
+      var gi = C.goalInfo(G), g = G.L.goal;
+      var lab = g.k === 'eat' || g.k === 'all' ? KIND[g.t[0]].name + ' ' : (g.k === 'holes' ? '穴 ' : (g.k === 'score' ? '点 ' : ''));
+      $('hud-goal').textContent = lab + gi.short;
+      $('hud-size').textContent = (Math.round(G.holes[0].r * 2) / 10).toFixed(1) + 'm';
+    }
+
+    // ---------- 描画 ----------
+    var GROUND = { park: '#5fa84a', houses: '#9cc47a', parking: '#6d7178', shops: '#b9b2a4', downtown: '#a7a9ad' };
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function circ(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); }
+    var CARC = ['#e74c3c', '#3d7bf0', '#f4f4f4', '#2ecc71', '#f39c12', '#9b59b6', '#34495e', '#1abc9c'];
+    var ROOF = ['#c0392b', '#8e5a3c', '#3b5998', '#5d6d7e', '#a04000', '#7d3c98', '#2e86c1', '#6e2c00'];
+    function drawObj(o, x, y) {
+      var w = o.w, h = o.h, x0 = x - w / 2, y0 = y - h / 2, t = o.t;
+      if (t === 'person') {
+        circ(x, y, 5); ctx.fillStyle = CARC[o.c]; ctx.fill();
+        circ(x, y, 2.6); ctx.fillStyle = '#f1c27d'; ctx.fill();
+      } else if (t === 'cone') {
+        circ(x, y, 5); ctx.fillStyle = '#ff7f1f'; ctx.fill();
+        circ(x, y, 3); ctx.fillStyle = '#fff'; ctx.fill();
+        circ(x, y, 1.6); ctx.fillStyle = '#ff7f1f'; ctx.fill();
+      } else if (t === 'hydrant') {
+        circ(x, y, 4.5); ctx.fillStyle = '#d62c1a'; ctx.fill();
+        circ(x, y, 2); ctx.fillStyle = '#8b1a10'; ctx.fill();
+      } else if (t === 'bin') {
+        rrect(x0, y0, w, h, 2); ctx.fillStyle = '#5c6b73'; ctx.fill();
+        ctx.fillStyle = '#7f909a'; ctx.fillRect(x0 + 2, y0 + 2, w - 4, h - 4);
+      } else if (t === 'bench') {
+        ctx.fillStyle = '#8a5a2b'; ctx.fillRect(x0, y0, w, h);
+        ctx.strokeStyle = '#5e3b18'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (w > h) { ctx.moveTo(x0, y); ctx.lineTo(x0 + w, y); } else { ctx.moveTo(x, y0); ctx.lineTo(x, y0 + h); }
+        ctx.stroke();
+      } else if (t === 'tree') {
+        circ(x, y, w / 2); ctx.fillStyle = '#2e7d32'; ctx.fill();
+        circ(x - w * 0.1, y - w * 0.1, w * 0.34); ctx.fillStyle = '#43a047'; ctx.fill();
+        circ(x - w * 0.16, y - w * 0.16, w * 0.14); ctx.fillStyle = '#66bb6a'; ctx.fill();
+      } else if (t === 'car' || t === 'bus') {
+        var bus = t === 'bus';
+        rrect(x0, y0, w, h, bus ? 4 : 5); ctx.fillStyle = bus ? (o.c & 1 ? '#f1c40f' : '#27ae60') : CARC[o.c]; ctx.fill();
+        // 前(進む向き)にフロントガラス
+        var vert = h > w, fwd = vert ? (o.vy < 0 ? -1 : 1) : (o.vx < 0 ? -1 : 1);
+        ctx.fillStyle = 'rgba(20,30,50,0.75)';
+        if (vert) {
+          var gy = fwd > 0 ? y0 + h * (bus ? 0.88 : 0.66) : y0 + h * (bus ? 0.04 : 0.16);
+          ctx.fillRect(x0 + 3, gy, w - 6, h * (bus ? 0.08 : 0.18));
+          if (bus) { ctx.fillStyle = 'rgba(255,255,255,0.5)'; for (var q = 0; q < 5; q++) ctx.fillRect(x - 3, y0 + 12 + q * 11, 6, 6); }
+          else { ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(x0 + 3, y0 + h * 0.36, w - 6, h * 0.26); }
+        } else {
+          var gx = fwd > 0 ? x0 + w * (bus ? 0.88 : 0.66) : x0 + w * (bus ? 0.04 : 0.16);
+          ctx.fillRect(gx, y0 + 3, w * (bus ? 0.08 : 0.18), h - 6);
+          if (bus) { ctx.fillStyle = 'rgba(255,255,255,0.5)'; for (var q2 = 0; q2 < 5; q2++) ctx.fillRect(x0 + 12 + q2 * 11, y - 3, 6, 6); }
+          else { ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(x0 + w * 0.36, y0 + 3, w * 0.26, h - 6); }
+        }
+      } else if (t === 'fountain') {
+        circ(x, y, w / 2); ctx.fillStyle = '#b0aba0'; ctx.fill();
+        circ(x, y, w / 2 - 6); ctx.fillStyle = '#4fa3e0'; ctx.fill();
+        circ(x, y, 7); ctx.fillStyle = '#e8f6ff'; ctx.fill();
+      } else if (t === 'house') {
+        var rc0 = ROOF[o.c];
+        ctx.fillStyle = rc0; ctx.fillRect(x0, y0, w, h);
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        if (w >= h) ctx.fillRect(x0, y, w, h / 2); else ctx.fillRect(x, y0, w / 2, h);
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.5; ctx.strokeRect(x0, y0, w, h);
+        ctx.fillStyle = '#7b7b7b'; ctx.fillRect(x0 + w * 0.7, y0 + h * 0.12, 7, 7);
+      } else if (t === 'shop') {
+        ctx.fillStyle = '#d9d4c7'; ctx.fillRect(x0, y0, w, h);
+        ctx.fillStyle = CARC[o.c]; ctx.fillRect(x0, y0 + h - 12, w, 12);
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 2; ctx.strokeRect(x0, y0, w, h);
+        ctx.fillStyle = '#9aa3a8'; ctx.fillRect(x0 + 14, y0 + 14, 18, 14); ctx.fillRect(x0 + 40, y0 + 14, 18, 14);
+      } else if (t === 'building') {
+        ctx.fillStyle = '#7f8c99'; ctx.fillRect(x0, y0, w, h);
+        ctx.fillStyle = '#95a3b0'; ctx.fillRect(x0 + 8, y0 + 8, w - 16, h - 16);
+        ctx.fillStyle = '#6b7783'; ctx.fillRect(x0 + 18, y0 + 18, 26, 20); ctx.fillRect(x0 + 52, y0 + 18, 26, 20);
+        circ(x0 + w - 32, y0 + h - 32, 14); ctx.fillStyle = '#c8ced4'; ctx.fill();
+      } else if (t === 'tower') {
+        ctx.fillStyle = '#3c4f66'; ctx.fillRect(x0, y0, w, h);
+        ctx.fillStyle = '#4d6480'; ctx.fillRect(x0 + 12, y0 + 12, w - 24, h - 24);
+        circ(x, y, w * 0.22); ctx.fillStyle = '#2b3a4c'; ctx.fill();
+        ctx.strokeStyle = '#f5b041'; ctx.lineWidth = 4; circ(x, y, w * 0.18); ctx.stroke();
+        ctx.fillStyle = '#f4f4f4'; ctx.font = 'bold ' + Math.round(w * 0.2) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('H', x, y + 1);
+      }
+    }
+    function drawShadow(o) {
+      var s = o.z * 0.35;
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      if (o.t === 'tree' || o.t === 'person' || o.t === 'cone' || o.t === 'hydrant' || o.t === 'fountain') { circ(o.x + s, o.y + s, o.w / 2); ctx.fill(); }
+      else ctx.fillRect(o.x - o.w / 2 + s, o.y - o.h / 2 + s, o.w, o.h);
+    }
+
+    function draw() {
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#22301f'; ctx.fillRect(0, 0, cssW, cssH);
+      if (!G) return;
+      var z = cam.z, sx = 0, sy = 0;
+      if (shake > 0) { sx = (Math.random() - 0.5) * 8 * shake; sy = (Math.random() - 0.5) * 8 * shake; }
+      var vx0 = cam.x - cssW / 2 / z, vy0 = cam.y - cssH / 2 / z, vx1 = cam.x + cssW / 2 / z, vy1 = cam.y + cssH / 2 / z;
+      ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * (cssW / 2 - cam.x * z + sx), dpr * (cssH / 2 - cam.y * z + sy));
+      var W = G.W, nb = G.L.nb, P = C.PITCH, R = C.ROAD, B = C.BLOCK, i, bx, by;
+      // 道
+      ctx.fillStyle = '#4e535a'; ctx.fillRect(0, 0, W, W);
+      // 区画
+      var b0x = Math.max(0, Math.floor((vx0 - R) / P)), b1x = Math.min(nb - 1, Math.floor(vx1 / P));
+      var b0y = Math.max(0, Math.floor((vy0 - R) / P)), b1y = Math.min(nb - 1, Math.floor(vy1 / P));
+      for (by = b0y; by <= b1y; by++) for (bx = b0x; bx <= b1x; bx++) {
+        var x0 = R + bx * P, y0 = R + by * P, kind = G.L.blocks[by * nb + bx];
+        ctx.fillStyle = '#b8b2a6'; ctx.fillRect(x0 - 12, y0 - 12, B + 24, B + 24);
+        ctx.fillStyle = GROUND[kind]; ctx.fillRect(x0, y0, B, B);
+        if (kind === 'parking') {
+          ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5; ctx.beginPath();
+          for (var a = 0; a < 3; a++) for (var q = 0; q <= 9; q++) { var lx = x0 + 15 + q * 30, ly = y0 + 50 + a * 95; ctx.moveTo(lx, ly - 24); ctx.lineTo(lx, ly + 24); }
+          ctx.stroke();
+        } else if (kind === 'park') {
+          ctx.strokeStyle = '#d8c79c'; ctx.lineWidth = 10; ctx.beginPath();
+          ctx.moveTo(x0, y0 + B / 2); ctx.lineTo(x0 + B, y0 + B / 2); ctx.moveTo(x0 + B / 2, y0); ctx.lineTo(x0 + B / 2, y0 + B); ctx.stroke();
+        }
+      }
+      // 道の線
+      ctx.strokeStyle = 'rgba(255,230,140,0.7)'; ctx.lineWidth = 3; ctx.setLineDash([22, 18]); ctx.beginPath();
+      for (i = 0; i <= nb; i++) {
+        var c = C.rc(i);
+        if (c > vx0 - 10 && c < vx1 + 10) { ctx.moveTo(c, Math.max(0, vy0)); ctx.lineTo(c, Math.min(W, vy1)); }
+        if (c > vy0 - 10 && c < vy1 + 10) { ctx.moveTo(Math.max(0, vx0), c); ctx.lineTo(Math.min(W, vx1), c); }
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+      // 穴(中)
+      var holes = G.holes, h;
+      for (i = 0; i < holes.length; i++) {
+        h = holes[i];
+        if (h.dead > 0) continue;
+        var gr = ctx.createRadialGradient(h.x, h.y, h.r * 0.2, h.x, h.y, h.r);
+        gr.addColorStop(0, '#000'); gr.addColorStop(0.75, '#0a0a12'); gr.addColorStop(1, '#262636');
+        circ(h.x, h.y, h.r); ctx.fillStyle = gr; ctx.fill();
+      }
+      // 落ちていく物(穴の中に切り取る)
+      for (i = 0; i < G.falling.length; i++) {
+        var f = G.falling[i], fh = f.fh, k = Math.min(1, f.fall / 0.4);
+        if (fh.dead > 0) continue;
+        var fx = f.fx + (fh.x - f.fx) * k, fy = f.fy + (fh.y - f.fy) * k, sc = 1 - k * 0.85;
+        ctx.save();
+        circ(fh.x, fh.y, fh.r); ctx.clip();
+        ctx.globalAlpha = 1 - k * 0.6;
+        ctx.translate(fx, fy); ctx.scale(sc, sc); ctx.rotate(k * 1.5);
+        drawObj(f, 0, 0);
+        ctx.restore();
+      }
+      // 見えている物だけ
+      var low = [], tall = [];
+      C.near(G, vx0 - 130, vy0 - 130, vx1 + 130, vy1 + 130, function (o) {
+        if (o.gone || o.fall >= 0) return;
+        if (o.x + o.w < vx0 || o.x - o.w > vx1 || o.y + o.h < vy0 || o.y - o.h > vy1) return;
+        if (o.z >= 14) tall.push(o); else low.push(o);
+      });
+      for (i = 0; i < low.length; i++) drawShadow(low[i]);
+      for (i = 0; i < low.length; i++) drawObj(low[i], low[i].x, low[i].y);
+      for (i = 0; i < tall.length; i++) drawShadow(tall[i]);
+      for (i = 0; i < tall.length; i++) drawObj(tall[i], tall[i].x, tall[i].y);
+      // 穴のふちと名前
+      var p0 = holes[0];
+      for (i = 0; i < holes.length; i++) {
+        h = holes[i];
+        if (h.dead > 0) continue;
+        circ(h.x, h.y, h.r); ctx.strokeStyle = HOLE_COL[i]; ctx.lineWidth = Math.max(3 / z, h.r * 0.07); ctx.stroke();
+        if (i > 0) {
+          var big = h.r > p0.r * C.SW, small = p0.r > h.r * C.SW;
+          ctx.font = 'bold ' + (13 / z) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+          ctx.fillStyle = big ? '#ff8a80' : (small ? '#b9f6ca' : '#fff');
+          ctx.fillText(h.name + (big ? ' ⚠' : (small ? ' ◎' : '')), h.x, h.y - h.r - 4 / z);
+        }
+      }
+      // 点のポップ
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (i = 0; i < pops.length; i++) {
+        var pp = pops[i];
+        ctx.globalAlpha = 1 - pp.t / 0.9;
+        ctx.font = 'bold ' + (14 / z) + 'px sans-serif'; ctx.fillStyle = '#fff';
+        ctx.fillText(pp.txt, pp.x, pp.y - pp.t * 40 / z);
+      }
+      ctx.globalAlpha = 1;
+      // ここから画面の座標
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // 画面外の敵と目標の矢印
+      for (i = 1; i < holes.length; i++) if (holes[i].dead <= 0) edgeArrow(holes[i].x, holes[i].y, HOLE_COL[i], holes[i].r > p0.r * C.SW ? '⚠' : '');
+      if (goalPtr && !goalPtr.gone && goalPtr.fall < 0) edgeArrow(goalPtr.x, goalPtr.y, '#ffffff', KIND[goalPtr.t].name);
+      if (p0.dead > 0) {
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, cssH / 2 - 30, cssW, 60);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('飲まれた… ' + Math.ceil(p0.dead) + ' 秒で戻ります', cssW / 2, cssH / 2);
+      }
+      // 仮想スティック
+      if (stick.on && running) {
+        circ(stick.ox, stick.oy, 46); ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.stroke();
+        var dx = stick.x - stick.ox, dy = stick.y - stick.oy, d = Math.hypot(dx, dy), m = Math.min(d, 46);
+        if (d > 0) { dx = dx / d * m; dy = dy / d * m; }
+        circ(stick.ox + dx, stick.oy + dy, 20); ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
+      }
+      if (autoOn) { ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText('自動', 8, 8); }
+    }
+    function edgeArrow(wx, wy, col, label) {
+      var z = cam.z, sx = cssW / 2 + (wx - cam.x) * z, sy = cssH / 2 + (wy - cam.y) * z, m = 22;
+      if (sx > -10 && sx < cssW + 10 && sy > -10 && sy < cssH + 10) return;
+      var cx = cssW / 2, cy = cssH / 2, dx = sx - cx, dy = sy - cy;
+      var s = Math.min((cx - m) / Math.abs(dx || 1e-6), (cy - m) / Math.abs(dy || 1e-6));
+      var ax = cx + dx * s, ay = cy + dy * s, ang = Math.atan2(dy, dx);
+      ctx.save(); ctx.translate(ax, ay); ctx.rotate(ang);
+      ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-8, -9); ctx.lineTo(-8, 9); ctx.closePath();
+      ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+      if (label) {
+        ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        var lx = ax - Math.cos(ang) * 22, ly = ay - Math.sin(ang) * 18;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; var tw = ctx.measureText(label).width + 8; ctx.fillRect(lx - tw / 2, ly - 9, tw, 18);
+        ctx.fillStyle = col; ctx.fillText(label, lx, ly);
+      }
+    }
+
+    // ---------- つなぎ ----------
+    $('btn-pause').addEventListener('click', function () { if (pauseEl) togglePause(); else pause(); });
+    $('btn-list').addEventListener('click', showList);
+    window.resetGame = function () { load(lvIdx); };
+    H.pauseWhenHidden(function () { keyDown = {}; stick.on = false; if (running) pause(); });
+    H.onResize(layout);
+
+    window.__dbg = {
+      state: function () {
+        if (!G) return '{}';
+        var p = G.holes[0], gi = C.goalInfo(G);
+        return JSON.stringify({ level: lvIdx + 1, running: running, done: G.done, win: G.win, auto: autoOn,
+          size_m: Math.round(p.r * 2) / 10, r: Math.round(p.r * 10) / 10, x: Math.round(p.x), y: Math.round(p.y), score: p.score, eaten: p.eaten, swallowed: p.swallowed, lost: p.lost,
+          timeLeft: Math.round((G.time - G.t) * 10) / 10, goal: { text: gi.text, cur: gi.cur, need: gi.need, done: gi.done },
+          enemies: G.holes.slice(1).map(function (h) { return { name: h.name, r: Math.round(h.r), dead: h.dead > 0 }; }),
+          objs: G.objs.length, stars: C.stars(G) });
+      },
+      cmd: function (name, a) {
+        if (name === 'level') load(Math.max(0, Math.min(C.LEVEL_COUNT - 1, (a | 0) - 1)), true);
+        else if (name === 'auto') { autoOn = a !== false && a !== 0; if (G) G.holes[0].auto = autoOn; }
+        else if (name === 'reset') load(lvIdx, true);
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        else if (name === 'sim') { // a 秒ぶん一気に進める(確認用)
+          var n = Math.round((a || 1) * 30);
+          for (var i = 0; i < n && !G.done; i++) { C.step(G, 1 / 30, inputDir()); handleEvents(); }
+          var p = G.holes[0]; cam.x = p.x; cam.y = p.y; cam.z = targetZoom(p.r); hud();
+          if (G.done) { running = false; finish(); }
+        }
+        return this.state();
+      }
+    };
+
+    layout();
+    setTimeout(layout, 0);
+    load(lvIdx);
+    H.loop(update, draw).start();
+  })();
+  </script>
+</body>
+</html>

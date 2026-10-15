@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>六角積み - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 12px; touch-action: none; }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 10px; }
+    #hud-best.off { display: none; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="六角積み" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">面<b id="lvl">1</b></span>
+      <span class="hud-item accent">消した<b id="prog">0</b></span>
+      <span class="hud-item">空き<b id="free">0</b></span>
+      <span class="hud-item off" id="hud-best">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>下の 3 つの束から 1 つ選び、盤の空いたマスに置く。3 つとも置くと次の 3 つが来る。</li>
+            <li>置いた束と、となりの束の「いちばん上の色」が同じなら、その色の連なりが 1 か所へ飛んで集まる。集まった先でまた同じ色がとなりにあれば続けて集まる(連鎖)。</li>
+            <li>いちばん上の同じ色が 10 枚以上になると、その色の連なりが消える。</li>
+            <li>面ごとの目標の枚数を消せばクリア。空きマスが無くなって置けなくなると失敗(戻すで何手でも戻れる)。</li>
+            <li>灰色の岩のマスには置けない。面によっては最初から束が置いてある。</li>
+            <li>配られる束の順番は面ごとに決まっている。戻しても同じ束が来る。</li>
+            <li>エンドレスは失敗するまで続ける。消した枚数がベストとして残る。</li>
+          </ul>
+          <h3>どこに集まるか</h3>
+          <ul>
+            <li>同じ色が並んだとき、集める先は次の順で決まる。
+              (1) 同じ色のとなりがいちばん多い束。
+              (2) 同じなら、色を渡した後の束に出てくる下の色が、さらにとなりとつながる方。
+              (3) まだ同じなら、下に別の色がある束が受け取る(1 色だけの束は丸ごと移ってマスが空く)。
+              (4) それでも同じなら、いま置いた束に集まる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 下の束をタップして選び、空きマスをタップ。束をマスまでドラッグしてもよい。選んだ束は少し浮いて光る。</li>
+            <li>下のボタンで 戻す・ヒント・面一覧・エンドレス。↻ でその面をはじめから。</li>
+            <li>PC: 1/2/3 で束を選び、矢印でマスを選んで Space。Z = 戻す、H = ヒント、R = やり直し、L = 面一覧。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-undo">↶ 戻す</button>
+      <button type="button" class="ctl-btn sm" id="btn-hint">💡 ヒント</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+      <button type="button" class="ctl-btn sm" id="btn-endless">∞ エンドレス</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 盤の論理。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var HexaCore = (function () {
+    'use strict';
+    var LEVEL_COUNT = 30;
+    var CLEAR_AT = 10;
+    var AX = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]; // 六方向(軸座標)
+
+    function mulberry(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function pick(rnd, n) { return Math.floor(rnd() * n); }
+
+    // 盤の形(半径 R の六角形)。cells[i]={q,r}、nb[i]=となりの番号
+    function makeGeo(R) {
+      var cells = [], idx = {}, q, r, i;
+      for (r = -R; r <= R; r++) for (q = -R; q <= R; q++) {
+        if (Math.abs(q + r) > R) continue;
+        idx[q + ',' + r] = cells.length; cells.push({ q: q, r: r });
+      }
+      var nb = cells.map(function (c) {
+        var a = [];
+        for (var d = 0; d < 6; d++) {
+          var k = idx[(c.q + AX[d][0]) + ',' + (c.r + AX[d][1])];
+          if (k !== undefined) a.push(k);
+        }
+        return a;
+      });
+      return { R: R, cells: cells, nb: nb, idx: idx };
+    }
+
+    // 面の設定 [半径, 色数, 岩, 最初の束, 目標, 束の最大の高さ, 段の多さ 0-2]
+    var LV = [
+      [2, 3, 0, 0, 20, 5, 0], [2, 3, 0, 0, 30, 5, 0], [2, 4, 0, 2, 30, 6, 0], [2, 4, 0, 3, 40, 6, 0], [2, 4, 1, 3, 50, 6, 1],
+      [2, 5, 1, 3, 50, 6, 1], [2, 5, 2, 4, 60, 7, 1], [2, 6, 1, 3, 60, 7, 1], [3, 5, 0, 4, 80, 7, 1], [3, 5, 2, 5, 90, 7, 1],
+      [3, 6, 2, 5, 100, 7, 1], [3, 6, 3, 6, 110, 7, 1], [3, 6, 4, 6, 120, 7, 2], [3, 6, 5, 6, 130, 7, 2], [3, 7, 3, 5, 130, 7, 1],
+      [3, 7, 4, 6, 140, 7, 2], [3, 7, 5, 6, 150, 7, 2], [3, 7, 6, 6, 160, 7, 2], [3, 7, 6, 7, 170, 7, 2], [3, 7, 7, 7, 180, 7, 2],
+      [3, 8, 3, 5, 160, 7, 1], [3, 8, 4, 5, 170, 7, 2], [3, 8, 5, 6, 180, 7, 2], [3, 8, 6, 6, 190, 7, 2], [3, 8, 6, 7, 200, 7, 2],
+      [3, 8, 7, 7, 210, 7, 2], [3, 8, 7, 8, 220, 7, 2], [3, 8, 8, 8, 230, 7, 2], [3, 8, 8, 9, 240, 7, 2], [3, 8, 9, 9, 250, 7, 2]
+    ];
+    // 面ごとの種のずらし。素朴な自動(autoMove)が目標の 1.2 倍以上まで届く配りを選んである(check.mjs で確認)
+    var SEED_OFF = [/*SEEDS*/0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 3/*SEEDS-END*/];
+    function levelSeed(lv, off) { return (1000 + lv * 7919 + off * 104729) >>> 0; }
+
+    // k 番目に配る束(種と k だけで決まる。戻しても同じ)
+    function dealStack(st, k) {
+      var rnd = mulberry((st.seed * 2654435761 + (k + 1) * 40503) >>> 0);
+      rnd(); rnd();
+      var nc = st.endless ? Math.min(8, 4 + Math.floor(k / 45)) : st.nColors;
+      var mix = st.endless ? Math.min(2, Math.floor(k / 60)) : st.mix;
+      return randomStack(rnd, nc, st.maxH, mix);
+    }
+    // mix: 0 = 色の段が少ない(易しい) 〜 2 = 段が多い
+    var MIX = [[0.45, 0.88, 1], [0.3, 0.75, 0.97], [0.18, 0.6, 0.9]];
+    function randomStack(rnd, nc, maxH, mix) {
+      var hs = [2, 3, 3, 4, 4, 4, 5, 5, 6, 7].filter(function (h) { return h <= maxH; });
+      var h = hs[pick(rnd, hs.length)];
+      var mx = MIX[mix || 0], x = rnd(), segs = x < mx[0] ? 1 : (x < mx[1] ? 2 : (x < mx[2] ? 3 : 4));
+      segs = Math.min(segs, h);
+      // 上の段ほど長め: 上の段の長さを先に決める
+      var sizes = [], left = h, s;
+      for (s = 0; s < segs; s++) {
+        var rest = segs - s - 1;
+        var mx = left - rest;
+        var len = s === segs - 1 ? left : Math.max(1, Math.min(mx, Math.ceil(left * (s === 0 ? 0.55 : 0.5)) + (rnd() < 0.4 ? 1 : 0) - (rnd() < 0.3 ? 1 : 0)));
+        sizes.push(len); left -= len;
+      }
+      // sizes[0] が一番上
+      var stack = [], prev = -1, cols = [];
+      for (s = 0; s < segs; s++) {
+        var c;
+        do { c = pick(rnd, nc); } while (c === prev && nc > 1);
+        cols.push(c); prev = c;
+      }
+      for (s = segs - 1; s >= 0; s--) for (var j = 0; j < sizes[s]; j++) stack.push(cols[s]);
+      return stack; // 下から上へ
+    }
+
+    function top(a) { return a.length ? a[a.length - 1] : -1; }
+    function topRun(a) {
+      if (!a.length) return 0;
+      var c = a[a.length - 1], n = 0;
+      for (var i = a.length - 1; i >= 0 && a[i] === c; i--) n++;
+      return n;
+    }
+
+    function base(geo, seed, opts) {
+      var st = { geo: geo, seed: seed, stacks: [], rock: [], tray: [null, null, null], deal: 0, cleared: 0,
+        goal: opts.goal || 0, nColors: opts.nColors || 4, maxH: opts.maxH || 7, mix: opts.mix || 0, endless: !!opts.endless, lv: opts.lv };
+      for (var i = 0; i < geo.cells.length; i++) { st.stacks.push([]); st.rock.push(false); }
+      return st;
+    }
+    function refill(st) {
+      if (st.tray[0] || st.tray[1] || st.tray[2]) return false;
+      for (var i = 0; i < 3; i++) st.tray[i] = dealStack(st, st.deal++);
+      return true;
+    }
+
+    // 岩: 中心以外。なるべくとなり合わないように散らす。返り値は残りの空きマス
+    function putRocks(st, rnd, nRock) {
+      var free = [], n = st.geo.cells.length, i, k;
+      for (i = 0; i < n; i++) if (st.geo.cells[i].q !== 0 || st.geo.cells[i].r !== 0) free.push(i);
+      for (k = 0; k < nRock && free.length; k++) {
+        var tries = 0, c;
+        do { c = free[pick(rnd, free.length)]; tries++; }
+        while (tries < 40 && st.geo.nb[c].some(function (m) { return st.rock[m]; }));
+        st.rock[c] = true; free.splice(free.indexOf(c), 1);
+      }
+      return free;
+    }
+    // 面 lv(0 始まり)。off を渡すと種のずらしを変えて作る(種探し用)
+    function makeLevel(lv, off) {
+      var p = LV[lv], R = p[0];
+      var seed = levelSeed(lv, off === undefined ? SEED_OFF[lv] : off);
+      var st = base(makeGeo(R), seed, { nColors: p[1], goal: p[4], maxH: p[5], mix: p[6] || 0, lv: lv });
+      var rnd = mulberry(seed ^ 0x5bd1e995), k;
+      var free = putRocks(st, rnd, p[2]);
+      // 最初の束: となりと上の色が同じにならないように
+      function clash(c, s) { return st.geo.nb[c].some(function (m) { return st.stacks[m].length && top(st.stacks[m]) === top(s); }); }
+      for (k = 0; k < p[3] && free.length; k++) {
+        var c2 = free.splice(pick(rnd, free.length), 1)[0];
+        var s = randomStack(rnd, p[1], Math.min(6, p[5]), p[6]);
+        for (var t = 0; t < 20 && clash(c2, s); t++) s = randomStack(rnd, p[1], Math.min(6, p[5]), p[6]);
+        if (!clash(c2, s)) st.stacks[c2] = s;
+      }
+      refill(st);
+      return st;
+    }
+    // エンドレス: 半径 3、岩 5。色は配るほど 4→8 に増え、段も多くなる
+    function makeEndless(seed) {
+      var st = base(makeGeo(3), seed >>> 0, { endless: true, maxH: 7, lv: -1 });
+      putRocks(st, mulberry((seed ^ 0x5bd1e995) >>> 0), 5);
+      refill(st);
+      return st;
+    }
+
+    function clone(st) {
+      return { geo: st.geo, seed: st.seed, rock: st.rock, goal: st.goal, nColors: st.nColors, maxH: st.maxH, mix: st.mix, endless: st.endless, lv: st.lv,
+        stacks: st.stacks.map(function (a) { return a.slice(); }), tray: st.tray.map(function (a) { return a ? a.slice() : null; }),
+        deal: st.deal, cleared: st.cleared };
+    }
+    function emptyCells(st) {
+      var r = [];
+      for (var i = 0; i < st.stacks.length; i++) if (!st.rock[i] && !st.stacks[i].length) r.push(i);
+      return r;
+    }
+
+    // 色を寄せる。events に {t:'move',from,to,color,n} / {t:'clear',cell,color,n} を積む
+    function resolve(st, start, events) {
+      var S = st.stacks, nb = st.geo.nb, dirty = [start], guard = 0, i;
+      function matches(c, col) { return nb[c].filter(function (m) { return S[m].length && top(S[m]) === col; }); }
+      function push(c) { if (dirty.indexOf(c) < 0) dirty.push(c); }
+      while (guard++ < 2000) {
+        if (!dirty.length) {
+          // 取りこぼしが無いか全体を見る
+          for (i = 0; i < S.length; i++) if (S[i].length && matches(i, top(S[i])).length) { push(i); break; }
+          if (!dirty.length) break;
+        }
+        var c = dirty.shift();
+        if (!S[c].length) continue;
+        var col = top(S[c]), M = matches(c, col);
+        if (!M.length) continue;
+        var group = [c].concat(M), best = -1, bestScore = -1;
+        group.forEach(function (h) {
+          var src = matches(h, col);
+          var reveal = 0;
+          src.forEach(function (s) {
+            var a = S[s], n = topRun(a);
+            if (a.length > n) {
+              var below = a[a.length - n - 1];
+              nb[s].forEach(function (m) { if (m !== h && S[m].length && top(S[m]) === below) reveal++; });
+            }
+          });
+          var under = S[h].length - topRun(S[h]);
+          var sc = src.length * 1000 + Math.min(reveal, 9) * 100 + (under > 0 ? 10 : 0) + (h === c ? 1 : 0);
+          if (sc > bestScore) { bestScore = sc; best = h; }
+        });
+        var hub = best, srcs = matches(hub, col);
+        srcs.forEach(function (s) {
+          var n = topRun(S[s]);
+          for (var j = 0; j < n; j++) S[hub].push(S[s].pop());
+          events.push({ t: 'move', from: s, to: hub, color: col, n: n });
+        });
+        var run = topRun(S[hub]);
+        if (run >= CLEAR_AT) {
+          S[hub].length -= run;
+          st.cleared += run;
+          events.push({ t: 'clear', cell: hub, color: col, n: run });
+        }
+        push(hub);
+        srcs.forEach(function (s) { push(s); nb[s].forEach(push); });
+        nb[hub].forEach(push);
+      }
+    }
+
+    // 束 ti を cell に置く。返り値 events(置けなければ null)
+    function place(st, ti, cell) {
+      if (!st.tray[ti] || st.rock[cell] || st.stacks[cell].length) return null;
+      st.stacks[cell] = st.tray[ti]; st.tray[ti] = null;
+      var events = [];
+      resolve(st, cell, events);
+      refill(st);
+      return events;
+    }
+    function isWin(st) { return !st.endless && st.cleared >= st.goal; }
+    function isFail(st) { return !isWin(st) && emptyCells(st).length === 0; }
+
+    // 素朴な自動: 置ける所を全部試し、消える枚数が多い所、次に空きが多く上が揃う所
+    function evalState(st) {
+      var e = 0, S = st.stacks;
+      for (var i = 0; i < S.length; i++) {
+        var a = S[i];
+        if (st.rock[i]) continue;
+        if (!a.length) { e += 4; continue; }
+        var ch = 0;
+        for (var j = 1; j < a.length; j++) if (a[j] !== a[j - 1]) ch++;
+        var tr = topRun(a);
+        e += tr * tr * 0.08 - ch * 2 - a.length * 0.3;
+      }
+      return e;
+    }
+    function autoMove(st) {
+      var best = null, bestV = -1e9, E = emptyCells(st);
+      for (var ti = 0; ti < 3; ti++) {
+        if (!st.tray[ti]) continue;
+        for (var k = 0; k < E.length; k++) {
+          var c2 = clone(st), before = c2.cleared;
+          place(c2, ti, E[k]);
+          var v = (c2.cleared - before) * 100 + evalState(c2) + (isWin(c2) ? 1e6 : 0);
+          if (v > bestV) { bestV = v; best = { ti: ti, cell: E[k] }; }
+        }
+      }
+      return best;
+    }
+
+    return { LEVEL_COUNT: LEVEL_COUNT, CLEAR_AT: CLEAR_AT, LV: LV, SEED_OFF: SEED_OFF, makeLevel: makeLevel, makeEndless: makeEndless, clone: clone,
+      place: place, emptyCells: emptyCells, isWin: isWin, isFail: isFail, autoMove: autoMove, top: top, topRun: topRun };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = HexaCore;
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = HexaCore;
+    var store = H.store('hexasort');
+    var cleared = store.get('cleared', {});
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var endless = false, bestE = store.get('best', 0);
+    var S = null, hist = [], sel = 0, over = false, cursor = -1;
+    var display = [], timeline = [], flying = [], parts = [], floaters = [];
+    var trayT = 0, hint = null, drag = null;
+    var BW = 540, BH = 540, SQ3 = Math.sqrt(3), K = 0.62;
+    var G = { S: 40, T: 7, cx: 270, cy: 230, ts: 34, tT: 6, ty: 470 };
+    var COLS = ['#e8453c', '#3d7bf0', '#f5c542', '#2ecc71', '#a259e0', '#ff8c2e', '#ff6fb0', '#3fd6e0'];
+    var canvas = document.getElementById('cv'), st = null;
+    var FLY = 240, STAG = 45, CLR = 30;
+
+    function $(id) { return document.getElementById(id); }
+    function now() { return performance.now(); }
+
+    // 画面の形で並べ方を変える: tall = 縦長(下に 3 つ) / wide = 横長(右に 3 つ) / sq = その間
+    var mode = 'sq';
+    function pickMode() {
+      var m = document.querySelector('.app-main'), w = m ? m.clientWidth : 400, h = m ? m.clientHeight : 400;
+      return h / Math.max(1, w) > 1.15 ? 'tall' : (w / Math.max(1, h) > 1.25 ? 'wide' : 'sq');
+    }
+    function geom() {
+      var R = S.geo.R;
+      mode = pickMode();
+      BW = mode === 'wide' ? 780 : 540; BH = mode === 'tall' ? 640 : (mode === 'wide' ? 470 : 560);
+      G.S = Math.min(50, 500 / ((2 * R + 1) * SQ3));
+      G.T = G.S * 0.17;
+      var halfH = (R * 1.5 * G.S + G.S) * K;
+      if (mode === 'wide') { G.cx = 275; G.cy = BH / 2 + 22; }
+      else { G.cx = BW / 2; G.cy = (mode === 'tall' ? 96 : 80) + halfH; }
+      G.ts = mode === 'tall' ? Math.min(G.S * 1.05, 44) : Math.min(G.S, 38); G.tT = G.ts * 0.17;
+      G.ty = BH - (mode === 'tall' ? 66 : 56);
+    }
+    function cellXY(i) {
+      var c = S.geo.cells[i];
+      return { x: G.cx + G.S * SQ3 * (c.q + c.r / 2), y: G.cy + G.S * 1.5 * c.r * K };
+    }
+    function trayXY(i) {
+      if (mode === 'wide') return { x: 655, y: 130 + i * 140 };
+      return { x: BW / 2 + (i - 1) * 160, y: G.ty };
+    }
+    function trayBox() {
+      if (mode === 'wide') return { x: 560, y: 14, w: BW - 574, h: BH - 28 };
+      return { x: 14, y: G.ty - 108, w: BW - 28, h: BH - (G.ty - 108) - 8 };
+    }
+    function hitCell(x, y) {
+      var rr = (y - G.cy) / K / (1.5 * G.S), qq = (x - G.cx) / (G.S * SQ3) - rr / 2;
+      var xs = qq, zs = rr, ys = -xs - zs;
+      var rx = Math.round(xs), ry = Math.round(ys), rz = Math.round(zs);
+      var dx = Math.abs(rx - xs), dy = Math.abs(ry - ys), dz = Math.abs(rz - zs);
+      if (dx > dy && dx > dz) rx = -ry - rz; else if (dy <= dz) rz = -rx - ry;
+      var k = S.geo.idx[rx + ',' + rz];
+      return k === undefined ? -1 : k;
+    }
+    function hitTray(x, y) {
+      var b = trayBox();
+      if (x < b.x || y < b.y) return -1;
+      for (var i = 0; i < 3; i++) {
+        var p = trayXY(i);
+        if (mode === 'wide' ? Math.abs(y - p.y + 20) < 70 : Math.abs(x - p.x) < 75) return i;
+      }
+      return -1;
+    }
+
+    function syncDisplay() { display = S.stacks.map(function (a) { return a.slice(); }); }
+    function firstTray() { for (var i = 0; i < 3; i++) if (S.tray[i]) return i; return -1; }
+
+    function startLevel(i) {
+      endless = false; lvIdx = i; store.set('last', i);
+      setup(C.makeLevel(i));
+    }
+    function startEndless() {
+      endless = true;
+      setup(C.makeEndless(Math.floor(Math.random() * 1e9)));
+    }
+    function setup(s) {
+      S = s; hist = []; over = false; sel = firstTray(); cursor = -1; hint = null; drag = null;
+      timeline = []; flying = []; parts = []; floaters = []; trayT = now();
+      geom(); syncDisplay();
+      if (!st) st = H.canvasStage(canvas, BW, BH, function (w, h, ctx, sc) { ctx.scale(sc, sc); draw(); });
+      else st.setBase(BW, BH);
+      hud(); draw();
+    }
+    function hud() {
+      $('lvl').textContent = endless ? '∞' : (lvIdx + 1);
+      $('prog').textContent = endless ? S.cleared : (Math.min(S.cleared, S.goal) + '/' + S.goal);
+      $('free').textContent = C.emptyCells(S).length;
+      $('hud-best').className = 'hud-item' + (endless ? '' : ' off');
+      $('best').textContent = bestE;
+    }
+    function busy() { return timeline.length > 0 || flying.length > 0; }
+
+    // ---------- 置く ----------
+    function doPlace(ti, cell) {
+      // 動きの途中で置かれたら、残りの動きを飛ばしてから置く(押しても反応しない瞬間を作らない)
+      if (busy() && !over) { timeline = []; flying = []; finish(); }
+      if (over || !S.tray[ti] || cell < 0 || S.rock[cell] || S.stacks[cell].length) return false;
+      hist.push(C.clone(S));
+      syncDisplay();
+      display[cell] = S.tray[ti].slice();
+      var before = S.deal;
+      var evs = C.place(S, ti, cell);
+      hint = null;
+      if (S.deal !== before) trayT = now();
+      sel = S.tray[sel] ? sel : firstTray();
+      H.audio.beep(330, 0.05, 'triangle', 0.06);
+      var cur = now() + 140;
+      evs.forEach(function (e) {
+        if (e.t === 'move') {
+          for (var j = 0; j < e.n; j++) timeline.push({ at: cur + j * STAG, k: 'launch', from: e.from, to: e.to, color: e.color });
+          cur += (e.n - 1) * STAG + FLY + 60;
+        } else {
+          timeline.push({ at: cur, k: 'clearfx', cell: e.cell, n: e.n, color: e.color });
+          for (var m = 0; m < e.n; m++) timeline.push({ at: cur + m * CLR, k: 'pop', cell: e.cell, color: e.color });
+          cur += e.n * CLR + 160;
+        }
+      });
+      timeline.push({ at: cur, k: 'end' });
+      hud();
+      return true;
+    }
+    function stackTopY(cell, h) { var p = cellXY(cell); return p.y - h * G.T; }
+    function step(t) {
+      while (timeline.length && timeline[0].at <= t) {
+        var e = timeline.shift();
+        if (e.k === 'launch') {
+          var src = display[e.from];
+          if (!src.length) continue;
+          src.pop();
+          var inF = flying.filter(function (f) { return f.to === e.to; }).length;
+          var p0 = cellXY(e.from), p1 = cellXY(e.to);
+          flying.push({ x0: p0.x, y0: p0.y - src.length * G.T, x1: p1.x, y1: p1.y - (display[e.to].length + inF) * G.T,
+            to: e.to, color: e.color, t0: t, dur: FLY });
+        } else if (e.k === 'pop') {
+          var d = display[e.cell];
+          if (d.length) d.pop();
+          var pp = cellXY(e.cell);
+          for (var q = 0; q < 3; q++) parts.push({ x: pp.x, y: pp.y - d.length * G.T, vx: (Math.random() - 0.5) * 0.5, vy: -0.25 - Math.random() * 0.35, c: COLS[e.color], t0: t, dur: 700 });
+        } else if (e.k === 'clearfx') {
+          var pc = cellXY(e.cell);
+          floaters.push({ x: pc.x, y: pc.y - 40, txt: '+' + e.n, t0: t, dur: 1100 });
+          H.audio.good();
+        } else if (e.k === 'end') {
+          if (!flying.length) finish(); else timeline.unshift({ at: t + 30, k: 'end' });
+          break;
+        }
+      }
+      flying = flying.filter(function (f) {
+        if (t - f.t0 >= f.dur) {
+          display[f.to].push(f.color);
+          H.audio.beep(520 + Math.min(display[f.to].length, 14) * 40, 0.03, 'triangle', 0.035);
+          return false;
+        }
+        return true;
+      });
+    }
+    function finish() {
+      syncDisplay(); hud();
+      if (C.isWin(S)) {
+        over = true;
+        cleared[lvIdx] = true; store.set('cleared', cleared);
+        setTimeout(function () {
+          H.audio.win();
+          var btns = [];
+          if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の面', onClick: function () { startLevel(lvIdx + 1); } });
+          btns.push({ label: 'もう一度', secondary: true, onClick: function () { startLevel(lvIdx); } });
+          btns.push({ label: '面一覧', secondary: true, onClick: showList });
+          H.overlay({ title: lvIdx < C.LEVEL_COUNT - 1 ? 'クリア!' : '全面クリア!', big: S.cleared + ' 枚', html: '目標 ' + S.goal + ' 枚を消した', buttons: btns });
+        }, 400);
+      } else if (C.isFail(S)) {
+        over = true;
+        var newBest = false;
+        if (endless && S.cleared > bestE) { bestE = S.cleared; store.set('best', bestE); newBest = true; }
+        hud();
+        setTimeout(function () {
+          H.audio.bad();
+          var btns = [{ label: '↶ 戻す', onClick: undo }];
+          btns.push({ label: 'もう一度', secondary: true, onClick: function () { if (endless) startEndless(); else startLevel(lvIdx); } });
+          btns.push({ label: '面一覧', secondary: true, onClick: showList });
+          H.overlay({ title: '置ける所がありません', big: S.cleared + ' 枚',
+            html: endless ? (newBest ? 'ベスト更新!' : 'ベスト ' + bestE + ' 枚') : ('目標 ' + S.goal + ' 枚まで あと ' + (S.goal - S.cleared) + ' 枚'), buttons: btns });
+        }, 400);
+      }
+    }
+    function undo() {
+      if (!hist.length) return;
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      timeline = []; flying = [];
+      S = hist.pop(); over = false; hint = null; drag = null;
+      sel = S.tray[sel] ? sel : firstTray();
+      syncDisplay(); hud(); H.audio.click();
+    }
+    function showHint() {
+      if (over || busy()) return;
+      var m = C.autoMove(S);
+      if (!m) return;
+      sel = m.ti; hint = { ti: m.ti, cell: m.cell, until: now() + 2500 };
+      H.toast('光っている所に置いてみて');
+    }
+    function showList() {
+      H.levelPicker({ count: C.LEVEL_COUNT, current: endless ? -1 : lvIdx,
+        done: function (i) { return !!cleared[i]; },
+        onPick: function (i) { startLevel(i); } });
+    }
+    function restart() {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      if (endless) startEndless(); else startLevel(lvIdx);
+    }
+
+    // ---------- 描画 ----------
+    function shade(hex, f) {
+      var n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      if (f < 0) { r = Math.round(r * (1 + f)); g = Math.round(g * (1 + f)); b = Math.round(b * (1 + f)); }
+      else { r = Math.round(r + (255 - r) * f); g = Math.round(g + (255 - g) * f); b = Math.round(b + (255 - b) * f); }
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+    var shadeCache = {};
+    function sh(ci, f) { var k = ci + ':' + f; return shadeCache[k] || (shadeCache[k] = shade(COLS[ci], f)); }
+    function hexPath(ctx, x, y, s) {
+      ctx.beginPath();
+      for (var i = 0; i < 6; i++) {
+        var a = Math.PI / 180 * (60 * i + 30);
+        var px = x + s * Math.cos(a), py = y + s * Math.sin(a) * K;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    }
+    // 立体の板 1 枚(上面の中心 x,y、大きさ s、厚み T)
+    function tile(ctx, x, y, s, T, ci) {
+      var w = s * SQ3 / 2, hh = s * K / 2, hk = s * K;
+      ctx.beginPath();
+      ctx.moveTo(x, y - hk); ctx.lineTo(x + w, y - hh); ctx.lineTo(x + w, y + hh + T);
+      ctx.lineTo(x, y + hk + T); ctx.lineTo(x - w, y + hh + T); ctx.lineTo(x - w, y - hh); ctx.closePath();
+      ctx.fillStyle = sh(ci, -0.38); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+      hexPath(ctx, x, y, s);
+      ctx.fillStyle = COLS[ci]; ctx.fill();
+      ctx.strokeStyle = sh(ci, 0.35); ctx.lineWidth = 1.2; ctx.stroke();
+    }
+    function drawStack(ctx, a, x, y, s, T, label) {
+      var n = a.length;
+      if (n > 16) T = T * 16 / n;
+      for (var i = 0; i < n; i++) tile(ctx, x, y - i * T, s, T, a[i]);
+      if (label && n) {
+        var tr = C.topRun(a), ty = y - (n - 1) * T;
+        ctx.font = 'bold ' + Math.round(s * 0.5) + 'px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.strokeText(tr, x, ty + 1);
+        ctx.fillStyle = '#fff'; ctx.fillText(tr, x, ty + 1);
+      }
+    }
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !S) return;
+      var t = now(), i;
+      ctx.clearRect(0, 0, BW, BH);
+      ctx.fillStyle = '#141428'; ctx.fillRect(0, 0, BW, BH);
+      // 目標の帯
+      if (!endless) {
+        var fr = Math.min(1, S.cleared / S.goal), bw = (mode === 'wide' ? 540 : BW) - 40;
+        ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(20, 14, bw, 10);
+        ctx.fillStyle = '#f5b041'; ctx.fillRect(20, 14, bw * fr, 10);
+      }
+      var N = S.geo.cells.length;
+      var order = [];
+      for (i = 0; i < N; i++) order.push(i);
+      order.sort(function (a, b) { var A = S.geo.cells[a], B = S.geo.cells[b]; return A.r - B.r || A.q - B.q; });
+      // マスの台
+      var target = drag && drag.moved ? drag.cell : -1;
+      order.forEach(function (c) {
+        var p = cellXY(c);
+        if (S.rock[c]) return;
+        hexPath(ctx, p.x, p.y + 3, G.S * 0.95);
+        ctx.fillStyle = '#0c0c1c'; ctx.fill();
+        hexPath(ctx, p.x, p.y, G.S * 0.95);
+        ctx.fillStyle = (c === target && !display[c].length) ? '#3c3c6a' : '#24243e'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1.5; ctx.stroke();
+      });
+      // 束と岩(奥から)
+      order.forEach(function (c) {
+        var p = cellXY(c);
+        if (S.rock[c]) {
+          var w = G.S * 0.9;
+          ctx.save();
+          ctx.fillStyle = '#4a4a55';
+          hexPath(ctx, p.x, p.y + 4, w); ctx.fill();
+          ctx.fillStyle = '#7b7b88'; hexPath(ctx, p.x, p.y - 6, w); ctx.fill();
+          ctx.fillStyle = '#5f5f6c';
+          ctx.beginPath(); ctx.ellipse(p.x - w * 0.2, p.y - 8, w * 0.22, w * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(p.x + w * 0.25, p.y - 3, w * 0.16, w * 0.09, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          return;
+        }
+        if (display[c].length) drawStack(ctx, display[c], p.x, p.y, G.S * 0.9, G.T, !busy());
+      });
+      // ヒント・カーソル
+      if (hint && t < hint.until) {
+        var hp = cellXY(hint.cell);
+        hexPath(ctx, hp.x, hp.y, G.S * 0.9);
+        ctx.strokeStyle = 'rgba(245,176,65,' + (0.55 + 0.45 * Math.sin(t / 130)) + ')'; ctx.lineWidth = 5; ctx.stroke();
+      } else hint = null;
+      if (cursor >= 0) {
+        var cp = cellXY(cursor);
+        hexPath(ctx, cp.x, cp.y - display[cursor].length * G.T, G.S * 0.9);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+      }
+      // 飛んでいる板
+      flying.forEach(function (f) {
+        var k = Math.min(1, (t - f.t0) / f.dur), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+        var x = f.x0 + (f.x1 - f.x0) * e, y = f.y0 + (f.y1 - f.y0) * e - Math.sin(Math.PI * k) * 46;
+        tile(ctx, x, y, G.S * 0.9, G.T, f.color);
+      });
+      // 粒
+      parts = parts.filter(function (p) { return t - p.t0 < p.dur; });
+      parts.forEach(function (p) {
+        var dt = t - p.t0, a = 1 - dt / p.dur;
+        ctx.globalAlpha = a; ctx.fillStyle = p.c;
+        ctx.beginPath(); ctx.arc(p.x + p.vx * dt, p.y + p.vy * dt + 0.0004 * dt * dt, 5 * a + 1, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+      floaters = floaters.filter(function (f) { return t - f.t0 < f.dur; });
+      floaters.forEach(function (f) {
+        var k = (t - f.t0) / f.dur;
+        ctx.globalAlpha = 1 - k;
+        ctx.font = 'bold 34px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.strokeText(f.txt, f.x, f.y - k * 50);
+        ctx.fillStyle = '#ffe680'; ctx.fillText(f.txt, f.x, f.y - k * 50);
+      });
+      ctx.globalAlpha = 1;
+      // 下の 3 つ
+      var tb = trayBox();
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(tb.x, tb.y, tb.w, tb.h);
+      var slide = Math.max(0, 1 - (t - trayT) / 300);
+      for (i = 0; i < 3; i++) {
+        var a = S.tray[i];
+        var tp = trayXY(i), tx = tp.x + (mode === 'wide' ? 0 : slide * slide * (BW - tp.x + 80)), ty = tp.y + (mode === 'wide' ? slide * slide * (BH - tp.y + 80) : 0);
+        hexPath(ctx, tp.x, ty + 4, G.ts);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+        if (!a) continue;
+        if (drag && drag.ti === i && drag.moved) continue;
+        var isSel = i === sel && !over;
+        if (isSel) ty -= 10;
+        if (isSel) {
+          hexPath(ctx, tx, ty + 14, G.ts * 1.12);
+          ctx.strokeStyle = 'rgba(245,176,65,' + (0.6 + 0.4 * Math.sin(t / 220)) + ')'; ctx.lineWidth = 4; ctx.stroke();
+        }
+        if (hint && hint.ti === i) {
+          hexPath(ctx, tx, ty + 14, G.ts * 1.25);
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        }
+        drawStack(ctx, a, tx, ty, G.ts * 0.9, G.tT, false);
+      }
+      // ドラッグ中
+      if (drag && drag.moved && S.tray[drag.ti]) {
+        drawStack(ctx, S.tray[drag.ti], drag.x, drag.y - 34, G.S * 0.9, G.T, false);
+      }
+    }
+
+    var raf = 0;
+    function frame() {
+      var t = now();
+      step(t);
+      draw();
+      raf = requestAnimationFrame(frame);
+    }
+
+    // ---------- 入力 ----------
+    function toBase(e) { return st.toBase(e.clientX, e.clientY); }
+    canvas.addEventListener('pointerdown', function (e) {
+      if (!S || over) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      var p = toBase(e);
+      cursor = -1;
+      var ti = hitTray(p.x, p.y);
+      if (ti >= 0 && S.tray[ti]) {
+        sel = ti; H.audio.click();
+        drag = { ti: ti, x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false, cell: -1, id: e.pointerId };
+        try { canvas.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+        return;
+      }
+      var c = hitCell(p.x, p.y);
+      if (c >= 0 && sel >= 0) {
+        if (S.rock[c]) { H.toast('岩には置けません'); return; }
+        if (S.stacks[c].length) { H.toast('空いたマスに置いてね'); return; }
+        doPlace(sel, c);
+      }
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      var p = toBase(e);
+      drag.x = p.x; drag.y = p.y;
+      if (!drag.moved && Math.abs(p.x - drag.sx) + Math.abs(p.y - drag.sy) > 14) drag.moved = true;
+      drag.cell = hitCell(p.x, p.y - 20);
+    });
+    function endDrag(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      var d = drag; drag = null;
+      if (d.moved && d.cell >= 0 && !S.rock[d.cell] && !S.stacks[d.cell].length) doPlace(d.ti, d.cell);
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', function (e) { if (drag && e.pointerId === drag.id) drag = null; });
+
+    function moveCursor(dq, dr) {
+      if (cursor < 0) { cursor = S.geo.idx['0,0']; return; }
+      var c = S.geo.cells[cursor], k = S.geo.idx[(c.q + dq) + ',' + (c.r + dr)];
+      if (k === undefined && dr !== 0) k = S.geo.idx[(c.q + dq - dr) + ',' + (c.r + dr)];
+      if (k !== undefined) cursor = k;
+    }
+    function selTray(i) { if (S.tray[i]) { sel = i; H.audio.click(); } }
+    function keyPlace() { if (cursor >= 0 && sel >= 0) doPlace(sel, cursor); }
+    $('btn-undo').addEventListener('click', undo);
+    $('btn-hint').addEventListener('click', showHint);
+    $('btn-list').addEventListener('click', showList);
+    $('btn-endless').addEventListener('click', function () {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      startEndless(); H.toast('エンドレス: 置けなくなるまで');
+    });
+    H.keys({
+      ArrowLeft: function () { moveCursor(-1, 0); }, ArrowRight: function () { moveCursor(1, 0); },
+      ArrowUp: function () { moveCursor(0, -1); }, ArrowDown: function () { moveCursor(0, 1); },
+      ' ': keyPlace, Enter: keyPlace,
+      '1': function () { selTray(0); }, '2': function () { selTray(1); }, '3': function () { selTray(2); },
+      z: undo, Z: undo, h: showHint, H: showHint, r: restart, R: restart, l: showList, L: showList
+    });
+    window.resetGame = restart;
+    H.onResize(function () {
+      if (!S || !st) return;
+      if (pickMode() !== mode) { geom(); st.setBase(BW, BH); }
+    });
+    window.__dbg = {
+      state: function () {
+        return JSON.stringify({ mode: endless ? 'endless' : 'level', level: endless ? 0 : lvIdx + 1, cleared: S.cleared, goal: S.goal,
+          free: C.emptyCells(S).length, deal: S.deal, sel: sel, busy: busy(), over: over, win: C.isWin(S), fail: C.isFail(S),
+          undo: hist.length, tray: S.tray, R: S.geo.R, colors: S.nColors, view: mode, base: [BW, BH] });
+      },
+      cmd: function (name, a, b) {
+        if (name === 'level') startLevel(a - 1);
+        else if (name === 'endless') startEndless();
+        else if (name === 'auto') {
+          if (busy()) { timeline = []; flying = []; finish(); }
+          if (!over) { var m = C.autoMove(S); if (m) doPlace(m.ti, m.cell); }
+        }
+        else if (name === 'place') doPlace(a, b);
+        else if (name === 'undo') undo();
+        else if (name === 'reset') restart();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        return this.state();
+      }
+    };
+    if (endless) startEndless(); else startLevel(lvIdx);
+    raf = requestAnimationFrame(frame);
+    if (!store.get('seen', false)) {
+      store.set('seen', true);
+      H.overlay({ title: '六角積み', html: '下の束を空いたマスに置こう。<br>となりと上の色が同じなら集まり、<br>同じ色が <b>10 枚</b>そろうと消える。', buttons: [{ label: 'はじめる' }] });
+    }
+  })();
+  </script>
+</body>
+</html>

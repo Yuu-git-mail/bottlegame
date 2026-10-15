@@ -84,6 +84,8 @@
     setTimeout(function () { try { layout(); } catch (e) { if (window.console) console.error(e); } }, 0);
     return {
       relayout: layout,
+      // 盤の論理サイズを変えて合わせ直す(面ごとに盤の大きさが違うゲーム用)
+      setBase: function (w, h) { baseW = w; baseH = h; layout(); },
       ctx: function () { return ctx; },
       // クライアント座標 → 盤面基準座標(baseW x baseH)
       toBase: function (clientX, clientY) {
@@ -391,6 +393,49 @@
     return api;
   }
 
+  // ---------- 種付き乱数 ----------
+  // rng(seed) → 0..1 を返す関数。同じ種なら同じ並び(面の生成用)
+  function rng(seed) {
+    var a = (seed >>> 0) || 1;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---------- 面選択 ----------
+  // levelPicker({count, current, done(i)→bool, label(i)→文字(任意), onPick(i), title})
+  // 一覧は指でスクロールできる(.scrollable)
+  function levelPicker(opts) {
+    var n = opts.count, cleared = 0, i;
+    for (i = 0; i < n; i++) if (opts.done && opts.done(i)) cleared++;
+    var html = '<span class="lvp-sub">クリア ' + cleared + ' / ' + n + '　✓ はクリア済み</span><span class="lvp-grid">';
+    for (i = 0; i < n; i++) {
+      var d = opts.done && opts.done(i);
+      var sub = opts.label ? opts.label(i) : '';
+      html += '<button type="button" class="lvp-btn' + (d ? ' done' : '') + (i === opts.current ? ' now' : '') + '" data-i="' + i + '">' + (i + 1) + (sub ? '<small>' + sub + '</small>' : '') + '</button>';
+    }
+    html += '</span>';
+    var el = overlay({ title: opts.title || '面を選ぶ', html: html,
+      buttons: [{ label: '閉じる', secondary: true, onClick: function () { if (opts.onClose) opts.onClose(); } }] });
+    el.className += ' lvpick scrollable';
+    var btns = el.querySelectorAll('.lvp-btn');
+    for (i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function (e) {
+        e.stopPropagation();
+        var idx = parseInt(e.currentTarget.getAttribute('data-i'), 10);
+        el.close();
+        opts.onPick(idx);
+      });
+    }
+    var now = el.querySelector('.lvp-btn.now');
+    if (now && now.scrollIntoView) { try { now.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } }
+    return el;
+  }
+
   // 画面が隠れたら一時停止させたいゲーム用
   function pauseWhenHidden(onHide, onShow) {
     document.addEventListener('visibilitychange', function () {
@@ -452,6 +497,8 @@
     audio: audio,
     loop: loop,
     pauseWhenHidden: pauseWhenHidden,
+    rng: rng,
+    levelPicker: levelPicker,
     isTouch: ('ontouchstart' in window) || (navigator.maxTouchPoints > 0)
   };
 

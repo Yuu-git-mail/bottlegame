@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>群れ大砲 - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 12px; touch-action: none; }
+    .hud-item b { min-width: 2em; display: inline-block; }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 10px; }
+    #btn-big { min-width: 120px; position: relative; overflow: hidden; }
+    #btn-big .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(61,123,240,0.45); pointer-events: none; }
+    #btn-big .lbl { position: relative; }
+    #btn-big.ready { border-color: #f5b041; box-shadow: 0 0 12px rgba(245,176,65,0.8); }
+    #btn-big.ready .fill { background: rgba(245,176,65,0.55); }
+    .overlay .stars { font-size: 34px; color: var(--warn); letter-spacing: 4px; }
+    .overlay .stars .off { color: rgba(255,255,255,0.18); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="群れ大砲" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">面<b id="level">1</b></span>
+      <span class="hud-item">敵<b id="ehp">0</b></span>
+      <span class="hud-item">自分<b id="php">0</b></span>
+      <span class="hud-item">青<b id="cnt">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>下の大砲から青い小人を撃ち出し、上の赤い拠点を壊せば勝ち。</li>
+            <li>小人はまっすぐ上へ歩く。途中のゲート（×2・×3・+5 など）を通ると人数が増える。1 人がくぐれるのは各ゲート 1 回だけ。</li>
+            <li>数字の下に棒のあるゲートは、くぐった人数で減って、0 で消える。矢印のゲートは左右に動く。</li>
+            <li>赤い小人がこちらへ来る。青と赤がぶつかると 1 対 1 で消える。大きい赤は何人分もある。</li>
+            <li>赤が下の自分の拠点に入ると、こちらの HP が減る。0 で負け。</li>
+            <li>撃つほど「巨人」のゲージがたまる。満タンで巨人（10 人分）を撃てる。巨人はゲートで増えない。</li>
+            <li>星は勝ったときに残っている自分の HP で決まる。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 盤面を指で押したまま左右に動かす。押している間ずっと撃つ。巨人は下のボタン。</li>
+            <li>PC: マウスで押したまま動かす、または ← → で動かし Space で撃つ。B = 巨人、L = 面一覧、R = やり直し。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn" id="btn-big"><span class="fill" id="big-fill"></span><span class="lbl">巨人</span></button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 戦場の論理。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var CannonCore = (function () {
+    'use strict';
+    var W = 360, H = 640;
+    var ENEMY_LINE = 70, PLAYER_LINE = 592, CANNON_Y = 610;
+    var DT = 1 / 60;
+    var LEVEL_COUNT = 30;
+    var BLUE_CAP = 500, RED_CAP = 320;
+    var FIRE_INT = 0.15, GAUGE_MAX = 40;
+    var SPD_BLUE = 95, SPD_BIG = 70, SPD_RED = 42;
+    var R_BLUE = 5, R_BIG = 12;
+    var COLW = 20, COLS = Math.ceil(W / COLW);
+    // 赤の種類: hp, 半径, 速さの倍率
+    var RED_KIND = [[1, 5, 1], [4, 8, 0.85], [12, 12, 0.7]];
+
+    function mulberry(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // 面ごとの配りの番号。check.mjs --bake が「自動で勝てて、ゲート無しでは勝てない」配りを探して書き込む
+    var SEEDS = [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 1, 1, 12, 1, 0, 2, 0, 0, 12, 13, 13, 4, 0];
+    // 面 lv(0 始まり) の設計図。v を渡すと別の配り(焼くとき用)
+    function makeLevel(lv, v) {
+      if (v === undefined) v = SEEDS[lv] || 0;
+      var rnd = mulberry(4242 + lv * 1013 + v * 7919);
+      var k = lv / (LEVEL_COUNT - 1); // 0..1
+      var def = {
+        lv: lv,
+        enemyHp: Math.round(70 + lv * 25 + lv * lv * 0.85),
+        playerHp: 30,
+        rate: 1.15 + k * 2.3,          // 赤の湧き(人/秒)
+        burstEvery: lv < 3 ? 0 : 12 - k * 5,
+        burstN: lv < 3 ? 0 : Math.round(7 + k * 13),
+        bigChance: lv < 6 ? 0 : 0.04 + k * 0.12,
+        giantChance: lv < 15 ? 0 : 0.01 + (k - 0.5) * 0.06,
+        gates: [],
+        seed: 777 + lv * 31 + v * 13
+      };
+      // ゲートの段: [y, 1 段に置く数]
+      var rows;
+      if (lv === 0) rows = [[400, 1]];
+      else if (lv < 3) rows = [[430, 1], [260, 1]];
+      else if (lv < 10) rows = [[450, 2], [290, 1]];
+      else if (lv < 20) rows = [[470, 2], [340, 1], [210, 2]];
+      else rows = [[480, 2], [370, 2], [250, 1], [160, 2]];
+      rows.forEach(function (row, ri) {
+        var n = row[1];
+        for (var j = 0; j < n; j++) {
+          var w = n === 1 ? 110 - k * 20 : 84 - k * 14;
+          var slot = W / n, cx = slot * j + slot / 2 + (rnd() - 0.5) * (slot - w - 16) * 0.8;
+          var g = { x0: cx, x: cx, y: row[0], w: w, kind: 'mul', val: 2, uses: -1, maxUses: -1, amp: 0, spd: 0, ph: 0 };
+          var r = rnd();
+          if (lv === 0) { g.val = 2; }
+          else if (ri === 0 && r < 0.45) { g.kind = 'add'; g.val = rnd() < 0.5 ? 3 : 5; }
+          else if (r < 0.25 + k * 0.15) { g.val = 3; }
+          else if (r < 0.35 + k * 0.15 && lv >= 8) { g.kind = 'add'; g.val = 10; }
+          // 動くゲート
+          if (lv >= 5 && rnd() < 0.2 + k * 0.5) {
+            g.amp = Math.min(70, (slot - w) / 2 - 4 + 30); g.spd = 0.6 + rnd() * 0.9; g.ph = rnd() * 6.28;
+          }
+          // 壊れるゲート(+10 は必ず壊れる)
+          if (g.kind === 'add' && g.val === 10) g.maxUses = 12 + Math.floor(rnd() * 10);
+          else if (lv >= 11 && rnd() < 0.15 + k * 0.3) g.maxUses = 30 + Math.floor(rnd() * 40);
+          g.uses = g.maxUses;
+          def.gates.push(g);
+        }
+      });
+      return def;
+    }
+
+    function newGame(def) {
+      var S = {
+        def: def, t: 0, result: '', rnd: mulberry(def.seed),
+        enemyHp: def.enemyHp, playerHp: def.playerHp,
+        cx: W / 2, fireCd: 0, gauge: 0, shots: 0, kills: 0,
+        bx: new Float32Array(BLUE_CAP), by: new Float32Array(BLUE_CAP), bh: new Int16Array(BLUE_CAP), bm: new Int32Array(BLUE_CAP), bn: 0,
+        rx: new Float32Array(RED_CAP), ry: new Float32Array(RED_CAP), rh: new Int16Array(RED_CAP), rk: new Int8Array(RED_CAP), rn: 0,
+        spawnAcc: 0, burstAcc: 0,
+        gates: def.gates.map(function (g) {
+          return { x0: g.x0, x: g.x0, y: g.y, w: g.w, kind: g.kind, val: g.val, uses: g.uses, maxUses: g.maxUses, amp: g.amp, spd: g.spd, ph: g.ph, dead: false, flash: 0 };
+        }),
+        colHead: new Int32Array(COLS), rNext: new Int32Array(RED_CAP),
+        ev: [] // 描画・音のための出来事 [種類, x, y]
+      };
+      return S;
+    }
+
+    function addBlue(S, x, y, hp, mask) {
+      if (S.bn >= BLUE_CAP) return false;
+      var i = S.bn++;
+      S.bx[i] = Math.max(6, Math.min(W - 6, x)); S.by[i] = y; S.bh[i] = hp; S.bm[i] = mask;
+      return true;
+    }
+    function addRed(S, x, y, kind) {
+      if (S.rn >= RED_CAP) return;
+      var i = S.rn++;
+      S.rx[i] = x; S.ry[i] = y; S.rk[i] = kind; S.rh[i] = RED_KIND[kind][0];
+    }
+    function spawnRed(S, x) {
+      var d = S.def, r = S.rnd(), kind = 0;
+      if (r < d.giantChance) kind = 2; else if (r < d.giantChance + d.bigChance) kind = 1;
+      addRed(S, x, ENEMY_LINE + 6, kind);
+    }
+
+    // 1 手(DT 秒)進める。input = {x, fire, big}
+    function step(S, input) {
+      if (S.result) return;
+      var i, j, dt = DT, rnd = S.rnd, d = S.def;
+      S.t += dt;
+      // 大砲
+      var tx = Math.max(16, Math.min(W - 16, input.x)), mv = 900 * dt;
+      if (Math.abs(tx - S.cx) <= mv) S.cx = tx; else S.cx += tx > S.cx ? mv : -mv;
+      S.fireCd -= dt;
+      if (input.big && S.gauge >= GAUGE_MAX && S.bn < BLUE_CAP) {
+        addBlue(S, S.cx, CANNON_Y - 14, 10, 1 << 31); S.gauge = 0; S.ev.push(['big', S.cx, CANNON_Y]);
+      }
+      if (input.fire && S.fireCd <= 0) {
+        if (addBlue(S, S.cx + (rnd() - 0.5) * 6, CANNON_Y - 12, 1, 0)) {
+          S.shots++; if (S.gauge < GAUGE_MAX) S.gauge++;
+          S.ev.push(['shot', S.cx, CANNON_Y]);
+        }
+        S.fireCd = FIRE_INT;
+      }
+      // ゲートを動かす
+      for (j = 0; j < S.gates.length; j++) {
+        var g = S.gates[j];
+        if (g.amp) g.x = Math.max(g.w / 2 + 2, Math.min(W - g.w / 2 - 2, g.x0 + g.amp * Math.sin(S.t * g.spd + g.ph)));
+        if (g.flash > 0) g.flash -= dt;
+      }
+      // 青が進む・ゲート・拠点
+      var n0 = S.bn;
+      for (i = 0; i < n0; i++) {
+        if (S.bh[i] <= 0) continue;
+        var big = S.bm[i] < 0;
+        var py = S.by[i], ny = py - (big ? SPD_BIG : SPD_BLUE) * dt;
+        S.by[i] = ny;
+        if (!big) {
+          for (j = 0; j < S.gates.length; j++) {
+            var gg = S.gates[j], bit = 1 << j;
+            if (gg.dead || (S.bm[i] & bit)) continue;
+            if (py > gg.y && ny <= gg.y && Math.abs(S.bx[i] - gg.x) <= gg.w / 2) {
+              S.bm[i] |= bit;
+              var add = gg.kind === 'mul' ? gg.val - 1 : gg.val;
+              for (var c = 0; c < add; c++) {
+                var ox = S.bx[i] + (rnd() - 0.5) * 26;
+                ox = Math.max(gg.x - gg.w / 2 + 3, Math.min(gg.x + gg.w / 2 - 3, ox));
+                if (!addBlue(S, ox, gg.y - 2 - rnd() * 14, 1, S.bm[i])) break;
+              }
+              gg.flash = 0.15;
+              S.ev.push(['gate', gg.x, gg.y]);
+              if (gg.uses > 0) { gg.uses--; if (gg.uses === 0) { gg.dead = true; S.ev.push(['break', gg.x, gg.y]); } }
+            }
+          }
+        }
+        if (ny <= ENEMY_LINE) {
+          S.enemyHp -= S.bh[i]; S.bh[i] = 0; S.ev.push(['hitE', S.bx[i], ENEMY_LINE]);
+        }
+      }
+      // 赤が湧く(時間が経つほど・拠点が削れるほど少し多く)
+      var anger = 1 + Math.min(1, S.t / 90) * 0.6 + (1 - S.enemyHp / d.enemyHp) * 0.5;
+      S.spawnAcc += d.rate * anger * dt;
+      while (S.spawnAcc >= 1) { S.spawnAcc -= 1; spawnRed(S, 20 + rnd() * (W - 40)); }
+      if (d.burstEvery > 0) {
+        S.burstAcc += dt;
+        if (S.burstAcc >= d.burstEvery) {
+          S.burstAcc = 0;
+          var bxc = 40 + rnd() * (W - 80);
+          for (i = 0; i < d.burstN; i++) addRed(S, bxc + (rnd() - 0.5) * 70, ENEMY_LINE + 6 - rnd() * 30, 0);
+          S.ev.push(['burst', bxc, ENEMY_LINE]);
+        }
+      }
+      // 赤が進む・自分の拠点
+      for (i = 0; i < S.rn; i++) {
+        if (S.rh[i] <= 0) continue;
+        S.ry[i] += SPD_RED * RED_KIND[S.rk[i]][2] * dt;
+        if (S.ry[i] >= PLAYER_LINE) {
+          S.playerHp -= S.rh[i]; S.rh[i] = 0; S.ev.push(['hitP', S.rx[i], PLAYER_LINE]);
+        }
+      }
+      // ぶつかる(列ごとのグリッド)
+      var head = S.colHead, next = S.rNext;
+      for (i = 0; i < COLS; i++) head[i] = -1;
+      for (i = 0; i < S.rn; i++) {
+        if (S.rh[i] <= 0) continue;
+        var col = Math.max(0, Math.min(COLS - 1, (S.rx[i] / COLW) | 0));
+        next[i] = head[col]; head[col] = i;
+      }
+      for (i = 0; i < S.bn; i++) {
+        if (S.bh[i] <= 0) continue;
+        var bxv = S.bx[i], byv = S.by[i], br = S.bm[i] < 0 ? R_BIG : R_BLUE;
+        var c0 = Math.max(0, ((bxv - 12) / COLW) | 0), c1 = Math.min(COLS - 1, ((bxv + 12) / COLW) | 0);
+        for (var cc = c0; cc <= c1 && S.bh[i] > 0; cc++) {
+          for (j = head[cc]; j >= 0; j = next[j]) {
+            if (S.rh[j] <= 0) continue;
+            var rr = br + RED_KIND[S.rk[j]][1], dx = S.rx[j] - bxv, dy = S.ry[j] - byv;
+            if (dx * dx + dy * dy <= rr * rr) {
+              var m = Math.min(S.bh[i], S.rh[j]);
+              S.bh[i] -= m; S.rh[j] -= m; S.kills += m;
+              S.ev.push(['pop', (bxv + S.rx[j]) / 2, (byv + S.ry[j]) / 2]);
+              if (S.bh[i] <= 0) break;
+            }
+          }
+        }
+      }
+      // 詰める(消えたものを抜く)
+      var w2 = 0;
+      for (i = 0; i < S.bn; i++) if (S.bh[i] > 0) {
+        if (w2 !== i) { S.bx[w2] = S.bx[i]; S.by[w2] = S.by[i]; S.bh[w2] = S.bh[i]; S.bm[w2] = S.bm[i]; }
+        w2++;
+      }
+      S.bn = w2; w2 = 0;
+      for (i = 0; i < S.rn; i++) if (S.rh[i] > 0) {
+        if (w2 !== i) { S.rx[w2] = S.rx[i]; S.ry[w2] = S.ry[i]; S.rh[w2] = S.rh[i]; S.rk[w2] = S.rk[i]; }
+        w2++;
+      }
+      S.rn = w2;
+      if (S.enemyHp <= 0) { S.enemyHp = 0; S.result = 'win'; }
+      else if (S.playerHp <= 0) { S.playerHp = 0; S.result = 'lose'; }
+    }
+
+    // 自動の振り方: 左右にゆっくり振りながら撃ち続け、ゲージが満ちたら巨人
+    function autoInput(S) {
+      return { x: W / 2 + (W / 2 - 24) * Math.sin(S.t * 0.9), fire: true, big: S.gauge >= GAUGE_MAX };
+    }
+    function stars(S) {
+      if (S.result !== 'win') return 0;
+      var f = S.playerHp / S.def.playerHp;
+      return f >= 0.8 ? 3 : (f >= 0.4 ? 2 : 1);
+    }
+    // node 用: 入力関数で最後まで回す
+    function simulate(lv, inputFn, maxSec, v) {
+      var S = newGame(makeLevel(lv, v)), lim = (maxSec || 240) / DT;
+      for (var s = 0; s < lim && !S.result; s++) { step(S, inputFn(S)); S.ev.length = 0; }
+      return S;
+    }
+    return { W: W, H: H, ENEMY_LINE: ENEMY_LINE, PLAYER_LINE: PLAYER_LINE, CANNON_Y: CANNON_Y, DT: DT, LEVEL_COUNT: LEVEL_COUNT,
+             GAUGE_MAX: GAUGE_MAX, R_BLUE: R_BLUE, R_BIG: R_BIG, RED_KIND: RED_KIND, BLUE_CAP: BLUE_CAP,
+             makeLevel: makeLevel, newGame: newGame, step: step, autoInput: autoInput, stars: stars, simulate: simulate };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = CannonCore;
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = CannonCore, W = C.W, HH = C.H;
+    var store = H.store('cannon');
+    var cleared = store.get('cleared', {});   // {lv: 星}
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var S = null, running = false, auto = false, acc = 0;
+    var inp = { x: W / 2, fire: false, big: false };
+    var keyL = false, keyR = false, keyFire = false, pointerDown = false;
+    var parts = [];        // 粒 {x,y,vx,vy,life,col}
+    var shakeT = 0, hitPT = 0, hitET = 0;
+    var lastSnd = { shot: 0, gate: 0, pop: 0, hitE: 0, hitP: 0 };
+    var canvas = document.getElementById('cv');
+    var st = H.canvasStage(canvas, W, HH, function (w, h, ctx, s) { ctx.scale(s, s); draw(); });
+
+    function $(id) { return document.getElementById(id); }
+
+    function load(i) {
+      lvIdx = i; store.set('last', i);
+      S = C.newGame(C.makeLevel(i));
+      running = false; acc = 0; parts = []; inp.fire = false; inp.big = false; inp.x = W / 2;
+      hud(); draw();
+      var g = S.def;
+      H.overlay({ title: '面 ' + (i + 1), html: '敵の拠点 HP <b>' + g.enemyHp + '</b><br>押したまま左右に動かして撃とう',
+        buttons: [{ label: 'スタート', onClick: function () { running = true; } }, { label: '面一覧', secondary: true, onClick: showList }] });
+    }
+    var lastHud = '';
+    function hud() {
+      if (!S) return;
+      var s = (lvIdx + 1) + '|' + S.enemyHp + '|' + S.playerHp + '|' + S.bn + '|' + S.gauge;
+      if (s === lastHud) return;
+      lastHud = s;
+      $('level').textContent = lvIdx + 1;
+      $('ehp').textContent = S.enemyHp;
+      $('php').textContent = S.playerHp;
+      $('cnt').textContent = S.bn;
+      $('big-fill').style.width = Math.round(S.gauge / C.GAUGE_MAX * 100) + '%';
+      $('btn-big').className = 'ctl-btn' + (S.gauge >= C.GAUGE_MAX ? ' ready' : '');
+    }
+
+    // ---------- 進行 ----------
+    function update(dt) {
+      if (!S || !running || S.result) return;
+      acc += dt;
+      var steps = 0;
+      while (acc >= C.DT && steps < 8) {
+        acc -= C.DT; steps++;
+        var input;
+        if (auto) input = C.autoInput(S);
+        else {
+          if (keyL) inp.x = S.cx - 5;
+          if (keyR) inp.x = S.cx + 5;
+          input = { x: inp.x, fire: inp.fire || keyFire, big: inp.big };
+        }
+        C.step(S, input);
+        if (inp.big && S.gauge === 0) inp.big = false;
+        handleEvents();
+        if (S.result) { finish(); break; }
+      }
+      if (acc > C.DT * 8) acc = 0;
+      for (var i = parts.length - 1; i >= 0; i--) {
+        var p = parts[i];
+        p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+        if (p.life <= 0) { parts[i] = parts[parts.length - 1]; parts.pop(); }
+      }
+      if (shakeT > 0) shakeT -= dt;
+      if (hitPT > 0) hitPT -= dt;
+      if (hitET > 0) hitET -= dt;
+      hud();
+    }
+    function puff(x, y, col, n, sp) {
+      for (var k = 0; k < n && parts.length < 220; k++) {
+        var a = Math.random() * 6.283, v = (0.3 + Math.random()) * (sp || 60);
+        parts.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.25 + Math.random() * 0.25, col: col });
+      }
+    }
+    function snd(kind, gap, f) {
+      var t = performance.now();
+      if (t - lastSnd[kind] < gap) return;
+      lastSnd[kind] = t; f();
+    }
+    function handleEvents() {
+      var A = H.audio, ev = S.ev;
+      for (var i = 0; i < ev.length; i++) {
+        var e = ev[i], k = e[0];
+        if (k === 'pop') { if (parts.length < 160) puff(e[1], e[2], '#fff', 2, 50); snd('pop', 70, function () { A.beep(700 + Math.random() * 300, 0.03, 'triangle', 0.03); }); }
+        else if (k === 'gate') snd('gate', 90, function () { A.beep(1300, 0.03, 'sine', 0.035); });
+        else if (k === 'shot') snd('shot', 140, function () { A.beep(260, 0.03, 'square', 0.02); });
+        else if (k === 'hitE') { hitET = 0.15; puff(e[1], e[2], '#ffcf6a', 3, 80); snd('hitE', 90, function () { A.beep(160, 0.06, 'sawtooth', 0.04); }); }
+        else if (k === 'hitP') { hitPT = 0.3; shakeT = 0.25; puff(e[1], e[2], '#ff6a6a', 6, 90); snd('hitP', 150, function () { A.bad(); }); }
+        else if (k === 'break') { puff(e[1], e[2], '#9ef0a0', 14, 120); A.beep(500, 0.12, 'square', 0.05); }
+        else if (k === 'big') { puff(e[1], e[2] - 16, '#7fb2ff', 12, 100); A.beep(120, 0.2, 'sawtooth', 0.06); }
+        else if (k === 'burst') { snd('hitE', 0, function () { A.beep(90, 0.18, 'square', 0.04); }); }
+      }
+      ev.length = 0;
+    }
+    function finish() {
+      running = false; inp.fire = false; pointerDown = false;
+      hud();
+      var win = S.result === 'win';
+      var stars = C.stars(S);
+      if (win) {
+        var prev = cleared[lvIdx] || 0;
+        if (stars > prev) { cleared[lvIdx] = stars; store.set('cleared', cleared); }
+        puff(W / 2, 40, '#ffcf6a', 40, 200);
+      }
+      setTimeout(function () {
+        var btns = [];
+        if (win) {
+          H.audio.win();
+          var s = '';
+          for (var i = 0; i < 3; i++) s += i < stars ? '★' : '<span class="off">★</span>';
+          if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の面', onClick: function () { load(lvIdx + 1); } });
+          btns.push({ label: 'もう一度', secondary: true, onClick: function () { load(lvIdx); } });
+          btns.push({ label: '面一覧', secondary: true, onClick: showList });
+          H.overlay({ title: lvIdx < C.LEVEL_COUNT - 1 ? '拠点をこわした!' : '全面クリア!', html: '<span class="stars">' + s + '</span><br>残りの HP ' + S.playerHp + ' / ' + S.def.playerHp + '（' + Math.round(S.t) + ' 秒）', buttons: btns });
+        } else {
+          H.audio.bad();
+          btns.push({ label: 'もう一度', onClick: function () { load(lvIdx); } });
+          btns.push({ label: '面一覧', secondary: true, onClick: showList });
+          H.overlay({ title: '拠点がやられた', html: '敵の拠点は残り ' + S.enemyHp + '。<br>×3 のゲートを狙い、巨人で大きい赤を止めよう。', buttons: btns });
+        }
+      }, 600);
+    }
+
+    // ---------- 描画 ----------
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
+    }
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !S) return;
+      var i, t = S.t;
+      ctx.save();
+      if (shakeT > 0) ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 4);
+      // 地面
+      ctx.fillStyle = '#18243a'; ctx.fillRect(-4, -4, W + 8, HH + 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.035)';
+      for (i = 0; i < 9; i++) ctx.fillRect(i * 40 + 19, C.ENEMY_LINE, 2, C.PLAYER_LINE - C.ENEMY_LINE);
+      // 敵の拠点
+      drawEnemyBase(ctx);
+      // 自分の拠点
+      ctx.fillStyle = hitPT > 0 ? '#6a2a3a' : '#20406e';
+      ctx.fillRect(0, C.PLAYER_LINE, W, HH - C.PLAYER_LINE);
+      ctx.fillStyle = '#3d7bf0'; ctx.fillRect(0, C.PLAYER_LINE, W, 3);
+      bar(ctx, W - 118, HH - 14, 110, 7, S.playerHp / S.def.playerHp, '#4ad66d');
+      ctx.fillStyle = '#cfe0ff'; ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText('HP ' + S.playerHp, W - 122, HH - 10);
+      // ゲート
+      for (i = 0; i < S.gates.length; i++) drawGate(ctx, S.gates[i], t);
+      // 赤
+      drawUnits(ctx, false);
+      // 青
+      drawUnits(ctx, true);
+      // 大砲
+      drawCannon(ctx);
+      // 粒
+      for (i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 3));
+        ctx.fillStyle = p.col; ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+    function bar(ctx, x, y, w, h, f, col) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = col; ctx.fillRect(x, y, w * Math.max(0, f), h);
+    }
+    function drawEnemyBase(ctx) {
+      var L = C.ENEMY_LINE;
+      ctx.fillStyle = hitET > 0 ? '#7a2a2a' : '#5a1f2a';
+      ctx.fillRect(0, 0, W, L);
+      // 城壁のぎざぎざ
+      ctx.fillStyle = '#8c2f3c';
+      for (var x = 0; x < W; x += 24) ctx.fillRect(x, L - 12, 14, 12);
+      // 城
+      ctx.fillStyle = '#b8394a'; ctx.fillRect(W / 2 - 46, 8, 92, L - 16);
+      ctx.fillStyle = '#d24b5c';
+      for (var k = 0; k < 4; k++) ctx.fillRect(W / 2 - 46 + k * 26, 0, 14, 12);
+      ctx.fillStyle = '#3a0f18'; rr(ctx, W / 2 - 14, L - 34, 28, 26, 10); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(S.enemyHp, W / 2, 22);
+      bar(ctx, W / 2 - 60, L - 8, 120, 6, S.enemyHp / S.def.enemyHp, '#ff7a6a');
+    }
+    function drawGate(ctx, g, t) {
+      if (g.dead) return;
+      var x = g.x - g.w / 2, y = g.y - 13, mul = g.kind === 'mul';
+      var col = mul ? (g.val >= 3 ? '#2fbf71' : '#27a0c9') : '#8e6be0';
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = col; rr(ctx, x, y, g.w, 26, 6); ctx.fill();
+      ctx.globalAlpha = 1;
+      if (g.flash > 0) { ctx.fillStyle = 'rgba(255,255,255,' + (g.flash * 3) + ')'; rr(ctx, x, y, g.w, 26, 6); ctx.fill(); }
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2; rr(ctx, x, y, g.w, 26, 6); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 17px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText((mul ? '×' : '+') + g.val, g.x, g.y + 1);
+      if (g.amp) {
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        tri(ctx, x - 4, g.y, -1); tri(ctx, x + g.w + 4, g.y, 1);
+      }
+      if (g.maxUses > 0) bar(ctx, x + 4, y + 21, g.w - 8, 3, g.uses / g.maxUses, '#ffe066');
+    }
+    function tri(ctx, x, y, d) {
+      ctx.beginPath(); ctx.moveTo(x + d * 6, y); ctx.lineTo(x, y - 5); ctx.lineTo(x, y + 5); ctx.closePath(); ctx.fill();
+    }
+    // 小人はまとめて描く(色ごとに 1 回の fill)
+    function drawUnits(ctx, blue) {
+      var n = blue ? S.bn : S.rn, X = blue ? S.bx : S.rx, Y = blue ? S.by : S.ry, i, r;
+      var face = S.bn + S.rn < 450;
+      ctx.fillStyle = blue ? '#4a8cff' : '#ff4d5e';
+      ctx.beginPath();
+      for (i = 0; i < n; i++) {
+        r = unitR(blue, i);
+        ctx.moveTo(X[i] + r, Y[i]); ctx.arc(X[i], Y[i], r, 0, 6.283);
+      }
+      ctx.fill();
+      if (!face) return;
+      var ey = blue ? -1 : 1;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      for (i = 0; i < n; i++) {
+        r = unitR(blue, i);
+        var e = r * 0.42, s = Math.max(1.3, r * 0.28);
+        ctx.moveTo(X[i] - e + s, Y[i] + ey * r * 0.2); ctx.arc(X[i] - e, Y[i] + ey * r * 0.2, s, 0, 6.283);
+        ctx.moveTo(X[i] + e + s, Y[i] + ey * r * 0.2); ctx.arc(X[i] + e, Y[i] + ey * r * 0.2, s, 0, 6.283);
+      }
+      ctx.fill();
+      ctx.fillStyle = '#111a';
+      ctx.beginPath();
+      for (i = 0; i < n; i++) {
+        r = unitR(blue, i);
+        if (r < 7) continue;
+        var e2 = r * 0.42, s2 = r * 0.14, py = Y[i] + ey * r * 0.25;
+        ctx.moveTo(X[i] - e2 + s2, py); ctx.arc(X[i] - e2, py, s2, 0, 6.283);
+        ctx.moveTo(X[i] + e2 + s2, py); ctx.arc(X[i] + e2, py, s2, 0, 6.283);
+      }
+      ctx.fill();
+    }
+    function unitR(blue, i) {
+      if (blue) return S.bm[i] < 0 ? C.R_BIG : C.R_BLUE;
+      return C.RED_KIND[S.rk[i]][1];
+    }
+    function drawCannon(ctx) {
+      var x = S.cx, y = C.CANNON_Y;
+      ctx.fillStyle = '#2b2b3f'; rr(ctx, x - 22, y - 2, 44, 22, 8); ctx.fill();
+      ctx.fillStyle = S.gauge >= C.GAUGE_MAX ? '#f5b041' : '#7fb2ff';
+      rr(ctx, x - 9, y - 26, 18, 30, 6); ctx.fill();
+      ctx.fillStyle = '#1b1b2a'; ctx.beginPath(); ctx.arc(x, y - 24, 6, 0, 6.283); ctx.fill();
+      // ゲージ
+      bar(ctx, x - 20, y + 22, 40, 4, S.gauge / C.GAUGE_MAX, S.gauge >= C.GAUGE_MAX ? '#f5b041' : '#7fb2ff');
+    }
+
+    // ---------- 入力 ----------
+    function pointAt(e) { var p = st.toBase(e.clientX, e.clientY); inp.x = p.x; }
+    function down(e) {
+      if (!S || S.result) return;
+      if (!running) return;
+      e.preventDefault();
+      pointerDown = true; inp.fire = true; pointAt(e);
+      try { canvas.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+    }
+    function move(e) { if (pointerDown) { e.preventDefault(); pointAt(e); } }
+    function up() { pointerDown = false; inp.fire = false; }
+    canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    function bigShot() { if (running && S && S.gauge >= C.GAUGE_MAX) inp.big = true; }
+    $('btn-big').addEventListener('click', bigShot);
+    $('btn-list').addEventListener('click', showList);
+    document.addEventListener('keydown', function (e) {
+      var k = e.key;
+      if (k === 'ArrowLeft' || k === 'a' || k === 'A') { keyL = true; e.preventDefault(); }
+      else if (k === 'ArrowRight' || k === 'd' || k === 'D') { keyR = true; e.preventDefault(); }
+      else if (k === ' ') { keyFire = true; e.preventDefault(); }
+      else if (k === 'b' || k === 'B') bigShot();
+      else if (k === 'l' || k === 'L') showList();
+      else if (k === 'r' || k === 'R') window.resetGame();
+    });
+    document.addEventListener('keyup', function (e) {
+      var k = e.key;
+      if (k === 'ArrowLeft' || k === 'a' || k === 'A') keyL = false;
+      else if (k === 'ArrowRight' || k === 'd' || k === 'D') keyR = false;
+      else if (k === ' ') keyFire = false;
+    });
+
+    function closeOverlays() { document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); }); }
+    function showList() {
+      var was = running; running = false;
+      closeOverlays();
+      H.levelPicker({ count: C.LEVEL_COUNT, current: lvIdx,
+        done: function (i) { return !!cleared[i]; },
+        label: function (i) { return cleared[i] ? '★★★'.slice(0, cleared[i]) : ''; },
+        onPick: function (i) { load(i); },
+        onClose: function () { if (was && S && !S.result) running = true; else load(lvIdx); } });
+    }
+    window.resetGame = function () { closeOverlays(); load(lvIdx); };
+    var paused = false;
+    H.pauseWhenHidden(function () {
+      if (running && !paused) {
+        paused = true; running = false; inp.fire = false; pointerDown = false; keyL = keyR = keyFire = false;
+        H.overlay({ title: '一時停止', buttons: [{ label: 'つづける', onClick: function () { paused = false; running = true; acc = 0; } }] });
+      }
+    });
+
+    window.__dbg = {
+      state: function () {
+        return JSON.stringify({ level: lvIdx + 1, running: running, auto: auto, t: Math.round(S.t * 10) / 10, result: S.result,
+          enemyHp: S.enemyHp, enemyMax: S.def.enemyHp, playerHp: S.playerHp, blue: S.bn, red: S.rn, gauge: S.gauge, cannonX: Math.round(S.cx),
+          gates: S.gates.map(function (g) { return (g.kind === 'mul' ? 'x' : '+') + g.val + (g.amp ? '~' : '') + (g.maxUses > 0 ? '(' + g.uses + ')' : '') + (g.dead ? '!' : ''); }),
+          stars: C.stars(S) });
+      },
+      cmd: function (name, a) {
+        if (name === 'level') { closeOverlays(); load(Math.max(0, Math.min(C.LEVEL_COUNT - 1, a - 1))); }
+        else if (name === 'auto') { auto = a !== false; if (auto && S && !S.result) { closeOverlays(); running = true; } }
+        else if (name === 'start') { closeOverlays(); running = true; }
+        else if (name === 'reset') window.resetGame();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        else if (name === 'fast') { // a 秒ぶん一気に進める(確認用)
+          var n = Math.round((a || 10) / C.DT);
+          for (var i = 0; i < n && !S.result; i++) { C.step(S, auto ? C.autoInput(S) : { x: inp.x, fire: inp.fire, big: false }); S.ev.length = 0; }
+          if (S.result) finish();
+        }
+        else if (name === 'bench') { // a 回ぶん 進める+描く の平均 ms(重さの確認用)
+          var t0 = performance.now(), m = a || 60;
+          for (var b = 0; b < m && !S.result; b++) { C.step(S, C.autoInput(S)); S.ev.length = 0; draw(); }
+          return JSON.stringify({ msPerFrame: Math.round((performance.now() - t0) / m * 100) / 100, blue: S.bn, red: S.rn });
+        }
+        return this.state();
+      }
+    };
+
+    H.loop(update, draw).start();
+    load(lvIdx);
+    if (!store.get('seen', false)) {
+      store.set('seen', true);
+      H.overlay({ title: '群れ大砲', html: '盤面を押したまま左右に動かすと、青い小人がどんどん飛び出す。<br>×2・×3 のゲートで増やして、上の赤い拠点をこわそう。', buttons: [{ label: 'はじめる' }] });
+    }
+  })();
+  </script>
+</body>
+</html>

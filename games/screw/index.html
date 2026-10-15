@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ネジ外し - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 12px; }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 10px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="ネジ外し" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">面<b id="level">1</b></span>
+      <span class="hud-item">残り<b id="left">0</b></span>
+      <span class="hud-item">置き場<b id="buf">0/5</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>木の板が何枚も重なり、色のネジで留めてある。</li>
+            <li>ネジをタップすると外れる。ただし上に別の板がかぶっているネジは外せない。</li>
+            <li>外したネジは、上の同じ色の箱へ飛ぶ。箱は 3 本で満ちると去り、次の色の箱が来る。</li>
+            <li>合う箱が無いネジは置き場(5 マス)へ。合う色の箱が来ると自動で移る。</li>
+            <li>板はネジが全部外れると落ちる。全部のネジを外したらクリア。</li>
+            <li>置き場がいっぱいで外せるネジが無くなると「手がありません」。戻すは何回でも使える。</li>
+            <li>どの面も、置き場を 3 マスまでしか使わない解き方がある。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: ネジをタップ。下のボタンで戻す・ヒント・やり直し・面一覧。</li>
+            <li>PC: クリック、または ← → で外せるネジを選んで Space。Z = 戻す、H = ヒント、R = やり直し、L = 面一覧。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-undo">↶ 戻す</button>
+      <button type="button" class="ctl-btn sm" id="btn-hint">💡 ヒント</button>
+      <button type="button" class="ctl-btn sm" id="btn-restart">やり直し</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 盤面の論理。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var ScrewCore = (function () {
+    'use strict';
+    var LEVEL_COUNT = 36;
+    var BUF = 5;          // 置き場の数
+    var CAP = 3;          // 箱 1 つに入る本数
+    var GEN_BUF = 3;      // 面を作るとき、想定解で置き場を使ってよい最大数
+    var BW = 340, BH = 450; // 板を置く範囲(論理座標)
+    var SR = 12;          // ネジの頭の半径
+    var MIN_D = 30;       // ネジどうしの最小距離
+    var NCOL = 8;
+    var PI = Math.PI;
+
+    function mulberry(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function inPoly(pts, x, y) {
+      var ins = false;
+      for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        var xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) ins = !ins;
+      }
+      return ins;
+    }
+    function inShape(pl, x, y) {
+      if (pl.kind === 'circle') { var dx = x - pl.cx, dy = y - pl.cy; return dx * dx + dy * dy <= pl.r * pl.r; }
+      return inPoly(pl.pts, x, y);
+    }
+    // ネジの頭(半径 SR)が板 pl に少しでもかかるか
+    function headCovered(pl, x, y) {
+      if (inShape(pl, x, y)) return true;
+      for (var k = 0; k < 12; k++) {
+        var a = k * PI / 6;
+        if (inShape(pl, x + Math.cos(a) * SR, y + Math.sin(a) * SR)) return true;
+      }
+      return false;
+    }
+
+    // 板の形(中心 0,0 の局所座標)と、ネジを留められる位置
+    function plateShape(rnd, kinds, big) {
+      var kind = kinds[Math.floor(rnd() * kinds.length)];
+      var sc = big ? 1.12 : 1, local = null, anchors, r = 0, ang = 0, i;
+      if (kind === 'bar') {
+        var Lh = (62 + rnd() * 62) * sc, T = 24 + rnd() * 5;
+        local = [[-Lh, -T], [Lh, -T], [Lh, T], [-Lh, T]];
+        anchors = [[-Lh + T, 0], [Lh - T, 0]];
+        if (Lh > 95) anchors.push([0, 0]);
+        var angs = [0, 0, PI / 2, PI / 6, -PI / 6, PI / 4, -PI / 4, PI / 2];
+        ang = angs[Math.floor(rnd() * angs.length)];
+      } else if (kind === 'rect') {
+        var w = (40 + rnd() * 26) * sc, h = (40 + rnd() * 26) * sc;
+        local = [[-w, -h], [w, -h], [w, h], [-w, h]];
+        anchors = [[-w + 22, -h + 22], [w - 22, -h + 22], [w - 22, h - 22], [-w + 22, h - 22], [0, 0]];
+        ang = rnd() < 0.3 ? (rnd() - 0.5) * 0.7 : 0;
+      } else if (kind === 'L') {
+        var a = (100 + rnd() * 46) * sc, t = 50, o = a / 2;
+        local = [[0, 0], [a, 0], [a, t], [t, t], [t, a], [0, a]];
+        anchors = [[t / 2, t / 2], [a - t / 2, t / 2], [t / 2, a - t / 2]];
+        for (i = 0; i < local.length; i++) local[i] = [local[i][0] - o, local[i][1] - o];
+        for (i = 0; i < anchors.length; i++) anchors[i] = [anchors[i][0] - o, anchors[i][1] - o];
+        ang = Math.floor(rnd() * 4) * PI / 2;
+      } else if (kind === 'tri') {
+        var R = (66 + rnd() * 18) * sc;
+        local = []; anchors = [];
+        for (i = 0; i < 3; i++) {
+          var q = -PI / 2 + i * 2 * PI / 3;
+          local.push([Math.cos(q) * R, Math.sin(q) * R]);
+          anchors.push([Math.cos(q) * R * 0.45, Math.sin(q) * R * 0.45]);
+        }
+        ang = rnd() * 2 * PI / 3;
+      } else { // circle
+        kind = 'circle';
+        r = (38 + rnd() * 26) * sc;
+        anchors = [[0, 0], [-r * 0.45, 0], [r * 0.45, 0]];
+        ang = rnd() * PI;
+      }
+      return { kind: kind, local: local, anchors: anchors, r: r, ang: ang };
+    }
+    function rotP(p, a) { var c = Math.cos(a), s = Math.sin(a); return [p[0] * c - p[1] * s, p[0] * s + p[1] * c]; }
+
+    // 面の大きさ・色数など(面番号から)
+    function params(lv) {
+      var kinds = ['bar', 'rect'];
+      if (lv >= 2) kinds.push('L');
+      if (lv >= 4) kinds.push('circle');
+      if (lv >= 8) kinds.push('tri');
+      return {
+        plates: Math.min(22, 2 + Math.round(lv * 0.55)),
+        follow: Math.max(0.25, 0.85 - lv * 0.02),
+        dig: Math.min(0.7, lv * 0.025),  // 新しい箱が置き場の色に合わせてくれる割合
+        colors: Math.min(NCOL, 2 + Math.floor(lv / 5)),
+        pBuf: Math.min(0.4, 0.06 + lv * 0.01),
+        p3: Math.min(0.45, 0.15 + lv * 0.01),   // 3 本留めの割合(後の面ほど多い)
+        kinds: kinds
+      };
+    }
+
+    // 板とネジを置く(色はまだ)
+    function layoutPlates(rnd, P) {
+      var plates = [], screws = [];
+      function farEnough(x, y) {
+        for (var i = 0; i < screws.length; i++) {
+          var dx = screws[i].x - x, dy = screws[i].y - y;
+          if (dx * dx + dy * dy < MIN_D * MIN_D) return false;
+        }
+        return true;
+      }
+      for (var p = 0; p < P.plates; p++) {
+        var ok = false;
+        for (var tr = 0; tr < 80 && !ok; tr++) {
+          var sh = plateShape(rnd, P.kinds, p < P.plates / 3);
+          var pts = null, minx, maxx, miny, maxy, i;
+          if (sh.kind === 'circle') { minx = miny = -sh.r; maxx = maxy = sh.r; }
+          else {
+            pts = sh.local.map(function (q) { return rotP(q, sh.ang); });
+            minx = miny = 1e9; maxx = maxy = -1e9;
+            for (i = 0; i < pts.length; i++) {
+              minx = Math.min(minx, pts[i][0]); maxx = Math.max(maxx, pts[i][0]);
+              miny = Math.min(miny, pts[i][1]); maxy = Math.max(maxy, pts[i][1]);
+            }
+          }
+          var lox = 4 - minx, hix = BW - 4 - maxx, loy = 4 - miny, hiy = BH - 4 - maxy;
+          if (hix < lox || hiy < loy) continue;
+          var cx = lox + rnd() * (hix - lox), cy = loy + rnd() * (hiy - loy);
+          var anc = sh.anchors.map(function (q) { var v = rotP(q, sh.ang); return [v[0] + cx, v[1] + cy]; });
+          // 本数: 多くは 2 本、ときどき 1 本か 3 本
+          var u = rnd(), k = u < 0.12 ? 1 : (u < 1 - P.p3 ? 2 : 3);
+          k = Math.min(k, anc.length);
+          // 丸と棒の 1 本留めは中央、2 本は両端
+          var cand = anc.slice();
+          for (i = cand.length - 1; i > 0; i--) { var j = Math.floor(rnd() * (i + 1)); var tmp = cand[i]; cand[i] = cand[j]; cand[j] = tmp; }
+          if (sh.kind === 'circle') cand = k === 1 ? [anc[0]] : (k === 2 ? [anc[1], anc[2]] : anc.slice());
+          if (sh.kind === 'bar' && k === 2) cand = [anc[0], anc[1]];
+          var chosen = [];
+          for (i = 0; i < cand.length && chosen.length < k; i++) {
+            var okd = farEnough(cand[i][0], cand[i][1]);
+            for (var c2 = 0; c2 < chosen.length && okd; c2++) {
+              var ddx = chosen[c2][0] - cand[i][0], ddy = chosen[c2][1] - cand[i][1];
+              if (ddx * ddx + ddy * ddy < MIN_D * MIN_D) okd = false;
+            }
+            if (okd) chosen.push(cand[i]);
+          }
+          if (chosen.length < k) continue;
+          var pl = { kind: sh.kind, cx: cx, cy: cy, ang: sh.ang, r: sh.r, ids: [], spare: [] };
+          if (pts) pl.pts = pts.map(function (q) { return [q[0] + cx, q[1] + cy]; });
+          pl.ext = sh.kind === 'circle' ? sh.r : Math.max(maxx - minx, maxy - miny) * 0.75;
+          for (i = 0; i < chosen.length; i++) {
+            pl.ids.push(screws.length);
+            screws.push({ x: chosen[i][0], y: chosen[i][1], p: p, c: -1, cover: [] });
+          }
+          for (i = 0; i < anc.length; i++) if (chosen.indexOf(anc[i]) < 0) pl.spare.push(anc[i]);
+          plates.push(pl);
+          ok = true;
+        }
+        if (!ok) return null;
+      }
+      // 本数を 3 の倍数にそろえる(足すか減らす)
+      for (var g = 0; g < 20 && screws.length % 3 !== 0; g++) {
+        if (rnd() < 0.5) {
+          var pa = plates[Math.floor(rnd() * plates.length)];
+          if (pa.ids.length < 3 && pa.spare.length) {
+            var sp = pa.spare[Math.floor(rnd() * pa.spare.length)];
+            if (farEnough(sp[0], sp[1])) {
+              pa.ids.push(screws.length);
+              screws.push({ x: sp[0], y: sp[1], p: plates.indexOf(pa), c: -1, cover: [] });
+              pa.spare.splice(pa.spare.indexOf(sp), 1);
+            }
+          }
+        } else {
+          var pr = plates[Math.floor(rnd() * plates.length)];
+          if (pr.ids.length >= 2) {
+            var rm = pr.ids.pop();
+            var s = screws[rm];
+            pr.spare.push([s.x, s.y]);
+            screws.splice(rm, 1);
+            for (var q = 0; q < plates.length; q++)
+              for (var z = 0; z < plates[q].ids.length; z++) if (plates[q].ids[z] > rm) plates[q].ids[z]--;
+          }
+        }
+      }
+      if (screws.length % 3 !== 0) return null;
+      // かぶり: 上の層(番号の大きい板)がネジの頭にかかるか
+      for (var si = 0; si < screws.length; si++) {
+        var sc = screws[si];
+        for (var pp = sc.p + 1; pp < plates.length; pp++) if (headCovered(plates[pp], sc.x, sc.y)) sc.cover.push(pp);
+      }
+      for (var pd = 0; pd < plates.length; pd++) delete plates[pd].spare;
+      return { plates: plates, screws: screws };
+    }
+
+    // ---------- 規則 ----------
+    function newState(L) {
+      var S = { removed: [], left: [], fallen: [], slots: [null, null], qi: 0, buf: [], moves: 0 };
+      var i;
+      for (i = 0; i < L.screws.length; i++) S.removed.push(0);
+      for (i = 0; i < L.plates.length; i++) { S.left.push(L.plates[i].ids.length); S.fallen.push(0); }
+      for (i = 0; i < 2 && S.qi < L.boxes.length; i++) S.slots[i] = { b: S.qi++, n: 0 };
+      return S;
+    }
+    function clone(S) {
+      return { removed: S.removed.slice(), left: S.left.slice(), fallen: S.fallen.slice(),
+        slots: S.slots.map(function (x) { return x ? { b: x.b, n: x.n } : null; }), qi: S.qi, buf: S.buf.slice(), moves: S.moves };
+    }
+    function free(L, S, s) {
+      if (S.removed[s]) return false;
+      var cv = L.screws[s].cover;
+      for (var i = 0; i < cv.length; i++) if (!S.fallen[cv[i]]) return false;
+      return true;
+    }
+    function slotFor(L, S, c) {
+      var best = -1;
+      for (var k = 0; k < 2; k++) {
+        var sl = S.slots[k];
+        if (sl && sl.n < CAP && L.boxes[sl.b] === c && (best < 0 || sl.n > S.slots[best].n)) best = k;
+      }
+      return best;
+    }
+    // 外せる(上がふさがれていない・行き先がある)
+    function canTake(L, S, s) {
+      if (!free(L, S, s)) return false;
+      return slotFor(L, S, L.screws[s].c) >= 0 || S.buf.length < BUF;
+    }
+    function settle(L, S, ev) {
+      var changed = true;
+      while (changed) {
+        changed = false;
+        for (var k = 0; k < 2; k++) {
+          var sl = S.slots[k];
+          if (sl && sl.n >= CAP) {
+            ev.push({ t: 'done', slot: k, b: sl.b });
+            S.slots[k] = S.qi < L.boxes.length ? { b: S.qi++, n: 0 } : null;
+            if (S.slots[k]) ev.push({ t: 'new', slot: k, b: S.slots[k].b });
+            changed = true;
+          }
+          sl = S.slots[k];
+          if (!sl) continue;
+          for (var i = 0; i < S.buf.length; i++) {
+            if (sl.n < CAP && L.screws[S.buf[i]].c === L.boxes[sl.b]) {
+              ev.push({ t: 'b2b', s: S.buf[i], from: i, slot: k, b: sl.b, idx: sl.n });
+              sl.n++; S.buf.splice(i, 1); i--; changed = true;
+            }
+          }
+        }
+      }
+    }
+    // ネジ s を外す。起きたことの列を返す(描画のアニメに使う)
+    function apply(L, S, s) {
+      var ev = [], sc = L.screws[s];
+      S.removed[s] = 1; S.moves++;
+      var k = slotFor(L, S, sc.c);
+      if (k >= 0) { ev.push({ t: 'box', s: s, slot: k, b: S.slots[k].b, idx: S.slots[k].n }); S.slots[k].n++; }
+      else { ev.push({ t: 'buf', s: s, idx: S.buf.length }); S.buf.push(s); }
+      S.left[sc.p]--;
+      if (S.left[sc.p] === 0) { S.fallen[sc.p] = 1; ev.push({ t: 'fall', p: sc.p }); }
+      settle(L, S, ev);
+      return ev;
+    }
+    function remaining(S) { var n = 0; for (var i = 0; i < S.removed.length; i++) if (!S.removed[i]) n++; return n; }
+    function isWin(S) { return remaining(S) === 0; }
+    function moves(L, S) { var r = []; for (var i = 0; i < L.screws.length; i++) if (canTake(L, S, i)) r.push(i); return r; }
+    function isStuck(L, S) { return !isWin(S) && moves(L, S).length === 0; }
+
+    // ---------- 面の作り ----------
+    // 外せるネジを乱数で順に外す取り順
+    // dig: 下の層の板から先に掘り進める割合(上の板のネジが後回しになり、色の読み合いが増える)
+    function randomOrder(L, rnd, dig) {
+      var removed = [], left = [], fallen = [], order = [], i;
+      for (i = 0; i < L.screws.length; i++) removed.push(0);
+      for (i = 0; i < L.plates.length; i++) { left.push(L.plates[i].ids.length); fallen.push(0); }
+      for (var step = 0; step < L.screws.length; step++) {
+        var av = [];
+        for (i = 0; i < L.screws.length; i++) {
+          if (removed[i]) continue;
+          var cv = L.screws[i].cover, ok = true;
+          for (var j = 0; j < cv.length; j++) if (!fallen[cv[j]]) { ok = false; break; }
+          if (ok) av.push(i);
+        }
+        var s = av[Math.floor(rnd() * av.length)];
+        if (rnd() < dig) {
+          var lo = 1e9;
+          for (i = 0; i < av.length; i++) lo = Math.min(lo, L.screws[av[i]].p);
+          var low = av.filter(function (q) { return L.screws[q].p === lo; });
+          s = low[Math.floor(rnd() * low.length)];
+        }
+        order.push(s); removed[s] = 1;
+        var p = L.screws[s].p;
+        if (--left[p] === 0) fallen[p] = 1;
+      }
+      return order;
+    }
+    // 取り順に沿って色と箱の順を決める(箱 2 つ・置き場 GEN_BUF までで模擬)
+    function assignColors(L, order, rnd, K, pBuf, follow) {
+      var N = order.length, nBoxes = N / CAP, boxes = [], slots = [null, null], buf = [], i, k;
+      function distinctBuf(extra) {
+        var seen = {}, n = 0;
+        for (var q = 0; q < buf.length; q++) if (!seen[buf[q]]) { seen[buf[q]] = 1; n++; }
+        if (extra >= 0 && !seen[extra]) n++;
+        return n;
+      }
+      function newBox(other) {
+        if (boxes.length >= nBoxes) return null;
+        var F = nBoxes - boxes.length, c;
+        if (buf.length && (distinctBuf(-1) >= F || rnd() < follow)) c = buf[0];
+        else { var tries = 0; do { c = Math.floor(rnd() * K); tries++; } while (c === other && K > 1 && tries < 50); }
+        boxes.push(c);
+        return { c: c, n: 0 };
+      }
+      function otherColor(kk) { var o = slots[1 - kk]; return o ? o.c : -1; }
+      function absorb() {
+        var changed = true;
+        while (changed) {
+          changed = false;
+          for (var kk = 0; kk < 2; kk++) {
+            var sl = slots[kk];
+            if (sl && sl.n >= CAP) { slots[kk] = newBox(otherColor(kk)); sl = slots[kk]; changed = true; }
+            if (!sl) continue;
+            for (var q = 0; q < buf.length; q++) if (sl.n < CAP && buf[q] === sl.c) { buf.splice(q, 1); q--; sl.n++; changed = true; }
+          }
+        }
+      }
+      slots[0] = newBox(-1); slots[1] = newBox(slots[0] ? slots[0].c : -1);
+      for (i = 0; i < N; i++) {
+        var open = [];
+        for (k = 0; k < 2; k++) if (slots[k] && slots[k].n < CAP) open.push(k);
+        var F = nBoxes - boxes.length, toBuf = -1;
+        if (open.length === 0 || (buf.length < GEN_BUF && F > 0 && N - i > 6 && rnd() < pBuf)) {
+          // 開いている箱と違う色で、残りの箱で受けきれる色
+          var cs = [];
+          for (var c = 0; c < K; c++) {
+            var clash = false;
+            for (var oi = 0; oi < open.length; oi++) if (slots[open[oi]].c === c) clash = true;
+            if (!clash && distinctBuf(c) <= F) cs.push(c);
+          }
+          if (cs.length) toBuf = cs[Math.floor(rnd() * cs.length)];
+          else if (!open.length) return null;
+        }
+        var s = order[i];
+        if (toBuf >= 0) { L.screws[s].c = toBuf; buf.push(toBuf); }
+        else {
+          k = open[Math.floor(rnd() * open.length)];
+          L.screws[s].c = slots[k].c; slots[k].n++;
+        }
+        absorb();
+      }
+      if (buf.length || boxes.length !== nBoxes) return null;
+      return boxes;
+    }
+    // 取り順をそのまま本当の規則で模擬して、置き場の最大使用数を返す(解けなければ -1)
+    function simulate(L, order) {
+      var S = newState(L), mx = 0;
+      for (var i = 0; i < order.length; i++) {
+        if (!canTake(L, S, order[i])) return -1;
+        apply(L, S, order[i]);
+        mx = Math.max(mx, S.buf.length);
+      }
+      return isWin(S) ? mx : -1;
+    }
+
+    // 何も考えずに外せるネジを選び続けたときの成功率(難しさの目安)
+    function randomRate(L, rnd, runs) {
+      var win = 0;
+      for (var r = 0; r < runs; r++) {
+        var S = newState(L);
+        for (;;) {
+          var m = moves(L, S);
+          if (!m.length) break;
+          apply(L, S, m[Math.floor(rnd() * m.length)]);
+        }
+        if (isWin(S)) win++;
+      }
+      return win / runs;
+    }
+    // 面ごとのねらいの難しさ(でたらめに外して解ける割合)
+    function targetRate(lv) { return lv < 5 ? 1 : Math.max(0.2, 1 - (lv - 4) * 0.027); }
+
+    function makeLevel(lv) {
+      var P = params(lv), target = targetRate(lv), best = null, tried = 0;
+      for (var att = 0; att < 400; att++) {
+        var rnd = mulberry(lv * 7919 + att * 104729 + 12345);
+        var L = layoutPlates(rnd, P);
+        if (!L) continue;
+        for (var cc = 0; cc < 6; cc++) {
+          var order = randomOrder(L, rnd, P.dig);
+          var boxes = assignColors(L, order, rnd, P.colors, P.pBuf, P.follow);
+          if (!boxes) continue;
+          L.boxes = boxes;   // 箱が来る順(色番号)
+          var mx = simulate(L, order);
+          if (mx < 0 || mx > GEN_BUF) continue;
+          var rate = target >= 1 ? 1 : randomRate(L, rnd, 30);
+          var d = Math.abs(rate - target);
+          tried++;
+          if (!best || d < best.d) best = { d: d, rate: rate, L: L, order: order, mx: mx, att: att,
+            cols: L.screws.map(function (q) { return q.c; }), boxes: boxes.slice() };
+          if (d <= 0.08 || tried >= 24) break;
+        }
+        if (best && (best.d <= 0.08 || tried >= 24)) break;
+      }
+      if (!best) throw new Error('面 ' + (lv + 1) + ' が作れない');
+      var R = best.L;
+      for (var i = 0; i < R.screws.length; i++) R.screws[i].c = best.cols[i];
+      R.boxes = best.boxes; R.order = best.order; R.maxBuf = best.mx; R.lv = lv; R.att = best.att;
+      R.colors = P.colors; R.rate = best.rate; R.target = target;
+      return R;
+    }
+
+    // ---------- 探索(ヒント・確認用) ----------
+    function stateKey(S) {
+      return S.removed.join('') + '|' + S.qi + '|' + S.slots.map(function (x) { return x ? x.b + ':' + x.n : '-'; }).join(',') + '|' + S.buf.slice().sort(function (a, b) { return a - b; }).join(',');
+    }
+    function solve(L, S0, limit) {
+      var seen = {}, nodes = 0, path = [];
+      limit = limit || 30000;
+      function score(S, s) {
+        var sc = L.screws[s], v = 0;
+        if (slotFor(L, S, sc.c) >= 0) v += 1000;
+        else {
+          v -= S.buf.length * 50;
+          // 次に来る箱の色なら少しまし
+          for (var q = S.qi; q < Math.min(L.boxes.length, S.qi + 2); q++) if (L.boxes[q] === sc.c) v += 30 - (q - S.qi) * 10;
+        }
+        if (S.left[sc.p] === 1) v += 40;
+        v -= S.left[sc.p] * 5;
+        return v;
+      }
+      function rec(S) {
+        if (isWin(S)) return true;
+        if (++nodes > limit) return false;
+        var key = stateKey(S);
+        if (seen[key]) return false;
+        seen[key] = 1;
+        var ms = moves(L, S);
+        var sc = ms.map(function (m) { return [score(S, m), m]; });
+        sc.sort(function (a, b) { return b[0] - a[0] || a[1] - b[1]; });
+        for (var i = 0; i < sc.length; i++) {
+          var T = clone(S);
+          apply(L, T, sc[i][1]);
+          path.push(sc[i][1]);
+          if (rec(T)) return true;
+          path.pop();
+          if (nodes > limit) return false;
+        }
+        return false;
+      }
+      var ok = rec(clone(S0));
+      return { path: ok ? path : null, nodes: nodes, gaveUp: !ok && nodes > limit };
+    }
+
+    return { LEVEL_COUNT: LEVEL_COUNT, BUF: BUF, CAP: CAP, GEN_BUF: GEN_BUF, BW: BW, BH: BH, SR: SR, NCOL: NCOL,
+      makeLevel: makeLevel, newState: newState, clone: clone, free: free, canTake: canTake, apply: apply,
+      remaining: remaining, isWin: isWin, isStuck: isStuck, moves: moves, simulate: simulate, solve: solve, inShape: inShape, mulberry: mulberry };
+  })();
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = ScrewCore;
+    var store = H.store('screw');
+    var cleared = store.get('cleared', {});
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var L = null, S = null, history = [], over = false, hintS = -1, cursor = -1;
+    var anims = [], arriveAt = {}, readyAt = {}, grains = [];
+    var endTimer = 0;
+    var canvas = document.getElementById('cv'), stage = document.getElementById('stage'), st = null;
+
+    var COLS = ['#e53935', '#1e88e5', '#fdd835', '#43a047', '#8e24aa', '#fb8c00', '#00bcd4', '#f48fb1'];
+    var CNAME = ['赤', '青', '黄', '緑', '紫', '橙', '水', '桃'];
+    var TINTS = ['#d9a066', '#c98b55', '#e8c48e', '#b9875e', '#cfae7c', '#a8c3a0', '#a9bfd8', '#dca9a0', '#d8c37a', '#c2a3c9'];
+
+    // 縦長と横長の 2 つの配置。空きの形で大きく描ける方を選ぶ
+    var LAYS = {
+      P: { W: 360, H: 600, bx: 10, by: 144,
+        boxes: [{ x: 12, y: 8, w: 162, h: 70 }, { x: 186, y: 8, w: 162, h: 70 }],
+        buf: { x: 64, y: 90, size: 44, gap: 3 }, label: { x: 34, y: 112 }, info: null },
+      W: { W: 600, H: 462, bx: 250, by: 6,
+        boxes: [{ x: 10, y: 10, w: 228, h: 74 }, { x: 10, y: 94, w: 228, h: 74 }],
+        buf: { x: 8, y: 204, size: 44, gap: 3 }, label: { x: 124, y: 192 }, info: { x: 124, y: 300 } }
+    };
+    var LY = LAYS.P;
+    function pickLayout() {
+      var r = stage.parentElement.getBoundingClientRect();
+      var aw = Math.max(50, r.width - 12), ah = Math.max(50, r.height - 12);
+      var sp = Math.min(aw / LAYS.P.W, ah / LAYS.P.H), sw = Math.min(aw / LAYS.W.W, ah / LAYS.W.H);
+      return sw > sp * 1.05 ? LAYS.W : LAYS.P;
+    }
+    function $(id) { return document.getElementById(id); }
+    function now() { return performance.now(); }
+
+    function setup() {
+      LY = pickLayout();
+      st = H.canvasStage(canvas, LY.W, LY.H, function (w, h, ctx, s) {
+        var want = pickLayout();
+        if (st && want !== LY) { LY = want; st.setBase(LY.W, LY.H); return; }
+        ctx.scale(s, s); draw();
+      });
+    }
+
+    function load(i) {
+      lvIdx = i; store.set('last', i);
+      L = C.makeLevel(i);
+      S = C.newState(L);
+      history = []; over = false; hintS = -1; cursor = -1; anims = []; arriveAt = {}; readyAt = {};
+      if (endTimer) { clearTimeout(endTimer); endTimer = 0; }
+      // 木目(板ごとに種付き)
+      var rnd = C.mulberry(i * 31 + 7);
+      grains = L.plates.map(function (pl) {
+        var lines = [], e = pl.ext + 10;
+        for (var y = -e; y < e; y += 6 + rnd() * 5) lines.push({ y: y, a: 1 + rnd() * 3, f: 0.02 + rnd() * 0.04, ph: rnd() * 6.28, w: 0.6 + rnd() * 1.2 });
+        return { lines: lines, tint: TINTS[Math.floor(rnd() * TINTS.length)], knot: rnd() < 0.5 ? [(rnd() - 0.5) * pl.ext, (rnd() - 0.5) * pl.ext * 0.5] : null };
+      });
+      hud(); draw();
+    }
+    function hud() {
+      $('level').textContent = lvIdx + 1;
+      $('left').textContent = C.remaining(S);
+      $('buf').textContent = S.buf.length + '/' + C.BUF;
+    }
+
+    // ---------- 位置 ----------
+    function holePos(slot, idx) {
+      var r = LY.boxes[slot];
+      return { x: r.x + r.w / 2 + (idx - 1) * r.w * 0.27, y: r.y + r.h / 2 + 6 };
+    }
+    function bufPos(i) {
+      var b = LY.buf;
+      return { x: b.x + i * (b.size + b.gap) + b.size / 2, y: b.y + b.size / 2 };
+    }
+    function screwPos(s) { return { x: L.screws[s].x + LY.bx, y: L.screws[s].y + LY.by }; }
+
+    // ---------- 描画 ----------
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+    function platePath(ctx, pl) {
+      ctx.beginPath();
+      if (pl.kind === 'circle') { ctx.arc(pl.cx, pl.cy, pl.r, 0, Math.PI * 2); return; }
+      var p = pl.pts, n = p.length;
+      ctx.moveTo((p[n - 1][0] + p[0][0]) / 2, (p[n - 1][1] + p[0][1]) / 2);
+      for (var i = 0; i < n; i++) {
+        var a = p[i], b = p[(i + 1) % n];
+        ctx.arcTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 12);
+      }
+      ctx.closePath();
+    }
+    function shade(hex, f) {
+      var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+      if (f < 0) { r *= 1 + f; g *= 1 + f; b *= 1 + f; } else { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
+      return 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+    }
+    function drawPlate(ctx, p, alpha) {
+      var pl = L.plates[p], gr = grains[p];
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      // 影
+      ctx.save(); ctx.translate(3, 5); platePath(ctx, pl); ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill(); ctx.restore();
+      platePath(ctx, pl);
+      ctx.fillStyle = gr.tint; ctx.fill();
+      // 木目
+      ctx.save(); ctx.clip();
+      ctx.translate(pl.cx, pl.cy); ctx.rotate(pl.ang);
+      ctx.strokeStyle = 'rgba(90,50,20,0.22)';
+      var e = pl.ext + 10;
+      for (var i = 0; i < gr.lines.length; i++) {
+        var l = gr.lines[i];
+        ctx.lineWidth = l.w;
+        ctx.beginPath();
+        for (var x = -e; x <= e; x += 14) {
+          var y = l.y + Math.sin(x * l.f + l.ph) * l.a;
+          if (x === -e) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      if (gr.knot) { ctx.beginPath(); ctx.ellipse(gr.knot[0], gr.knot[1], 9, 4, 0, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(90,50,20,0.35)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+      ctx.restore();
+      // 縁
+      platePath(ctx, pl);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = shade(gr.tint, -0.45); ctx.stroke();
+      ctx.save(); ctx.translate(-1, -1); platePath(ctx, pl); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.stroke(); ctx.restore();
+      // 穴
+      for (var k = 0; k < pl.ids.length; k++) {
+        var sc = L.screws[pl.ids[k]];
+        ctx.beginPath(); ctx.arc(sc.x, sc.y, C.SR + 2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(30,18,8,0.75)'; ctx.fill();
+      }
+      ctx.restore();
+    }
+    function drawScrew(ctx, x, y, col, scale, alpha) {
+      var r = C.SR * (scale || 1);
+      ctx.save();
+      ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+      ctx.beginPath(); ctx.arc(x + 1.5, y + 2.5, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill();
+      var g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+      g.addColorStop(0, shade(col, 0.55)); g.addColorStop(0.55, col); g.addColorStop(1, shade(col, -0.35));
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+      ctx.lineWidth = 1.2; ctx.strokeStyle = shade(col, -0.55); ctx.stroke();
+      // 十字の溝
+      ctx.strokeStyle = shade(col, -0.6); ctx.lineWidth = 2.6 * (scale || 1); ctx.lineCap = 'round';
+      var d = r * 0.48;
+      ctx.beginPath(); ctx.moveTo(x - d, y); ctx.lineTo(x + d, y); ctx.moveTo(x, y - d); ctx.lineTo(x, y + d); ctx.stroke();
+      ctx.restore();
+    }
+    function drawBox(ctx, slot, b, dy, alpha, nShow, hidden) {
+      var r = LY.boxes[slot], col = COLS[L.boxes[b]];
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(0, dy);
+      rr(ctx, r.x, r.y + 10, r.w, r.h - 10, 10);
+      ctx.fillStyle = shade(col, -0.15); ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = shade(col, -0.5); ctx.stroke();
+      rr(ctx, r.x + 6, r.y, r.w - 12, 16, 6);
+      ctx.fillStyle = shade(col, 0.25); ctx.fill(); ctx.strokeStyle = shade(col, -0.4); ctx.lineWidth = 1.5; ctx.stroke();
+      for (var i = 0; i < C.CAP; i++) {
+        var p = holePos(slot, i);
+        ctx.beginPath(); ctx.arc(p.x, p.y, C.SR + 3, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fill();
+        if (i < nShow && !(hidden && hidden['b' + b + '_' + i])) drawScrew(ctx, p.x, p.y, col, 1);
+      }
+      ctx.restore();
+    }
+    function ease(t) { return t < 0 ? 0 : (t > 1 ? 1 : 1 - Math.pow(1 - t, 3)); }
+
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !L) return;
+      var t = now(), i, a;
+      ctx.clearRect(0, 0, LY.W, LY.H);
+      ctx.fillStyle = '#1b1d2e'; ctx.fillRect(0, 0, LY.W, LY.H);
+      // 盤の地(穴あきボード)
+      rr(ctx, LY.bx - 4, LY.by - 4, C.BW + 8, C.BH + 8, 12);
+      ctx.fillStyle = '#26293f'; ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      for (var gy = LY.by + 14; gy < LY.by + C.BH; gy += 28) for (var gx = LY.bx + 14; gx < LY.bx + C.BW; gx += 28) { ctx.beginPath(); ctx.arc(gx, gy, 2.5, 0, 6.29); ctx.fill(); }
+
+      // 飛んでいる最中で、まだ着いていない行き先
+      var hidden = {};
+      for (i = 0; i < anims.length; i++) { a = anims[i]; if (a.type === 'fly' && t < a.t + a.dur) hidden[a.tgt] = 1; }
+
+      // 箱の置き場(空の枠)
+      for (var k = 0; k < 2; k++) {
+        var r = LY.boxes[k];
+        rr(ctx, r.x, r.y + 10, r.w, r.h - 10, 10);
+        ctx.setLineDash([6, 5]); ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+      }
+      // 去る箱
+      for (i = 0; i < anims.length; i++) {
+        a = anims[i];
+        if (a.type !== 'leave') continue;
+        var u = (t - a.t) / a.dur;
+        drawBox(ctx, a.slot, a.b, -ease(u) * 90, u < 0 ? 1 : Math.max(0, 1 - u), C.CAP, hidden);
+      }
+      // 今の箱
+      for (k = 0; k < 2; k++) {
+        var sl = S.slots[k];
+        if (!sl) continue;
+        var en = null;
+        for (i = 0; i < anims.length; i++) if (anims[i].type === 'enter' && anims[i].b === sl.b) en = anims[i];
+        if (en && t < en.t) continue;
+        var v = en ? ease((t - en.t) / en.dur) : 1;
+        drawBox(ctx, k, sl.b, -(1 - v) * 70, v, sl.n, hidden);
+      }
+      // 置き場
+      var bb = LY.buf;
+      ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('置き場', LY.label.x, LY.label.y);
+      for (i = 0; i < C.BUF; i++) {
+        var bp = bufPos(i);
+        rr(ctx, bp.x - bb.size / 2, bp.y - bb.size / 2, bb.size, bb.size, 9);
+        ctx.fillStyle = S.buf.length >= C.BUF ? 'rgba(231,76,60,0.25)' : 'rgba(255,255,255,0.08)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      for (i = 0; i < S.buf.length; i++) {
+        if (hidden['s' + S.buf[i]]) continue;
+        var q = bufPos(i);
+        drawScrew(ctx, q.x, q.y, COLS[L.screws[S.buf[i]].c], 1);
+      }
+      if (LY.info) {
+        ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.font = 'bold 20px sans-serif';
+        ctx.fillText('残り ' + C.remaining(S) + ' 本', LY.info.x, LY.info.y);
+        ctx.font = '14px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.fillText('箱はあと ' + (L.boxes.length - S.qi) + ' 個来る', LY.info.x, LY.info.y + 28);
+      }
+
+      // 板とネジ(下の層から)
+      ctx.save();
+      ctx.translate(LY.bx, LY.by);
+      for (var p = 0; p < L.plates.length; p++) {
+        if (S.fallen[p]) continue;
+        drawPlate(ctx, p, 0.93);
+        var ids = L.plates[p].ids;
+        for (var j = 0; j < ids.length; j++) {
+          var s = ids[j];
+          if (S.removed[s]) continue;
+          var sc = L.screws[s], ox = 0;
+          for (i = 0; i < anims.length; i++) if (anims[i].type === 'shake' && anims[i].s === s) ox = Math.sin((t - anims[i].t) / 25) * 4 * (1 - (t - anims[i].t) / anims[i].dur);
+          drawScrew(ctx, sc.x + ox, sc.y, COLS[sc.c], 1);
+        }
+      }
+      // 落ちる板
+      for (i = 0; i < anims.length; i++) {
+        a = anims[i];
+        if (a.type !== 'fall' || t < a.t) continue;
+        var e = t - a.t, pl = L.plates[a.p];
+        ctx.save();
+        ctx.translate(pl.cx + a.vx * e, pl.cy - 0.18 * e + 0.0013 * e * e);
+        ctx.rotate(a.w * e);
+        ctx.translate(-pl.cx, -pl.cy);
+        drawPlate(ctx, a.p, Math.max(0, 1 - e / a.dur));
+        ctx.restore();
+      }
+      // ヒント・カーソル
+      var ring = function (s, col) {
+        var sc = L.screws[s], ph = (Math.sin(t / 180) + 1) / 2;
+        ctx.beginPath(); ctx.arc(sc.x, sc.y, C.SR + 5 + ph * 4, 0, Math.PI * 2);
+        ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+      };
+      if (hintS >= 0 && !S.removed[hintS]) ring(hintS, 'rgba(255,240,120,0.95)');
+      if (cursor >= 0 && !S.removed[cursor]) ring(cursor, 'rgba(255,255,255,0.95)');
+      ctx.restore();
+
+      // 飛ぶネジ
+      for (i = 0; i < anims.length; i++) {
+        a = anims[i];
+        if (a.type !== 'fly') continue;
+        var f = (t - a.t) / a.dur;
+        if (f >= 1) continue;
+        if (f < 0) { if (a.showSrc) drawScrew(ctx, a.x0, a.y0, a.col, 1); continue; }
+        var g = ease(f);
+        var x = a.x0 + (a.x1 - a.x0) * g, y = a.y0 + (a.y1 - a.y0) * g - Math.sin(f * Math.PI) * 40;
+        drawScrew(ctx, x, y, a.col, 1 + Math.sin(f * Math.PI) * 0.35);
+      }
+    }
+
+    var raf = 0;
+    function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+    function frame() {
+      raf = 0;
+      var t = now();
+      anims = anims.filter(function (a) { return t < a.t + a.dur; });
+      draw();
+      if (anims.length || hintS >= 0 || cursor >= 0) raf = requestAnimationFrame(frame);
+    }
+
+    // ---------- 音 ----------
+    function snd(kind) {
+      var A = H.audio;
+      if (kind === 'take') { A.beep(1500, 0.03, 'square', 0.04); setTimeout(function () { A.beep(900, 0.05, 'triangle', 0.06); }, 40); }
+      else if (kind === 'done') { A.beep(660, 0.07, 'triangle', 0.08); setTimeout(function () { A.beep(990, 0.1, 'triangle', 0.08); }, 80); }
+      else if (kind === 'fall') { A.beep(220, 0.12, 'sine', 0.08); setTimeout(function () { A.beep(150, 0.15, 'sine', 0.07); }, 120); }
+    }
+
+    // 論理の出来事 → アニメ
+    function animate(ev) {
+      var t0 = now(), i, e;
+      for (i = 0; i < ev.length; i++) {
+        e = ev[i];
+        if (e.t === 'box' || e.t === 'buf') {
+          var sp = screwPos(e.s), dst, start = t0, tgt;
+          if (e.t === 'box') { dst = holePos(e.slot, e.idx); start = Math.max(t0, readyAt[e.b] || 0); tgt = 'b' + e.b + '_' + e.idx; }
+          else { dst = bufPos(e.idx); tgt = 's' + e.s; }
+          anims.push({ type: 'fly', t: start, dur: 280, x0: sp.x, y0: sp.y, x1: dst.x, y1: dst.y, col: COLS[L.screws[e.s].c], tgt: tgt, showSrc: true });
+          if (e.t === 'box') arriveAt[e.b] = Math.max(arriveAt[e.b] || 0, start + 280);
+        } else if (e.t === 'fall') {
+          anims.push({ type: 'fall', p: e.p, t: t0 + 60, dur: 1000, vx: (Math.random() - 0.5) * 0.12, w: (Math.random() < 0.5 ? -1 : 1) * (0.002 + Math.random() * 0.002) });
+          setTimeout(function () { snd('fall'); }, 60);
+        } else if (e.t === 'done') {
+          var ls = Math.max(t0, arriveAt[e.b] || 0, readyAt[e.b] || 0);
+          anims.push({ type: 'leave', slot: e.slot, b: e.b, t: ls, dur: 320 });
+          readyAt['leave' + e.slot] = ls + 320;
+          setTimeout(function () { snd('done'); }, Math.max(0, ls - t0));
+        } else if (e.t === 'new') {
+          var es = Math.max(t0, readyAt['leave' + e.slot] || 0);
+          anims.push({ type: 'enter', slot: e.slot, b: e.b, t: es, dur: 260 });
+          readyAt[e.b] = es + 260;
+        } else if (e.t === 'b2b') {
+          var from = bufPos(e.from), d2 = holePos(e.slot, e.idx), s2 = Math.max(t0, readyAt[e.b] || 0);
+          anims.push({ type: 'fly', t: s2, dur: 300, x0: from.x, y0: from.y, x1: d2.x, y1: d2.y, col: COLS[L.screws[e.s].c], tgt: 'b' + e.b + '_' + e.idx, showSrc: true });
+          arriveAt[e.b] = Math.max(arriveAt[e.b] || 0, s2 + 300);
+        }
+      }
+      kick();
+    }
+    function animEnd() {
+      var m = now();
+      for (var i = 0; i < anims.length; i++) m = Math.max(m, anims[i].t + anims[i].dur);
+      return m - now();
+    }
+
+    // ---------- 操作 ----------
+    function take(s) {
+      if (over || !L || !(s >= 0 && s < L.screws.length)) return false;
+      if (!C.free(L, S, s)) { anims.push({ type: 'shake', s: s, t: now(), dur: 300 }); H.audio.bad(); kick(); return false; }
+      if (!C.canTake(L, S, s)) { anims.push({ type: 'shake', s: s, t: now(), dur: 300 }); H.audio.bad(); H.toast('置き場がいっぱい'); kick(); return false; }
+      history.push(C.clone(S));
+      var ev = C.apply(L, S, s);
+      hintS = -1;
+      if (cursor === s) cursor = -1;
+      snd('take');
+      animate(ev);
+      hud();
+      if (C.isWin(S)) win();
+      else if (C.isStuck(L, S)) stuck();
+      return true;
+    }
+    function undo() {
+      if (!history.length) { H.toast('戻せる手がありません'); return; }
+      if (endTimer) { clearTimeout(endTimer); endTimer = 0; }
+      closeOverlays();
+      S = history.pop();
+      over = false; hintS = -1; anims = []; arriveAt = {}; readyAt = {};
+      if (cursor >= 0 && S.removed[cursor]) cursor = -1;
+      H.audio.click(); hud(); draw(); kick();
+    }
+    function hint() {
+      if (over) return;
+      var r = C.solve(L, S, 20000);
+      if (r.path && r.path.length) { hintS = r.path[0]; H.toast('光っているネジを外してみて'); kick(); }
+      else if (r.gaveUp) H.toast('考えきれませんでした。少し戻してみて');
+      else H.toast('この形からは解けません。戻してみて');
+    }
+    function closeOverlays() {
+      var os = document.querySelectorAll('.overlay');
+      for (var i = 0; i < os.length; i++) if (os[i].parentNode) os[i].parentNode.removeChild(os[i]);
+    }
+    function win() {
+      over = true;
+      cleared[lvIdx] = 1; store.set('cleared', cleared);
+      endTimer = setTimeout(function () {
+        endTimer = 0;
+        H.audio.win();
+        var btns = [];
+        if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の面', onClick: function () { load(lvIdx + 1); } });
+        btns.push({ label: 'もう一度', secondary: true, onClick: function () { load(lvIdx); } });
+        btns.push({ label: '面一覧', secondary: true, onClick: showList });
+        H.overlay({ title: lvIdx < C.LEVEL_COUNT - 1 ? '全部外れた!' : '全面クリア!', big: '面 ' + (lvIdx + 1),
+          html: L.screws.length + ' 本のネジを ' + S.moves + ' 手で外した', buttons: btns });
+      }, animEnd() + 250);
+    }
+    function stuck() {
+      over = true;
+      endTimer = setTimeout(function () {
+        endTimer = 0;
+        H.audio.bad();
+        H.overlay({ title: '手がありません', html: '置き場がいっぱいで、外せるネジがありません。',
+          buttons: [{ label: '↶ 戻す', onClick: undo }, { label: 'やり直し', secondary: true, onClick: restart }] });
+      }, animEnd() + 200);
+    }
+    function showList() {
+      H.levelPicker({ count: C.LEVEL_COUNT, current: lvIdx,
+        done: function (i) { return !!cleared[i]; },
+        onPick: function (i) { load(i); } });
+    }
+    function restart() { closeOverlays(); load(lvIdx); }
+
+    H.onTap(canvas, function (cx, cy) {
+      if (!L || over) return;
+      var p = st.toBase(cx, cy), x = p.x - LY.bx, y = p.y - LY.by;
+      var best = -1, bd = 1e9, bestCov = -1, bdc = 1e9;
+      for (var i = 0; i < L.screws.length; i++) {
+        if (S.removed[i]) continue;
+        var sc = L.screws[i], d = (sc.x - x) * (sc.x - x) + (sc.y - y) * (sc.y - y);
+        if (d > 22 * 22) continue;
+        if (C.free(L, S, i)) { if (d < bd) { bd = d; best = i; } }
+        else if (d < bdc) { bdc = d; bestCov = i; }
+      }
+      cursor = -1;
+      if (best >= 0) take(best);
+      else if (bestCov >= 0) take(bestCov);
+    });
+    // キーボード: 外せるネジを順に選ぶ
+    function moveCursor(dir) {
+      if (!L || over) return;
+      var fr = [];
+      for (var i = 0; i < L.screws.length; i++) if (C.free(L, S, i)) fr.push(i);
+      if (!fr.length) return;
+      fr.sort(function (a, b) { var A = L.screws[a], B = L.screws[b]; return (A.y - B.y) || (A.x - B.x); });
+      var k = fr.indexOf(cursor);
+      k = k < 0 ? 0 : (k + dir + fr.length) % fr.length;
+      cursor = fr[k]; kick();
+    }
+    $('btn-undo').addEventListener('click', undo);
+    $('btn-hint').addEventListener('click', hint);
+    $('btn-restart').addEventListener('click', restart);
+    $('btn-list').addEventListener('click', showList);
+    function enter() { if (cursor >= 0) take(cursor); }
+    H.keys({
+      ArrowLeft: function () { moveCursor(-1); }, ArrowUp: function () { moveCursor(-1); },
+      ArrowRight: function () { moveCursor(1); }, ArrowDown: function () { moveCursor(1); }, Tab: function () { moveCursor(1); },
+      ' ': enter, Enter: enter,
+      z: undo, Z: undo, h: hint, H: hint, r: restart, R: restart, l: showList, L: showList
+    });
+    window.resetGame = function () { restart(); };
+
+    window.__dbg = {
+      state: function () {
+        return JSON.stringify({ level: lvIdx + 1, total: L.screws.length, left: C.remaining(S), plates: L.plates.length,
+          fallen: S.fallen.filter(function (x) { return x; }).length, colors: L.colors,
+          boxes: S.slots.map(function (x) { return x ? CNAME[L.boxes[x.b]] + x.n : null; }), boxesLeft: L.boxes.length - S.qi,
+          buf: S.buf.map(function (s) { return CNAME[L.screws[s].c]; }), moves: S.moves, won: C.isWin(S), stuck: C.isStuck(L, S),
+          free: C.moves(L, S).length, layout: LY === LAYS.W ? 'wide' : 'tall' });
+      },
+      cmd: function (name, a) {
+        if (name === 'level') { closeOverlays(); load(a - 1); }
+        else if (name === 'tap') take(a);
+        else if (name === 'step') { var r1 = C.solve(L, S, 20000); if (r1.path && r1.path.length) take(r1.path[0]); }
+        else if (name === 'solve') {
+          var r = C.solve(L, S, 50000);
+          if (r.path) for (var i = 0; i < r.path.length; i++) take(r.path[i]);
+        }
+        else if (name === 'reset') restart();
+        else if (name === 'undo') undo();
+        else if (name === 'hint') hint();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        return this.state();
+      }
+    };
+
+    // 最初の配置を決めてから描く
+    L = C.makeLevel(lvIdx); S = C.newState(L);
+    setup();
+    load(lvIdx);
+    if (!store.get('seen', false)) {
+      store.set('seen', true);
+      H.overlay({ title: 'ネジ外し', html: 'ネジをタップして外し、同じ色の箱へ。<br>上に板がかぶったネジは外せない。<br>全部外せばクリア。', buttons: [{ label: 'はじめる' }] });
+    }
+  })();
+  </script>
+</body>
+</html>
