@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>寿司リズム - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 10px; image-rendering: pixelated; image-rendering: crisp-edges; }
+    .overlay .modes { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 340px; }
+    .overlay .modes .btn { width: 100%; display: flex; flex-direction: column; align-items: center; line-height: 1.25; padding: 8px 12px; min-height: 56px; }
+    .overlay .modes .btn small { font-size: 12px; font-weight: 400; opacity: 0.85; }
+    .overlay .rank { font-size: 30px; font-weight: 800; color: var(--warn); }
+    .overlay .opt { font-size: 14px; color: var(--muted); }
+    .overlay .opt label { margin: 0 6px; }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="寿司リズム" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">点<b id="score">0</b></span>
+      <span class="hud-item">コンボ<b id="combo">0</b></span>
+      <span class="hud-item">ベスト<b id="best">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>右の大将がネタを投げる。ネタがまな板の上の輪に来た瞬間にタップすると、まな板を叩いてシャリが飛び上がり、空中で合体する。</li>
+            <li>輪が小さくなって重なった時が叩きどき。ぴったりは「粋！」、少しずれると「よし」。</li>
+            <li>お客さんの注文（吹き出し）のネタだけ合わせる。ちがうネタは見送る。</li>
+            <li>ネタにワサビが付いていたら一緒に挟めて高得点。</li>
+            <li>ガリ（桃色）が来た時に叩くと減点。見送る。</li>
+            <li>お茶（湯のみ）がまな板の前を通る間に叩くと、こぼれて大きく減点。</li>
+            <li>皿は 2 貫、下駄は 6 貫、パックは 8 貫そろうと「ヘイお待ち！」で大きな点。</li>
+          </ul>
+          <h3>お店（モード）</h3>
+          <ul>
+            <li>回転寿司: やさしい。ゆっくり、注文のネタしか来ない。</li>
+            <li>スーパーの寿司: ふつう。盛り合わせのパック。時間がかかると半額シールが貼られて点が半分。</li>
+            <li>回らない寿司: むずかしい。速い、ちがうネタ・ワサビ・お茶が多い。</li>
+          </ul>
+          <h3>なぜネタが飛ぶのか</h3>
+          <ul>
+            <li>新鮮命、飛ぶほど新鮮。</li>
+            <li>威勢よくやるからにゃ、叩かなあかん。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 画面のどこでもタップ。</li>
+            <li>PC: Space か Enter。P で一時停止。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub;
+    var PW = 160, PH = 200;            // ピクセルの世界の大きさ
+    var BW = 320, BH = 400;            // 表示の論理サイズ(2 倍)
+    var store = H.store('sushi');
+    var best = store.get('best', {});  // {mode: 点}
+    var opt = store.get('opt', { mini: true, voice: true });
+
+    // ================= 絵(ピクセル) =================
+    var PAL = {
+      w: '#f4f1e8', W: '#ffffff', g: '#b9b9b9', G: '#6b6b6b', k: '#1a1a1a', r: '#d8333a', R: '#9b1c22',
+      p: '#f19aa6', P: '#ffd0d6', o: '#f08a24', O: '#ffb070', y: '#f7d03c', Y: '#c9a227', n: '#1f2a1f',
+      e: '#4caf50', E: '#2e7d32', l: '#a5d66b', b: '#8b5a2b', B: '#5a3a1a', h: '#d9a066', s: '#f1c27d',
+      S: '#d9a066', u: '#3d6fd8', U: '#1e3a7a', c: '#cfe8f0', t: '#b5c95a', x: '#cfd8dc', X: '#8fa4ad'
+    };
+    // 1 文字 = 1 ピクセル。img/<名前>.png があれば将来そちらに差し替えられるよう、名前で引く
+    var SPRITES = {
+      maguro: ['..rrrrrrrrrr..', '.rrprrrprrrpr.', 'rrrrrrrrrrrrrr', 'rprrrprrrprrrr', '.rrrrrrrrrrrr.', '..RRRRRRRRRR..'],
+      salmon: ['..oooooooooo..', '.oOWooOWooOWo.', 'oooooooooooooo', 'oOWooOWooOWooo', '.oooooooooooo.', '..OOOOOOOOOO..'],
+      ebi:    ['..oWoWoWoWo...', '.oWoWoWoWoWorr', 'oWoWoWoWoWoWrR', 'oWoWoWoWoWoWrr', '.oWoWoWoWoWo..', '..WWWWWWWWW...'],
+      tamago: ['..yyyynnyyyy..', '.yyyyynnyyyyy.', 'yyyyyynnyyyyyy', 'yYyyyynnyyyyYy', '.yyyyynnyyyyy.', '..YYYYnnYYYY..'],
+      ika:    ['..wwwwwwwwww..', '.wWwwwWwwwWww.', 'wwwwwwwwwwwwww', 'wgwwwgwwwgwwww', '.wwwwwwwwwwww.', '..gggggggggg..'],
+      ikura:  ['...OoOoOoOo...', '..oOoOoOoOoO..', '.OoOoOoOoOoOo.', 'oOoOoOoOoOoOoO', 'nnnnnnnnnnnnnn', 'nnnnnnnnnnnnnn'],
+      shari:  ['...wwwwwwww...', '..wwgwwwwgww..', '.wwwwwwgwwwww.', 'wwgwwwwwwwgwww', 'wwwwwgwwwwwwww', '.wwwwwwwwwwww.'],
+      wasabi: ['.eel.', 'eElee', 'eeeeE', '.eEe.'],
+      gari:   ['..PP...', '.PpPPp.', 'PpPPpPP', 'PPpPPp.', '.pPP...'],
+      tea:    ['..c..c..', '.c..c...', 'tttttttt', 'tEttttEt', 'ttEEEEtt', 'tttEEttt', 'tttEEttt', '.tttttt.', '..tttt..'],
+      tanpopo: ['.y.y.y.', 'yyyyyyy', '.yYYYy.', 'yyYoYyy', '.yYYYy.', 'yyyyyyy', '.y.y.y.'],
+      fish:   ['......XXXXXXXXX.......', '....XXxxxxxxxxxXX..XX.', '..XXxxxxxxxxxxxxxXXxX.', '.XkxxxxxxxxxxxxxxxxxX..', 'XxxxwwwwwwwwwwwwwwXxX.', '.XwwwwwwwwwwwwwwwwXXxX', '..XXwwwwwwwwwwwwXX..XX', '....XXXXXXXXXXXX......']
+    };
+    var NETA = ['maguro', 'salmon', 'ebi', 'tamago', 'ika', 'ikura'];
+    var NETA_JA = { maguro: 'まぐろ', salmon: 'サーモン', ebi: 'えび', tamago: 'たまご', ika: 'いか', ikura: 'いくら' };
+    var sprCache = {};
+    function sprite(name) {
+      if (sprCache[name]) return sprCache[name];
+      var rows = SPRITES[name], h = rows.length, w = rows[0].length;
+      var c = document.createElement('canvas'); c.width = w; c.height = h;
+      var x2 = c.getContext('2d');
+      for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+        var ch = rows[y].charAt(x);
+        if (ch !== '.' && PAL[ch]) { x2.fillStyle = PAL[ch]; x2.fillRect(x, y, 1, 1); }
+      }
+      sprCache[name] = c;
+      return c;
+    }
+
+    // ================= 画面 =================
+    var canvas = document.getElementById('cv');
+    var buf = document.createElement('canvas'); buf.width = PW; buf.height = PH;
+    var g = buf.getContext('2d');
+    var st = H.canvasStage(canvas, BW, BH, function (w, h, ctx, s) { ctx.scale(s, s); render(); });
+    function px(x, y, w, h, col) { g.fillStyle = col; g.fillRect(Math.round(x), Math.round(y), w, h); }
+    function spr(name, x, y, flip) {
+      var c = sprite(name);
+      if (flip) { g.save(); g.translate(Math.round(x) + c.width, Math.round(y)); g.scale(-1, 1); g.drawImage(c, 0, 0); g.restore(); }
+      else g.drawImage(c, Math.round(x), Math.round(y));
+    }
+
+    // ================= 音 =================
+    var AC = null, noiseBuf = null;
+    function audioOn() {
+      try {
+        if (!AC) {
+          var K = window.AudioContext || window.webkitAudioContext;
+          if (K) {
+            AC = new K();
+            noiseBuf = AC.createBuffer(1, AC.sampleRate * 0.3, AC.sampleRate);
+            var d = noiseBuf.getChannelData(0);
+            for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+          }
+        }
+        if (AC && AC.state === 'suspended') AC.resume();
+      } catch (e) { AC = null; }
+    }
+    function at(tSong) { // 曲の時刻(ms) → AudioContext の時刻
+      if (!AC) return 0;
+      return Math.max(AC.currentTime, audioBase + tSong / 1000);
+    }
+    var audioBase = 0;
+    function tone(when, freq, dur, type, vol, slideTo) {
+      if (!AC || H.audio.isMuted()) return;
+      try {
+        var o = AC.createOscillator(), gn = AC.createGain();
+        o.type = type || 'sine';
+        o.frequency.setValueAtTime(freq, when);
+        if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, when + dur);
+        gn.gain.setValueAtTime(vol || 0.1, when);
+        gn.gain.exponentialRampToValueAtTime(0.001, when + dur);
+        o.connect(gn); gn.connect(AC.destination);
+        o.start(when); o.stop(when + dur + 0.02);
+      } catch (e) { /* ignore */ }
+    }
+    function noise(when, dur, vol, hp) {
+      if (!AC || H.audio.isMuted()) return;
+      try {
+        var s = AC.createBufferSource(), gn = AC.createGain(), f = AC.createBiquadFilter();
+        s.buffer = noiseBuf; f.type = hp ? 'highpass' : 'lowpass'; f.frequency.value = hp || 900;
+        gn.gain.setValueAtTime(vol || 0.2, when); gn.gain.exponentialRampToValueAtTime(0.001, when + dur);
+        s.connect(f); f.connect(gn); gn.connect(AC.destination);
+        s.start(when); s.stop(when + dur + 0.02);
+      } catch (e) { /* ignore */ }
+    }
+    var SND = {
+      don: function (w) { tone(w, 110, 0.28, 'sine', 0.45, 45); noise(w, 0.06, 0.12); },
+      tsuku: function (w) { tone(w, 300, 0.06, 'triangle', 0.12, 200); },
+      hyoshi: function (w) { tone(w, 1900, 0.03, 'square', 0.05); tone(w + 0.07, 1900, 0.03, 'square', 0.05); },
+      shami: function (w, f) { tone(w, f, 0.22, 'sawtooth', 0.045, f * 0.995); tone(w, f * 2, 0.08, 'square', 0.015); },
+      slam: function (w) { noise(w, 0.18, 0.35); tone(w, 70, 0.2, 'sine', 0.4, 40); },
+      good: function (w) { tone(w, 1320, 0.07, 'square', 0.04); tone(w + 0.05, 1760, 0.09, 'square', 0.04); },
+      bad: function (w) { tone(w, 160, 0.25, 'sawtooth', 0.06, 90); },
+      splash: function (w) { noise(w, 0.4, 0.25, 1500); },
+      chime: function (w) { [784, 988, 1175, 1568].forEach(function (f, i) { tone(w + i * 0.08, f, 0.25, 'triangle', 0.06); }); }
+    };
+    function now() { return AC ? AC.currentTime : 0; }
+    function say(text) {
+      if (!opt.voice || H.audio.isMuted()) return;
+      try {
+        if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+        var u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = 1.25; u.pitch = 0.8; u.volume = 0.9;
+        window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+      } catch (e) { /* ignore */ }
+    }
+    // 都節音階(D Eb G A Bb)の三味線っぽい節
+    var SCALE = [293.7, 311.1, 392.0, 440.0, 466.2, 587.3, 622.3, 784.0];
+    var MELO = [0, -1, 2, -1, 3, 2, 0, -1, 4, -1, 3, 2, 1, -1, 0, -1, 5, -1, 4, 3, 2, -1, 3, -1, 2, 1, 0, -1, 2, -1, 0, -1];
+
+    // ================= モード =================
+    var MODES = {
+      kaiten: { name: '回転寿司', sub: 'やさしい・皿 2 貫', bpm: 96, travel: 2, slots: 2, orders: 6, kinds: 1, per: 2,
+        wrong: 0, gari: 0.25, wasabi: 0.25, tea: 0, eighth: false, cont: 'plate' },
+      super: { name: 'スーパーの寿司', sub: 'ふつう・パック 8 貫・半額に注意', bpm: 112, travel: 2, slots: 8, orders: 2, kinds: 4, per: 3,
+        wrong: 0.25, gari: 0.25, wasabi: 0.3, tea: 0.3, eighth: false, cont: 'pack', deadlineBars: 8 },
+      mawaranai: { name: '回らない寿司', sub: 'むずかしい・下駄 6 貫', bpm: 132, travel: 1.5, slots: 6, orders: 3, kinds: 3, per: 4,
+        wrong: 0.35, gari: 0.3, wasabi: 0.45, tea: 0.4, eighth: true, cont: 'geta' }
+    };
+    var JUDGE = { perfect: 50, good: 120 };  // ms(依頼文の既定値)
+
+    // ================= 状態 =================
+    var scene = 'op';        // op / select / mini / play / result
+    var mode = 'kaiten', M = MODES.kaiten;
+    var T = 0;               // 曲の時刻 ms
+    var beatMs = 600;
+    var events = [];         // 飛ぶ物
+    var bars = [];           // 生成済みの小節 {type}
+    var genBar = 0;          // 次に作る小節
+    var schedBeat = 0;       // 音を予約した拍
+    var score = 0, combo = 0, maxCombo = 0, prepBonus = 0;
+    var stats = { perfect: 0, good: 0, miss: 0, wrong: 0, gari: 0, spill: 0, wasabi: 0, served: 0 };
+    var orderIdx = 0, order = null;   // order: {need:{kind:n}, placed:[...], cust, startBar, discount}
+    var phase = 'count';     // count / call / play / serve / done
+    var texts = [];          // 掛け声・判定の文字 {s, x, y, t, dur, col, size}
+    var parts = [];          // 粒
+    var shariFly = null;     // {t, hitEv}
+    var flyNigiri = [];      // 皿へ飛ぶ握り
+    var slamT = -9999, auto = false, lastJudge = '', paused = false, rnd = Math.random;
+    var custLook = null;
+
+    function beatToT(b) { return b * beatMs; }
+    function curBeat() { return T / beatMs; }
+
+    // ================= 小節を作る =================
+    function needLeft() {
+      if (!order) return 0;
+      var n = 0;
+      for (var k in order.need) n += order.need[k];
+      return n;
+    }
+    function scheduledWanted() {
+      var n = 0;
+      events.forEach(function (e) { if (e.type === 'neta' && e.wanted && e.state === 'fly') n++; });
+      return n;
+    }
+    function newOrder() {
+      var need = {}, kinds = NETA.slice().sort(function () { return rnd() - 0.5; }).slice(0, M.kinds);
+      var each = M.slots / M.kinds;
+      kinds.forEach(function (k) { need[k] = each; });
+      order = { need: need, total: M.slots, placed: [], startBar: genBar, discount: false };
+      custLook = { hair: ['#2b1d0e', '#555', '#8b5a2b', '#111', '#c9c9c9'][Math.floor(rnd() * 5)], shirt: ['#3d6fd8', '#d8333a', '#4caf50', '#f08a24', '#9b59b6', '#e0e0e0'][Math.floor(rnd() * 6)], hat: rnd() < 0.3 };
+    }
+    function pickKind(wanted) {
+      var pool = [];
+      if (wanted) {
+        var sched = {};
+        events.forEach(function (e) { if (e.type === 'neta' && e.wanted && e.state === 'fly') sched[e.kind] = (sched[e.kind] || 0) + 1; });
+        for (var k in order.need) { var left = order.need[k] - (sched[k] || 0); for (var i = 0; i < left; i++) pool.push(k); }
+        if (!pool.length) for (var k2 in order.need) if (order.need[k2] > 0) pool.push(k2);
+      } else {
+        NETA.forEach(function (k) { if (!order.need[k]) pool.push(k); });
+      }
+      if (!pool.length) return null;
+      return pool[Math.floor(rnd() * pool.length)];
+    }
+    function genNextBar() {
+      var b = genBar, start = b * 4, type;
+      var prev = bars[b - 1];
+      if (b === 0) type = 'count';
+      else if (phase === 'done') type = 'end';
+      else if (prev && prev.type === 'count') type = 'call';
+      else if (prev && prev.type === 'serve') type = orderIdx >= M.orders ? 'end' : 'call';
+      else if (prev && prev.type === 'end') type = 'end';
+      else if (order && needLeft() === 0) type = 'serve';
+      else type = 'play';
+      bars[b] = { type: type };
+      if (type === 'call') { orderIdx++; newOrder(); order.startBar = b; }
+      if (type === 'play') genPlay(start);
+      genBar++;
+    }
+    function genPlay(startBeat) {
+      var slotsN = M.eighth ? 8 : 4, step = M.eighth ? 0.5 : 1;
+      var want = Math.max(0, needLeft() - scheduledWanted());
+      var nWanted = Math.min(want, M.per - (rnd() < 0.3 ? 1 : 0));
+      if (M.per <= 2) nWanted = Math.min(want, 2);
+      var free = [];
+      for (var i = 0; i < slotsN; i++) free.push(i);
+      if (!M.eighth) free = [0, 2, 1, 3];
+      // 拍の頭を優先
+      var take = function () {
+        if (!free.length) return -1;
+        var k = M.eighth ? Math.floor(rnd() * free.length) : 0;
+        if (M.eighth && rnd() < 0.6) { for (var j = 0; j < free.length; j++) if (free[j] % 2 === 0) { k = j; break; } }
+        return free.splice(k, 1)[0];
+      };
+      var placed = [];
+      function add(ev, slot) { ev.t = beatToT(startBeat + slot * step); ev.slot = slot; placed.push(slot); events.push(ev); }
+      for (i = 0; i < nWanted; i++) {
+        var s = take(); if (s < 0) break;
+        var kind = pickKind(true); if (!kind) break;
+        add({ type: 'neta', kind: kind, wanted: true, wasabi: rnd() < M.wasabi, state: 'fly' }, s);
+      }
+      if (M.wrong && rnd() < M.wrong * 1.6) {
+        var s2 = take(); var k2 = pickKind(false);
+        if (s2 >= 0 && k2) add({ type: 'neta', kind: k2, wanted: false, wasabi: false, state: 'fly' }, s2);
+      }
+      if (rnd() < M.gari) {
+        var s3 = take();
+        if (s3 >= 0) add({ type: 'gari', state: 'fly' }, s3);
+      }
+      // お茶: 何も来ない 1 拍分の窓。前後に物が無い所だけ
+      if (M.tea && rnd() < M.tea) {
+        for (var tb = 0; tb < 4; tb++) {
+          var lo = tb - 0.5, hi = tb + 1.5, clash = false;
+          placed.forEach(function (p) { var pb = p * step; if (pb >= lo && pb <= hi) clash = true; });
+          if (!clash) {
+            events.push({ type: 'tea', t: beatToT(startBeat + tb), t1: beatToT(startBeat + tb + 1), state: 'fly' });
+            break;
+          }
+        }
+      }
+    }
+
+    // ================= 開始 =================
+    function startPlay(m) {
+      mode = m; M = MODES[m];
+      beatMs = 60000 / M.bpm;
+      T = -beatMs * 2; events = []; bars = []; genBar = 0; schedBeat = -2;
+      score = prepBonus; combo = 0; maxCombo = 0; orderIdx = 0; order = null; phase = 'play';
+      stats = { perfect: 0, good: 0, miss: 0, wrong: 0, gari: 0, spill: 0, wasabi: 0, served: 0 };
+      texts = []; parts = []; flyNigiri = []; shariFly = null; lastJudge = '';
+      scene = 'play'; paused = false;
+      audioOn();
+      if (AC) audioBase = AC.currentTime - T / 1000 + 0.05;
+      genNextBar(); genNextBar();
+      hud();
+      loop.pause(false);
+    }
+    function hud() {
+      document.getElementById('score').textContent = Math.max(0, Math.round(score));
+      document.getElementById('combo').textContent = combo;
+      document.getElementById('best').textContent = best[mode] || 0;
+    }
+
+    // ================= 判定 =================
+    function addText(s, col, size, dur, y) {
+      texts.push({ s: s, col: col || '#fff', size: size || 30, t: T, dur: dur || 700, y: y || 150, x: 160 });
+    }
+    function burst(x, y, col, n, spd) {
+      for (var i = 0; i < n; i++) {
+        var a = rnd() * Math.PI * 2, v = (spd || 40) * (0.4 + rnd());
+        parts.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 20, life: 0.5 + rnd() * 0.4, col: col });
+      }
+    }
+    function teaActive(t) {
+      for (var i = 0; i < events.length; i++) {
+        var e = events[i];
+        if (e.type === 'tea' && e.state === 'fly' && t >= e.t - 60 && t <= e.t1 + 60) return e;
+      }
+      return null;
+    }
+    function hit(tapT) {
+      if (scene !== 'play' || paused) return;
+      // 前のコマからの経過も足して、叩いた瞬間の曲の時刻にする
+      var t = tapT === undefined ? T + Math.min(50, performance.now() - lastWall) : tapT;
+      var w = now();
+      SND.slam(w);
+      slamT = T;
+      burst(56, 150, '#d9a066', 8, 50);
+      // お茶
+      var tea = teaActive(t);
+      if (tea) {
+        tea.state = 'spill'; tea.spillT = T;
+        score -= 150; combo = 0; stats.spill++;
+        SND.splash(w); addText('お茶が！ −150', '#9fd8e8', 26, 900, 120);
+        burst(70, 140, '#b5c95a', 20, 70);
+        lastJudge = 'spill';
+        shariFly = { t: T, ev: null };
+        hud(); return;
+      }
+      // 一番近い飛んでいる物
+      var bestE = null, bestD = 1e9;
+      events.forEach(function (e) {
+        if ((e.type === 'neta' || e.type === 'gari') && e.state === 'fly') {
+          var d = Math.abs(e.t - t);
+          if (d < bestD) { bestD = d; bestE = e; }
+        }
+      });
+      if (!bestE || bestD > JUDGE.good) {
+        shariFly = { t: T, ev: null };
+        lastJudge = 'empty';
+        return;
+      }
+      var e = bestE;
+      shariFly = { t: T, ev: e };
+      if (e.type === 'gari') {
+        e.state = 'hit'; e.hitT = T;
+        score -= 50; combo = 0; stats.gari++;
+        SND.bad(w); addText('ガリ… −50', '#ffd0d6', 26);
+        lastJudge = 'gari'; hud(); return;
+      }
+      var stillNeed = order && order.need[e.kind] > 0;
+      if (!stillNeed) {
+        e.state = 'hit'; e.hitT = T; e.wrong = true;
+        score -= 30; combo = 0; stats.wrong++;
+        SND.bad(w); addText('ちがう！ −30', '#ff8a80', 26);
+        lastJudge = 'wrong'; hud(); return;
+      }
+      var perfect = bestD <= JUDGE.perfect;
+      e.state = 'hit'; e.hitT = T; e.judge = perfect ? 'perfect' : 'good';
+      combo++; maxCombo = Math.max(maxCombo, combo);
+      var base = perfect ? 100 : 50;
+      var mult = 1 + Math.min(combo, 40) / 40;
+      score += base * mult;
+      if (perfect) stats.perfect++; else stats.good++;
+      if (e.wasabi) { score += 100; stats.wasabi++; addText('ワサビ！ +100', '#a5d66b', 22, 800, 110); }
+      addText(perfect ? '粋！' : 'よし', perfect ? '#ffe066' : '#ffffff', perfect ? 40 : 30, 600, 170);
+      SND.good(w);
+      lastJudge = e.judge;
+      order.need[e.kind]--;
+      order.placed.push({ kind: e.kind, wasabi: e.wasabi });
+      flyNigiri.push({ kind: e.kind, t: T, from: [50, 100], idx: order.placed.length - 1 });
+      burst(56, 100, '#fff6b0', 10, 40);
+      if (needLeft() === 0) addText('シャリ！ ネタ！', '#ffffff', 22, 900, 70);
+      hud();
+    }
+
+    // ================= 進行 =================
+    function update(dt) {
+      if (scene === 'op') { opT += dt * 1000; if (opT > OP_LEN) endOp(); return; }
+      if (scene === 'mini') { updateMini(dt); return; }
+      if (scene !== 'play' || paused) return;
+      T += dt * 1000;
+      lastWall = performance.now();
+      // 小節を先に作る(投げる前に)
+      while (genBar * 4 * beatMs < T + beatMs * (M.travel + 4.5)) genNextBar();
+      // 音の予約
+      if (AC) {
+        while (beatToT(schedBeat) < T + 160) {
+          var b = schedBeat, bar = bars[Math.floor(b / 4)], w = at(beatToT(b)), inBar = ((b % 4) + 4) % 4;
+          if (b >= 0) {
+            if (inBar === 0) SND.hyoshi(w);
+            if (inBar % 2 === 0) SND.don(w); else SND.tsuku(w);
+            var mi = ((b * 2) % MELO.length + MELO.length) % MELO.length;
+            if (MELO[mi] >= 0) SND.shami(w, SCALE[MELO[mi]]);
+            if (MELO[mi + 1] >= 0 && M.bpm > 100) SND.shami(at(beatToT(b + 0.5)), SCALE[MELO[mi + 1]]);
+          }
+          schedBeat++;
+        }
+      }
+      // 小節の頭の出来事
+      var cb = Math.floor(curBeat()), barN = Math.floor(cb / 4);
+      if (cb !== lastBeat) {
+        lastBeat = cb;
+        var bar2 = bars[barN];
+        if (bar2 && cb % 4 === 0) onBarStart(barN, bar2);
+        if (bar2 && bar2.type === 'count') addText(cb % 2 === 0 ? 'どん' : 'つく', '#fff', 30, beatMs * 0.9, 130);
+        if (bar2 && bar2.type === 'call' && cb % 4 === 2 && order) addText(orderText(), '#ffe066', 22, beatMs * 2, 60);
+      }
+      // 見逃し
+      events.forEach(function (e) {
+        if (e.state !== 'fly') return;
+        if (e.type === 'tea') { if (T > e.t1 + beatMs * 1.5) e.state = 'gone'; return; }
+        if (T > e.t + JUDGE.good) {
+          e.state = 'miss'; e.missT = T;
+          if (e.type === 'neta' && order && order.need[e.kind] > 0) {
+            combo = 0; stats.miss++; addText('おっと', '#aaa', 24, 500, 170); hud();
+          }
+        }
+      });
+      events = events.filter(function (e) { return !((e.state === 'miss' || e.state === 'gone' || e.state === 'hit' || e.state === 'spill') && T - (e.missT || e.hitT || e.spillT || e.t1 || e.t) > 1500); });
+      // 粒
+      parts.forEach(function (p) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 160 * dt; p.life -= dt; });
+      parts = parts.filter(function (p) { return p.life > 0; });
+      texts = texts.filter(function (x) { return T - x.t < x.dur; });
+      // 半額
+      if (mode === 'super' && order && !order.discount && bars[barN] && bars[barN].type === 'play' && barN - order.startBar > M.deadlineBars) {
+        order.discount = true; addText('半額シール！', '#ff5252', 28, 1200, 90); SND.bad(now());
+      }
+      // おまかせ自動
+      if (auto) {
+        events.forEach(function (e) {
+          if (e.state === 'fly' && e.type === 'neta' && order && order.need[e.kind] > 0 && T >= e.t) hit(e.t);
+        });
+      }
+    }
+    var lastBeat = -99, lastWall = performance.now();
+    function orderText() {
+      var s = [];
+      for (var k in order.need) s.push(NETA_JA[k] + (M.kinds > 1 || M.slots > 1 ? '×' + order.need[k] : ''));
+      return s.join(' ') + '！';
+    }
+    function onBarStart(n, bar) {
+      if (bar.type === 'call') {
+        addText('へい らっしゃい！', '#ffffff', 26, beatMs * 2, 100);
+        say('へい、らっしゃい');
+      } else if (bar.type === 'serve') {
+        var bonus = M.cont === 'plate' ? 200 : M.cont === 'geta' ? 800 : 1000;
+        if (order && order.discount) bonus = Math.round(bonus / 2);
+        score += bonus; stats.served++;
+        addText('ヘイお待ち！ +' + bonus, '#ffe066', 30, beatMs * 3, 90);
+        say('へい、おまち');
+        SND.chime(now());
+        burst(80, 175, '#ffe066', 24, 60);
+        servedT = T;
+        hud();
+      } else if (bar.type === 'end') {
+        if (phase !== 'done') { phase = 'done'; setTimeout(finish, beatMs * 2); }
+      }
+    }
+    var servedT = -1e9;
+    function finish() {
+      if (scene !== 'play') return;
+      scene = 'result';
+      var s = Math.max(0, Math.round(score));
+      var prev = best[mode] || 0, newBest = s > prev;
+      if (newBest) { best[mode] = s; store.set('best', best); }
+      hud();
+      var hits = stats.perfect + stats.good, tot = hits + stats.miss;
+      var acc = tot ? hits / tot : 0;
+      var rank = acc >= 0.95 && stats.spill === 0 ? '特上' : acc >= 0.8 ? '上' : acc >= 0.6 ? '並' : '見習い';
+      var word = { '特上': '粋な握りだ。のれん分けしてやる', '上': 'いい腕だ。明日も頼むぞ', '並': 'まあまあだ。叩きが甘い', '見習い': 'まずは酢飯から出直しだ' }[rank];
+      SND.chime(now());
+      H.overlay({ title: 'ごちそうさま！', big: s + ' 点',
+        html: '<span class="rank">' + rank + '</span><br>大将「' + word + '」<br>粋 ' + stats.perfect + '　よし ' + stats.good + '　おっと ' + stats.miss +
+          '<br>ワサビ ' + stats.wasabi + '　ガリ ' + stats.gari + '　お茶 ' + stats.spill + '　最大コンボ ' + maxCombo + (newBest ? '<br>ベスト更新！' : ''),
+        buttons: [{ label: 'もう一度', onClick: function () { beginMode(mode); } }, { label: 'お店をえらぶ', secondary: true, onClick: showSelect }] });
+    }
+
+    // ================= 描画 =================
+    var t0 = performance.now();
+    function render() {
+      var ctx = st && st.ctx();
+      if (!ctx) return;
+      if (scene === 'op') drawOp();
+      else if (scene === 'mini') drawMini();
+      else drawPlay();
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, BW, BH);
+      ctx.drawImage(buf, 0, 0, BW, BH);
+      drawTexts(ctx);
+    }
+    function drawTexts(ctx) {
+      if (scene === 'op') { drawOpText(ctx); return; }
+      if (scene === 'mini') { drawMiniText(ctx); return; }
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // 注文の吹き出し
+      if (order && scene === 'play' && bars[Math.floor(curBeat() / 4)] && bars[Math.floor(curBeat() / 4)].type !== 'count') {
+        drawOrder(ctx);
+      }
+      texts.forEach(function (x) {
+        var k = (T - x.t) / x.dur, sc = k < 0.15 ? 0.6 + k / 0.15 * 0.5 : 1.1 - Math.min(0.1, (k - 0.15));
+        ctx.save();
+        ctx.globalAlpha = k > 0.75 ? Math.max(0, (1 - k) / 0.25) : 1;
+        ctx.translate(x.x, x.y - k * 14); ctx.scale(sc, sc);
+        ctx.font = '900 ' + x.size + 'px "Hiragino Mincho ProN", "Yu Mincho", serif';
+        ctx.lineWidth = 6; ctx.strokeStyle = '#1a1a1a'; ctx.strokeText(x.s, 0, 0);
+        ctx.fillStyle = '#b3261e'; ctx.fillText(x.s, 2, 2);
+        ctx.fillStyle = x.col; ctx.fillText(x.s, 0, 0);
+        ctx.restore();
+      });
+      if (paused) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, BW, BH);
+      }
+    }
+    function drawOrder(ctx) {
+      var x = 50, y = 18, w = 140, h = 30;
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x + 18, y + h); ctx.lineTo(x + 6, y + h + 10); ctx.lineTo(x + 10, y + h); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill();
+      ctx.imageSmoothingEnabled = false;
+      var i = 0, keys = Object.keys(order.need);
+      keys.forEach(function (k) {
+        var n = order.need[k];
+        ctx.globalAlpha = n > 0 ? 1 : 0.3;
+        ctx.drawImage(sprite(k), x + 6 + i * 34, y + 6, 28, 12);
+        ctx.fillStyle = '#222'; ctx.font = 'bold 11px system-ui, sans-serif';
+        ctx.fillText('×' + n, x + 20 + i * 34, y + 24);
+        ctx.globalAlpha = 1;
+        i++;
+      });
+      if (order.discount) { ctx.fillStyle = '#e53935'; ctx.font = 'bold 12px system-ui'; ctx.fillText('半額', x + w - 16, y + h - 8); }
+    }
+
+    function drawBackground() {
+      var t = T / 1000;
+      if (mode === 'kaiten') {
+        px(0, 0, PW, PH, '#f3e9d2');
+        for (var i = 0; i < PW; i += 16) px(i, 0, 8, 22, '#e8d9b5');
+        // 奥のレーン
+        px(0, 50, PW, 12, '#9aa5ad'); px(0, 50, PW, 2, '#c7d0d6'); px(0, 61, PW, 1, '#6b777e');
+        for (var j = 0; j < 7; j++) {
+          var lx = ((j * 30 - t * 18) % 210 + 210) % 210 - 30;
+          px(lx, 54, 16, 4, ['#e74c3c', '#f1c40f', '#3498db', '#2ecc71'][j % 4]); px(lx + 1, 52, 14, 2, '#fff');
+          spr(NETA[j % 6], lx + 1, 48);
+        }
+        px(0, 156, PW, 44, '#c8a26b'); px(0, 156, PW, 3, '#a07a46');
+      } else if (mode === 'mawaranai') {
+        px(0, 0, PW, PH, '#3a2a1a');
+        for (var k = 0; k < PW; k += 6) px(k, 0, 1, 70, '#2e2014');
+        // のれん
+        px(10, 0, 140, 22, '#1e3a7a');
+        for (var n = 0; n < 5; n++) px(10 + n * 28 + 27, 4, 1, 18, '#3a2a1a');
+        g.fillStyle = '#fff'; g.font = '10px serif'; g.textAlign = 'center'; g.fillText('鮨', 80, 16);
+        // 品書き札
+        for (var m2 = 0; m2 < 6; m2++) { px(14 + m2 * 22, 28, 12, 22, '#e8d9b5'); px(19 + m2 * 22, 31, 2, 16, '#333'); }
+        px(0, 156, PW, 44, '#d9a066'); px(0, 156, PW, 2, '#f0c890'); px(0, 158, PW, 1, '#b07a40');
+        for (var q = 0; q < PW; q += 40) px(q, 170, 30, 1, '#c48e52');
+      } else {
+        px(0, 0, PW, PH, '#e9eef0');
+        for (var a = 0; a < PW; a += 12) for (var b2 = 0; b2 < 60; b2 += 12) px(a, b2, 11, 11, '#f5f8f9');
+        px(20, 4, 50, 3, '#ffffff'); px(90, 4, 50, 3, '#ffffff');
+        // 値札
+        px(108, 30, 40, 14, '#ffeb3b'); g.fillStyle = '#d32f2f'; g.font = 'bold 8px sans-serif'; g.textAlign = 'center'; g.fillText('本日特売', 128, 40);
+        px(0, 60, PW, 6, '#90a4ae');
+        px(0, 156, PW, 44, '#b0bec5'); px(0, 156, PW, 2, '#eceff1');
+      }
+    }
+    function drawChef() {
+      // 大将(右)。投げる腕は拍で動く
+      var bx = 128, by = 70, cb = curBeat(), arm = (cb % 1) < 0.25 ? -6 : 0;
+      px(bx + 2, by + 18, 22, 40, '#f4f1e8');            // 白衣
+      px(bx + 2, by + 18, 22, 2, '#cfcfcf');
+      px(bx + 12, by + 20, 1, 30, '#cfcfcf');
+      px(bx + 5, by + 2, 16, 15, PAL.s);                  // 顔
+      px(bx + 4, by + 1, 18, 4, '#f4f1e8'); px(bx + 4, by + 4, 18, 2, '#1e3a7a'); // ねじり鉢巻
+      px(bx + 20, by + 3, 4, 3, '#1e3a7a');
+      px(bx + 8, by + 9, 2, 2, '#1a1a1a'); px(bx + 15, by + 9, 2, 2, '#1a1a1a'); // 目
+      px(bx + 7, by + 7, 4, 1, '#1a1a1a'); px(bx + 14, by + 7, 4, 1, '#1a1a1a'); // 眉
+      px(bx + 10, by + 13, 6, 1, '#9b1c22');               // 口
+      px(bx - 4, by + 22 + arm, 8, 5, '#f4f1e8'); px(bx - 8, by + 20 + arm, 5, 5, PAL.s); // 腕
+    }
+    function drawCustomer() {
+      if (!order || !custLook) return;
+      var x = 6, y = 66;
+      px(x + 2, y + 16, 22, 30, custLook.shirt);
+      px(x + 5, y, 16, 16, PAL.s);
+      px(x + 4, y - 2, 18, 5, custLook.hair);
+      if (custLook.hat) { px(x + 2, y - 4, 22, 3, '#555'); px(x + 6, y - 8, 14, 5, '#555'); }
+      px(x + 8, y + 7, 2, 2, '#1a1a1a'); px(x + 15, y + 7, 2, 2, '#1a1a1a');
+      px(x + 10, y + 12, 6, 1, '#9b1c22');
+    }
+    function arcPos(e, k) {
+      // 投げる所 → まな板の上の輪(56,98)。k=1 で到着。k>1 は左下へ落ちる
+      var sx = 124, sy = 88, ex = 50, ey = 96;
+      var x = sx + (ex - sx) * k, y = sy + (ey - sy) * k - Math.sin(Math.min(1, k) * Math.PI) * 46;
+      if (k > 1) { y = ey + (k - 1) * (k - 1) * 260 + (k - 1) * 40; }
+      return [x, y];
+    }
+    function drawPlay() {
+      drawBackground();
+      drawCustomer();
+      drawChef();
+      // まな板とシャリ
+      var shake = T - slamT < 120 ? (Math.random() * 2 - 1) * 2 : 0;
+      px(28 + shake, 148, 56, 8, '#e8c48a'); px(28 + shake, 155, 56, 2, '#b98a4e'); px(30 + shake, 157, 4, 3, '#8b5a2b'); px(78 + shake, 157, 4, 3, '#8b5a2b');
+      var sk = shariFly ? (T - shariFly.t) / 110 : 9;
+      if (sk < 1) { spr('shari', 50, 142 - sk * 46); }
+      else if (sk < 2.5 && shariFly && !shariFly.ev) { spr('shari', 50, 96 + (sk - 1) * 30); }
+      else if (!shariFly || sk > 2.5 || (shariFly && shariFly.ev)) { if (!shariFly || sk > 2.2) spr('shari', 50, 142); }
+      // 輪(目安)
+      events.forEach(function (e) {
+        if (e.state !== 'fly' || e.type === 'tea') return;
+        var dtA = e.t - T;
+        if (dtA < beatMs * 1.2 && dtA > -JUDGE.good) {
+          var r = 6 + Math.max(0, dtA / (beatMs * 1.2)) * 26;
+          var col = e.type === 'gari' ? '#ff9ec7' : (order && order.need[e.kind] > 0 ? '#ffe066' : '#9aa');
+          g.strokeStyle = col; g.lineWidth = 1;
+          g.beginPath(); g.arc(57, 99, r, 0, Math.PI * 2); g.stroke();
+        }
+      });
+      g.strokeStyle = 'rgba(255,255,255,0.6)'; g.beginPath(); g.arc(57, 99, 6, 0, Math.PI * 2); g.stroke();
+      // 飛ぶ物
+      events.forEach(function (e) {
+        if (e.type === 'tea') { drawTea(e); return; }
+        var travel = M.travel * beatMs, k = (T - (e.t - travel)) / travel;
+        if (k < 0) return;
+        if (e.state === 'hit' && !e.wrong && e.type === 'neta') return; // 握りになって皿へ
+        if (e.state === 'hit') { var kh = (T - e.hitT) / 400; spr(e.type === 'gari' ? 'gari' : e.kind, 50 - kh * 30, 96 + kh * kh * 80); return; }
+        var p = arcPos(e, k);
+        if (e.type === 'gari') spr('gari', p[0] + 3, p[1] + 1);
+        else {
+          spr(e.kind, p[0], p[1]);
+          if (e.wasabi) spr('wasabi', p[0] + 9, p[1] + 5);
+        }
+      });
+      // 皿へ飛ぶ握り
+      flyNigiri = flyNigiri.filter(function (f) { return T - f.t < 500; });
+      flyNigiri.forEach(function (f) {
+        var k = Math.min(1, (T - f.t) / 300), dst = slotPos(f.idx);
+        var x = 50 + (dst[0] - 50) * k, y = 96 + (dst[1] - 96) * k - Math.sin(k * Math.PI) * 14;
+        drawNigiri(f.kind, x, y);
+      });
+      drawContainer();
+      // 粒
+      parts.forEach(function (p) { px(p.x, p.y, 2, 2, p.col); });
+      // 拍の太鼓
+      var cbb = curBeat(), pulse = cbb >= 0 ? 1 - (cbb % 1) : 0;
+      px(140, 186, 14, 10, '#9b1c22'); px(141, 184, 12, 2, '#f4f1e8');
+      if (pulse > 0.7) px(139, 183, 16, 1, '#ffe066');
+    }
+    function drawTea(e) {
+      // 右から左へ滑る。窓の間はまな板の前
+      var span = e.t1 - e.t, k = (T - (e.t - beatMs * 1.5)) / (span + beatMs * 3);
+      if (k < 0 || k > 1.2) return;
+      var x = 160 - k * 180, y = 136;
+      if (e.state === 'spill') {
+        var ks = (T - e.spillT) / 500;
+        spr('tea', x, y + 3);
+        px(x - 10 - ks * 20, y + 10, 20 + ks * 30, 2, '#b5c95a');
+        return;
+      }
+      spr('tea', x, y);
+      if (T >= e.t - 60 && T <= e.t1 + 60) { px(x + 2, y - 8, 4, 5, '#ff5252'); px(x + 3, y - 2, 2, 1, '#ff5252'); }
+    }
+    function drawNigiri(kind, x, y) {
+      spr('shari', x, y + 4);
+      if (kind === 'ikura') { px(x, y + 4, 14, 5, PAL.n); }
+      spr(kind, x, y);
+    }
+    function slotPos(i) {
+      if (M.cont === 'plate') return [92 + i * 16, 170];
+      if (M.cont === 'geta') return [8 + (i % 6) * 15, 168];
+      return [6 + (i % 4) * 16, 166 + Math.floor(i / 4) * 12];
+    }
+    function drawContainer() {
+      var flash = T - servedT < beatMs * 3;
+      if (M.cont === 'plate') {
+        var col = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6', '#e67e22'][orderIdx % 6];
+        px(86, 180, 40, 6, '#fafafa'); px(88, 186, 36, 2, col); px(84, 179, 44, 1, '#ddd');
+      } else if (M.cont === 'geta') {
+        px(4, 178, 94, 8, '#c48e52'); px(4, 178, 94, 2, '#e0b07a'); px(10, 186, 6, 6, '#8b5a2b'); px(86, 186, 6, 6, '#8b5a2b');
+      } else {
+        px(2, 162, 70, 30, '#222'); px(4, 164, 66, 26, '#333');
+        if (order && order.discount) { px(52, 184, 18, 8, '#ffeb3b'); g.fillStyle = '#d32f2f'; g.font = 'bold 6px sans-serif'; g.textAlign = 'center'; g.fillText('半額', 61, 190); }
+      }
+      if (order) {
+        order.placed.forEach(function (p, i) {
+          var fly = false;
+          flyNigiri.forEach(function (f) { if (f.idx === i && T - f.t < 300) fly = true; });
+          if (fly) return;
+          var s = slotPos(i);
+          drawNigiri(p.kind, s[0], s[1]);
+        });
+      }
+      if (flash) {
+        var k = (T - servedT) / (beatMs * 3);
+        if (Math.floor(k * 10) % 2 === 0) px(0, 160, PW, 1, '#ffe066');
+      }
+    }
+
+    // ================= OP(無駄に壮大) =================
+    var opT = 0, OP_LEN = 9000, petals = [];
+    for (var pi = 0; pi < 40; pi++) petals.push({ x: Math.random() * 160, y: Math.random() * 200, s: 0.5 + Math.random(), ph: Math.random() * 6 });
+    function drawOp() {
+      var t = opT / 1000;
+      // 空(段々の夕焼け→朝焼け)
+      var sky = ['#1a1033', '#3b1d4a', '#7a2d4a', '#c2453f', '#ec7b3a', '#f7b267'];
+      for (var i = 0; i < 6; i++) px(0, i * 18, PW, 18, sky[i]);
+      // 日の出
+      var sunY = 100 - Math.min(1, t / 2.5) * 50;
+      g.fillStyle = '#ff3b2f'; g.beginPath(); g.arc(80, sunY, 26, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(255,240,200,0.25)'; g.beginPath(); g.arc(80, sunY, 34, 0, Math.PI * 2); g.fill();
+      // 富士
+      g.fillStyle = '#2b3a67'; g.beginPath(); g.moveTo(10, 120); g.lineTo(62, 62); g.lineTo(98, 62); g.lineTo(150, 120); g.fill();
+      g.fillStyle = '#f4f1e8'; g.beginPath(); g.moveTo(52, 74); g.lineTo(62, 62); g.lineTo(98, 62); g.lineTo(108, 74); g.lineTo(98, 70); g.lineTo(90, 76); g.lineTo(80, 69); g.lineTo(70, 76); g.lineTo(62, 70); g.fill();
+      // 波(北斎風)
+      px(0, 118, PW, 82, '#1e3a7a');
+      for (var w = 0; w < 6; w++) {
+        var wx = ((w * 34 - t * 14) % 200 + 200) % 200 - 30, wy = 128 + (w % 2) * 18;
+        g.strokeStyle = '#f4f1e8'; g.lineWidth = 2; g.beginPath(); g.arc(wx + 12, wy, 12, Math.PI, Math.PI * 1.9); g.stroke();
+        g.strokeStyle = '#3d6fd8'; g.lineWidth = 3; g.beginPath(); g.arc(wx + 12, wy + 4, 14, Math.PI * 1.05, Math.PI * 1.8); g.stroke();
+        for (var f = 0; f < 5; f++) px(wx + 2 + f * 5, wy - 11 + (f % 2), 2, 2, '#ffffff');
+      }
+      // 鳥居(2 秒から)
+      if (t > 2) {
+        var ty = 200 - Math.min(1, (t - 2) / 0.8) * 70;
+        px(30, ty - 64, 100, 7, '#d8333a'); px(26, ty - 66, 108, 3, '#1a1a1a'); px(38, ty - 50, 84, 5, '#d8333a');
+        px(46, ty - 57, 7, 64, '#d8333a'); px(107, ty - 57, 7, 64, '#d8333a'); px(76, ty - 57, 8, 8, '#d8333a');
+      }
+      // 桜吹雪
+      petals.forEach(function (p) {
+        var x = (p.x - t * 20 * p.s + Math.sin(t * 2 + p.ph) * 6) % 170; if (x < -5) x += 170;
+        var y = (p.y + t * 26 * p.s) % 205;
+        px(x, y, 2, 1, '#ffd0d6'); px(x + 1, y + 1, 1, 1, '#f19aa6');
+      });
+      // 太鼓(4〜6.5 秒)どんつくどんつく
+      if (t > 4 && t < 9) {
+        var dk = Math.floor((t - 4) / 0.38);
+        var sh = (t - 4) % 0.38 < 0.06 ? 2 : 0;
+        g.fillStyle = '#9b1c22'; g.beginPath(); g.ellipse(80 + sh, 178, 22, 12, 0, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#f4f1e8'; g.beginPath(); g.ellipse(80 + sh, 172, 20, 6, 0, 0, Math.PI * 2); g.fill();
+        px(68, 158 - (dk % 2) * 6, 3, 14, '#8b5a2b'); px(90, 158 - ((dk + 1) % 2) * 6, 3, 14, '#8b5a2b');
+      }
+    }
+    var opBeat = -1;
+    function drawOpText(ctx) {
+      var t = opT / 1000;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      function big(s, x, y, size, col, a) {
+        ctx.save(); ctx.globalAlpha = a === undefined ? 1 : a;
+        ctx.font = '900 ' + size + 'px "Hiragino Mincho ProN", "Yu Mincho", serif';
+        ctx.lineWidth = Math.max(4, size / 6); ctx.strokeStyle = '#1a1a1a'; ctx.strokeText(s, x, y);
+        ctx.fillStyle = '#b3261e'; ctx.fillText(s, x + 3, y + 3);
+        ctx.fillStyle = col; ctx.fillText(s, x, y);
+        ctx.restore();
+      }
+      if (t > 0.6 && t < 3.6) big('新鮮命', 160, 90, 40, '#ffffff', Math.min(1, (t - 0.6) * 2));
+      if (t > 1.6 && t < 3.6) big('飛ぶほど新鮮', 160, 140, 28, '#ffe066', Math.min(1, (t - 1.6) * 2));
+      if (t > 4 && t < 6.5) {
+        var dk = Math.floor((t - 4) / 0.38) % 4;
+        big(['どん', 'つく', 'どん', 'つく'][dk], 160, 250, 46, '#ffffff');
+        if (dk !== opBeat) { opBeat = dk; audioOn(); var w = now(); if (dk % 2 === 0) SND.don(w); else SND.tsuku(w); }
+      }
+      if (t > 6.2) {
+        var k = Math.min(1, (t - 6.2) / 0.5);
+        ctx.save(); ctx.translate(160, 120); ctx.scale(0.6 + k * 0.4, 0.6 + k * 0.4); ctx.rotate(-0.06);
+        big('寿司リズム', 0, 0, 52, '#ffffff', k);
+        ctx.restore();
+        big('威勢よくやるからにゃ 叩かなあかん', 160, 180, 15, '#ffe066', k);
+      }
+      if (Math.floor(t * 2) % 2 === 0) { ctx.font = 'bold 14px system-ui, sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('タップで とばす', 160, 384); }
+    }
+    function endOp() {
+      if (scene !== 'op') return;
+      scene = 'select';
+      store.set('opSeen', true);
+      showSelect();
+    }
+
+    // ================= お店えらび =================
+    var selEl = null;
+    function showSelect() {
+      scene = 'select';
+      if (selEl) selEl.close();
+      var html = '<span class="modes">';
+      ['kaiten', 'super', 'mawaranai'].forEach(function (k) {
+        html += '<button type="button" class="btn' + (k === 'kaiten' ? '' : ' secondary') + '" data-m="' + k + '">' + MODES[k].name + '<small>' + MODES[k].sub + '　ベスト ' + (best[k] || 0) + '</small></button>';
+      });
+      html += '</span><span class="opt"><label><input type="checkbox" id="opt-mini"' + (opt.mini ? ' checked' : '') + '> 仕込み(ミニゲーム)</label><label><input type="checkbox" id="opt-voice"' + (opt.voice ? ' checked' : '') + '> 掛け声の声</label></span>';
+      selEl = H.overlay({ title: 'どのお店で握る？', html: html, buttons: [{ label: 'OP をもう一度', secondary: true, onClick: function () { startOp(); } }] });
+      selEl.querySelectorAll('[data-m]').forEach(function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          opt.mini = document.getElementById('opt-mini').checked;
+          opt.voice = document.getElementById('opt-voice').checked;
+          store.set('opt', opt);
+          selEl.close(); selEl = null;
+          beginMode(b.getAttribute('data-m'));
+        });
+      });
+    }
+    function beginMode(m) {
+      audioOn();
+      mode = m; M = MODES[m]; hud();
+      if (opt.mini) startMini(m);
+      else { prepBonus = 0; startPlay(m); }
+    }
+    function startOp() { scene = 'op'; opT = 0; opBeat = -1; if (selEl) { selEl.close(); selEl = null; } }
+
+    // ================= 仕込み(ミニゲーム) =================
+    var mini = null; // {name, t, ...}
+    var miniCount = store.get('miniCount', 0);
+    function startMini(m, forced) {
+      var name = forced || (miniCount % 2 === 0 ? 'fish' : 'fan');
+      miniCount++; store.set('miniCount', miniCount);
+      scene = 'mini';
+      mini = { name: name, t: 0, mode: m, beats: [], cuts: 0, taps: [], inBand: 0, msg: '', msgT: -9, done: false, packs: [], placed: 0, score: 0 };
+      if (name === 'fish') { mini.bpm = 100; mini.beatMs = 600; for (var i = 0; i < 8; i++) mini.beats.push({ t: 1800 + i * 600, hit: false }); mini.len = 1800 + 8 * 600 + 800; }
+      if (name === 'fan') { mini.len = 7000; }
+      if (name === 'tanpopo') { mini.len = 99999; for (var j = 0; j < 8; j++) mini.packs.push({ x: 170 + j * 46, done: false }); }
+    }
+    function updateMini(dt) {
+      if (!mini) return;
+      mini.t += dt * 1000;
+      if (mini.name === 'fish') {
+        mini.beats.forEach(function (b, i) {
+          if (!b.sounded && mini.t >= b.t - 30) { b.sounded = true; audioOn(); tone(now() + 0.03, 880, 0.05, 'square', 0.05); }
+          if (!b.hit && !b.missed && mini.t > b.t + 160) { b.missed = true; mini.msg = 'ずれてる！'; mini.msgT = mini.t; }
+        });
+      }
+      if (mini.name === 'fan') {
+        mini.taps = mini.taps.filter(function (x) { return mini.t - x < 1000; });
+        var rate = mini.taps.length;
+        if (mini.t > 1500 && mini.t < mini.len) {
+          if (rate >= 5 && rate <= 9) { mini.inBand += dt; if (mini.t - mini.msgT > 1200) { mini.msg = 'その調子！'; mini.msgT = mini.t; } }
+          else if (mini.t - mini.msgT > 900) { mini.msg = rate < 5 ? '遅い！冷めちまう！' : '速すぎ！飛び散る！'; mini.msgT = mini.t; }
+        }
+      }
+      if (mini.name === 'tanpopo') {
+        mini.packs.forEach(function (p) { p.x -= dt * 38; });
+        if (mini.packs.every(function (p) { return p.x < -40; })) mini.t = mini.len + 1;
+      }
+      if (mini.t > mini.len && !mini.done) endMini();
+    }
+    function endMini() {
+      mini.done = true;
+      var ok, sc;
+      if (mini.name === 'fish') { mini.cuts = mini.beats.filter(function (b) { return b.hit; }).length; ok = mini.cuts >= 5; sc = mini.cuts * 30; }
+      else if (mini.name === 'fan') { var r = mini.inBand / 5.5; ok = r >= 0.5; sc = Math.round(Math.min(1, r) * 240); }
+      else { ok = true; sc = mini.placed * 5; }
+      if (!ok && mini.name !== 'tanpopo') {
+        var m = mini.mode;
+        H.overlay({ title: 'しくじった…', html: '大将「お前は今日、たんぽぽを乗せる係だ」', buttons: [{ label: 'はい…', onClick: function () { startMini(m, 'tanpopo'); } }] });
+        scene = 'select'; return;
+      }
+      prepBonus = sc;
+      var m2 = mini.mode;
+      var title = mini.name === 'tanpopo' ? 'たんぽぽ ' + mini.placed + ' 個' : '仕込み よし！';
+      H.overlay({ title: title, html: '仕込みの点 +' + sc + '<br>' + (mini.name === 'tanpopo' ? '大将「…まあいい。店に出ろ」' : '大将「よし、店を開けるぞ」'), buttons: [{ label: 'のれんを出す', onClick: function () { startPlay(m2); } }] });
+      scene = 'select';
+    }
+    function miniTap() {
+      if (!mini || mini.done) return;
+      audioOn();
+      if (mini.name === 'fish') {
+        var best2 = null, d = 1e9;
+        mini.beats.forEach(function (b) { if (!b.hit && !b.missed && Math.abs(b.t - mini.t) < d) { d = Math.abs(b.t - mini.t); best2 = b; } });
+        if (best2 && d < 150) { best2.hit = true; SND.slam(now()); mini.msg = d < 60 ? '見事！' : 'よし'; mini.msgT = mini.t; }
+        else { SND.bad(now()); mini.msg = '早い！'; mini.msgT = mini.t; }
+      } else if (mini.name === 'fan') {
+        mini.taps.push(mini.t); tone(now(), 500 + Math.random() * 200, 0.04, 'triangle', 0.04);
+      } else if (mini.name === 'tanpopo') {
+        mini.packs.forEach(function (p) { if (!p.done && p.x > 50 && p.x < 100) { p.done = true; mini.placed++; tone(now(), 990, 0.05, 'sine', 0.05); } });
+      }
+    }
+    function drawMini() {
+      px(0, 0, PW, PH, '#3a2a1a');
+      px(0, 120, PW, 80, '#d9a066'); px(0, 120, PW, 2, '#f0c890');
+      if (!mini) return;
+      if (mini.name === 'fish') {
+        px(20, 130, 120, 40, '#e8c48a'); px(20, 168, 120, 2, '#b98a4e');
+        var c = sprite('fish');
+        g.drawImage(c, 40, 132, 88, 32);
+        mini.beats.forEach(function (b, i) { if (b.hit) { px(50 + i * 9, 130, 2, 36, '#9b1c22'); } });
+        // 包丁(拍に合わせて上下)
+        var k = mini.beats.length ? ((mini.t - 1800) % 600) / 600 : 0;
+        var y = mini.t < 1800 ? 100 : 108 - Math.abs(Math.sin(k * Math.PI)) * 30;
+        px(118, y, 4, 24, '#cfd8dc'); px(116, y - 10, 8, 10, '#5a3a1a');
+        // 拍の点
+        mini.beats.forEach(function (b, i) { px(26 + i * 15, 186, 10, 6, b.hit ? '#4caf50' : (b.missed ? '#e53935' : '#f4f1e8')); });
+      } else if (mini.name === 'fan') {
+        g.fillStyle = '#b07a40'; g.beginPath(); g.ellipse(80, 150, 56, 18, 0, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#f4f1e8'; g.beginPath(); g.ellipse(80, 146, 50, 13, 0, 0, Math.PI * 2); g.fill();
+        for (var i = 0; i < 30; i++) px(36 + (i * 37) % 88, 140 + (i * 13) % 12, 2, 1, '#cfcfcf');
+        var sw = mini.taps.length ? Math.sin(mini.t / 40) * 10 : 0;
+        px(100 + sw, 84, 30, 26, '#d8333a'); px(112 + sw, 110, 4, 22, '#8b5a2b');
+        var rate = mini.taps.length;
+        px(20, 20, 120, 10, '#222'); px(20 + 5 / 12 * 120, 20, 4 / 12 * 120, 10, '#2e7d32');
+        px(20 + Math.min(12, rate) / 12 * 120 - 1, 17, 3, 16, '#ffe066');
+        px(20, 34, 120 * Math.min(1, mini.inBand / 5.5), 4, '#4caf50');
+      } else {
+        px(0, 140, PW, 20, '#90a4ae');
+        px(70, 96, 12, 18, '#f4f1e8'); px(73, 114, 6, 6, '#b0bec5');
+        mini.packs.forEach(function (p) {
+          px(p.x, 142, 36, 14, '#222'); px(p.x + 2, 144, 32, 10, '#d8333a'); px(p.x + 8, 146, 20, 6, '#f19aa6');
+          if (p.done) spr('tanpopo', p.x + 14, 140);
+        });
+      }
+    }
+    function drawMiniText(ctx) {
+      if (!mini) return;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '900 22px "Hiragino Mincho ProN", serif';
+      ctx.fillStyle = '#ffe066'; ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 5;
+      var title = mini.name === 'fish' ? '仕込み: 魚を下ろす' : mini.name === 'fan' ? '仕込み: 酢飯を仰ぐ' : 'たんぽぽを乗せる係';
+      ctx.strokeText(title, 160, 110); ctx.fillText(title, 160, 110);
+      ctx.font = 'bold 14px system-ui, sans-serif'; ctx.fillStyle = '#fff';
+      var how = mini.name === 'fish' ? '音に合わせて 8 回タップ' : mini.name === 'fan' ? '速すぎず遅すぎず 連打（緑の帯）' : '真下に来たパックをタップ';
+      ctx.fillText(how, 160, 140);
+      if (mini.name === 'tanpopo') { ctx.fillText('…', 160, 200); }
+      if (mini.msg && mini.t - mini.msgT < 800) {
+        ctx.font = '900 30px "Hiragino Mincho ProN", serif';
+        ctx.strokeText('大将「' + mini.msg + '」', 160, 196); ctx.fillStyle = '#fff'; ctx.fillText('大将「' + mini.msg + '」', 160, 196);
+      }
+      if (mini.name === 'fish' && mini.t < 1800) { ctx.font = '900 40px serif'; ctx.fillStyle = '#fff'; ctx.fillText(String(Math.ceil((1800 - mini.t) / 600)), 160, 240); }
+    }
+
+    // ================= 入力 =================
+    function onTap() {
+      audioOn();
+      if (scene === 'op') { endOp(); return; }
+      if (scene === 'mini') { miniTap(); return; }
+      if (scene === 'play') {
+        if (paused) { resume(); return; }
+        hit();
+      }
+    }
+    H.onTap(canvas, function () { onTap(); });
+    H.keys({ ' ': onTap, Enter: onTap, p: function () { togglePause(); }, P: function () { togglePause(); } });
+    function pause() {
+      if (scene !== 'play' || paused) return;
+      paused = true;
+      H.overlay({ title: '一時停止', html: '大将「早く戻ってこい」', buttons: [{ label: '再開', onClick: resume }, { label: 'お店をえらぶ', secondary: true, onClick: function () { paused = false; showSelect(); } }] });
+    }
+    function resume() {
+      if (!paused) return;
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      paused = false;
+      if (AC) audioBase = AC.currentTime - T / 1000 + 0.05;
+    }
+    function togglePause() { if (paused) resume(); else pause(); }
+    H.pauseWhenHidden(function () { pause(); });
+
+    var loop = H.loop(function (dt) { update(dt); }, render);
+    loop.start();
+
+    window.resetGame = function () {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      paused = false; mini = null;
+      showSelect();
+    };
+    window.__dbg = {
+      state: function () {
+        return JSON.stringify({ scene: scene, mode: mode, beat: Math.floor(curBeat()), T: Math.round(T), score: Math.round(score), combo: combo, last: lastJudge, paused: paused,
+          order: order ? { need: order.need, placed: order.placed.length, discount: order.discount } : null, orderIdx: orderIdx,
+          flying: events.filter(function (e) { return e.state === 'fly'; }).map(function (e) { return e.type + (e.kind ? ':' + e.kind : '') + '@' + Math.round(e.t); }),
+          stats: stats, mini: mini ? { name: mini.name, t: Math.round(mini.t) } : null });
+      },
+      cmd: function (name, a) {
+        if (name === 'start') { document.querySelectorAll('.overlay').forEach(function (o) { o.remove(); }); prepBonus = 0; startPlay(a || 'kaiten'); }
+        else if (name === 'hit') onTap();
+        else if (name === 'skipOp') endOp();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        else if (name === 'auto') auto = a !== false;
+        else if (name === 'minigame') { document.querySelectorAll('.overlay').forEach(function (o) { o.remove(); }); startMini(mode, a); }
+        else if (name === 'step') { for (var i = 0; i < (a || 1); i++) update(1 / 60); render(); }
+        return this.state();
+      }
+    };
+    if (store.get('opSeen', false)) { scene = 'select'; showSelect(); }
+  })();
+  </script>
+</body>
+</html>
