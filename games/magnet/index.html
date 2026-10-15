@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>磁石つなぎ - ゲーム集</title>
+  <link rel="stylesheet" href="../css/common.css">
+  <style>
+    .stage { touch-action: none; }
+    .stage-canvas { border-radius: 12px; }
+    .ctl-btn.sm { min-width: 64px; font-size: 15px; padding: 0 10px; }
+    .overlay .stars { font-size: 34px; color: var(--warn); letter-spacing: 4px; }
+    .overlay .stars .off { color: rgba(255,255,255,0.18); }
+  </style>
+</head>
+<body class="game">
+  <div class="app">
+    <header class="app-bar" data-title="磁石つなぎ" data-back="../index.html" data-reset></header>
+    <div class="app-hud">
+      <span class="hud-item">面<b id="level">1</b></span>
+      <span class="hud-item">手数<b id="moves">0</b></span>
+      <span class="hud-item">目安<b id="par">0</b></span>
+      <span class="hud-item">つながり<b id="joined">0</b></span>
+    </div>
+    <main class="app-main">
+      <div class="stage" id="stage">
+        <canvas class="stage-canvas" id="cv"></canvas>
+      </div>
+      <div id="help-sheet" class="sheet hidden">
+        <div class="sheet-body">
+          <h3>遊び方</h3>
+          <ul>
+            <li>盤の磁石をタップすると右に 90 度まわる。</li>
+            <li>赤が N、青が S。となりの磁石と N と S が向き合うと「カチッ」と吸い付いて光る。</li>
+            <li>N と N、S と S が向き合うと反発してふるえる。何もない所を向いた端もだめ。</li>
+            <li>全部の磁石の端が吸い付いたらクリア。磁石は鎖か輪になる。</li>
+            <li>灰色の枠の磁石は固定で、まわせない（正しい向きの手がかり）。</li>
+            <li>目安の手数以内なら星 3 つ。</li>
+          </ul>
+          <h3>操作</h3>
+          <ul>
+            <li>スマホ: 磁石をタップ。下のボタンで戻す・ヒント・やり直し・面一覧。</li>
+            <li>PC: クリック、または矢印キーで選んで Space。Z = 戻す、H = ヒント、R = やり直し、L = 面一覧。</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+    <div class="app-controls">
+      <button type="button" class="ctl-btn sm" id="btn-undo">↶ 戻す</button>
+      <button type="button" class="ctl-btn sm" id="btn-hint">💡 ヒント</button>
+      <button type="button" class="ctl-btn sm" id="btn-restart">やり直し</button>
+      <button type="button" class="ctl-btn sm" id="btn-list">面一覧</button>
+    </div>
+  </div>
+  <script src="../js/common.js"></script>
+  <script>
+  /*CORE*/
+  // 盤面の論理。node の確認(check.mjs)もこのブロックをそのまま使う。
+  var MagnetCore = (function () {
+    'use strict';
+    var DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0]; // 0 上 1 右 2 下 3 左
+    var LEVEL_COUNT = 40;
+
+    function mulberry(seed) {
+      var a = (seed >>> 0) || 1;
+      return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function sideOf(ax, ay, bx, by) {
+      for (var s = 0; s < 4; s++) if (ax + DX[s] === bx && ay + DY[s] === by) return s;
+      return -1;
+    }
+
+    // 偶数×偶数の盤に、全マスを通る輪を作る(半分の大きさの格子の全域木の外周をなぞる)
+    function hamCycle(W, H, rnd) {
+      var bw = W / 2, bh = H / 2, n = bw * bh, i;
+      var inTree = new Array(n), edges = [], front = [];
+      function addFront(b) {
+        var x = b % bw, y = (b / bw) | 0;
+        if (x > 0) front.push([b, b - 1]);
+        if (x < bw - 1) front.push([b, b + 1]);
+        if (y > 0) front.push([b, b - bw]);
+        if (y < bh - 1) front.push([b, b + bw]);
+      }
+      var start = Math.floor(rnd() * n);
+      inTree[start] = true; addFront(start);
+      while (front.length) {
+        var k = Math.floor(rnd() * front.length), e = front[k];
+        front.splice(k, 1);
+        if (inTree[e[1]]) continue;
+        inTree[e[1]] = true; edges.push(e); addFront(e[1]);
+      }
+      // マスごとのつながり(最大 2 本)
+      var adj = {};
+      function key(x, y) { return y * W + x; }
+      function link(a, b) { (adj[a] = adj[a] || {})[b] = true; (adj[b] = adj[b] || {})[a] = true; }
+      function unlink(a, b) { if (adj[a]) delete adj[a][b]; if (adj[b]) delete adj[b][a]; }
+      for (i = 0; i < n; i++) {
+        var bx = (i % bw) * 2, by = ((i / bw) | 0) * 2;
+        var tl = key(bx, by), tr = key(bx + 1, by), br = key(bx + 1, by + 1), bl = key(bx, by + 1);
+        link(tl, tr); link(tr, br); link(br, bl); link(bl, tl);
+      }
+      edges.forEach(function (e) {
+        var a = Math.min(e[0], e[1]), b = Math.max(e[0], e[1]);
+        var ax = (a % bw) * 2, ay = ((a / bw) | 0) * 2, bx2 = (b % bw) * 2, by2 = ((b / bw) | 0) * 2;
+        if (b === a + 1) { // 右どなり
+          unlink(key(ax + 1, ay), key(ax + 1, ay + 1)); unlink(key(bx2, by2), key(bx2, by2 + 1));
+          link(key(ax + 1, ay), key(bx2, by2)); link(key(ax + 1, ay + 1), key(bx2, by2 + 1));
+        } else { // 下どなり
+          unlink(key(ax, ay + 1), key(ax + 1, ay + 1)); unlink(key(bx2, by2), key(bx2 + 1, by2));
+          link(key(ax, ay + 1), key(bx2, by2)); link(key(ax + 1, ay + 1), key(bx2 + 1, by2));
+        }
+      });
+      // 一周たどる
+      var cyc = [0], prev = -1, cur = 0;
+      for (i = 1; i < W * H; i++) {
+        var nb = Object.keys(adj[cur]).map(Number), nx = nb[0] === prev ? nb[1] : nb[0];
+        prev = cur; cur = nx; cyc.push(cur);
+      }
+      return cyc.map(function (c) { return [c % W, (c / W) | 0]; });
+    }
+
+    // 道(マスの並び)から磁石を置く。進む向きに 入る端=S、出る端=N
+    function placePath(tiles, W, path, loop) {
+      var L = path.length;
+      for (var i = 0; i < L; i++) {
+        var p = path[i], ends = [];
+        var prev = i > 0 ? path[i - 1] : (loop ? path[L - 1] : null);
+        var next = i < L - 1 ? path[i + 1] : (loop ? path[0] : null);
+        if (prev) ends.push({ s: sideOf(p[0], p[1], prev[0], prev[1]), p: 'S' });
+        if (next) ends.push({ s: sideOf(p[0], p[1], next[0], next[1]), p: 'N' });
+        tiles[p[1] * W + p[0]] = { ends: ends, rot: 0, fixed: false };
+      }
+    }
+
+    function params(lv) {
+      // [W, H, 種類, 鎖の長さ(配列)/輪, 固定数]
+      if (lv < 4) return null;
+      if (lv < 9) return [[4, 4, 'c', [8]], [4, 4, 'c', [10]], [4, 4, 'o', null, 0], [4, 4, 'c', [12]], [4, 4, 'c', [6, 6]]][lv - 4];
+      if (lv < 16) return [[4, 6, 'c', [14]], [4, 6, 'o', null, 4], [4, 6, 'c', [9, 9]], [6, 4, 'c', [18]], [4, 6, 'c', [20]], [6, 4, 'c', [10, 10]], [4, 6, 'o', null, 2]][lv - 9];
+      if (lv < 28) {
+        var t = [[6, 6, 'c', [20], 2], [6, 6, 'c', [12, 12], 2], [6, 6, 'o', null, 6], [6, 6, 'c', [26], 2], [6, 6, 'c', [10, 10, 10], 2], [6, 6, 'c', [30], 3],
+                 [6, 6, 'o', null, 4], [6, 6, 'c', [16, 16], 2], [6, 6, 'c', [33], 3], [6, 6, 'c', [11, 11, 11], 2], [6, 6, 'o', null, 3], [6, 6, 'c', [34], 2]];
+        return t[lv - 16];
+      }
+      var u = [[6, 8, 'c', [30], 4], [6, 8, 'c', [20, 20], 4], [6, 8, 'o', null, 8], [6, 8, 'c', [38], 4], [6, 8, 'c', [14, 14, 14], 3], [6, 8, 'c', [44], 4],
+               [6, 8, 'o', null, 6], [6, 8, 'c', [22, 22], 3], [6, 8, 'c', [46], 3], [6, 8, 'c', [11, 11, 11, 11], 3], [6, 8, 'o', null, 5], [6, 8, 'c', [30, 15], 3]];
+      return u[lv - 28];
+    }
+
+    // 面 lv(0 始まり)を作る。返り値 {W,H,tiles:[null|{ends,rot,fixed}]}。rot=0 が答えの向き
+    function makeLevel(lv) {
+      var rnd = mulberry(9001 + lv * 7919), W, H, tiles, i;
+      if (lv === 0) {
+        W = 3; H = 1; tiles = new Array(3);
+        placePath(tiles, W, [[0, 0], [1, 0], [2, 0]], false);
+        tiles[0].fixed = true; tiles[2].fixed = true; tiles[1].rot = 2;
+        return { W: W, H: H, tiles: tiles, lv: lv };
+      }
+      if (lv === 1) {
+        W = 3; H = 2; tiles = new Array(6);
+        placePath(tiles, W, [[0, 0], [1, 0], [2, 0], [2, 1], [1, 1], [0, 1]], false);
+        tiles[0].fixed = true; tiles[1].rot = 2; tiles[2].rot = 1; tiles[3].rot = 3; tiles[4].rot = 1; tiles[5].rot = 0;
+        return { W: W, H: H, tiles: tiles, lv: lv };
+      }
+      if (lv === 2) {
+        W = 2; H = 2; tiles = new Array(4);
+        placePath(tiles, W, [[0, 0], [1, 0], [1, 1], [0, 1]], true);
+        tiles[0].rot = 1; tiles[1].rot = 2; tiles[2].rot = 0; tiles[3].rot = 3;
+        return { W: W, H: H, tiles: tiles, lv: lv };
+      }
+      if (lv === 3) {
+        W = 4; H = 2; tiles = new Array(8);
+        placePath(tiles, W, [[0, 0], [1, 0], [2, 0], [3, 0], [3, 1], [2, 1], [1, 1], [0, 1]], true);
+        for (i = 0; i < 8; i++) tiles[i].rot = [1, 2, 3, 0, 2, 1, 3, 2][i];
+        return { W: W, H: H, tiles: tiles, lv: lv };
+      }
+      var pr = params(lv);
+      W = pr[0]; H = pr[1];
+      var cyc = hamCycle(W, H, rnd);
+      tiles = new Array(W * H);
+      if (pr[2] === 'o') {
+        placePath(tiles, W, cyc, true);
+      } else {
+        var segs = pr[3], total = 0;
+        segs.forEach(function (s) { total += s; });
+        var gaps = W * H - total, off = Math.floor(rnd() * cyc.length), pos = 0;
+        segs.forEach(function (len, si) {
+          var room = gaps - (segs.length - 1 - si); // 残りの区切りに 1 マスずつ残す
+          var g = si === 0 ? 0 : 1 + Math.floor(rnd() * Math.max(1, Math.min(3, room)));
+          gaps -= g; pos += g;
+          var seg = [];
+          for (var k = 0; k < len; k++) seg.push(cyc[(off + pos + k) % cyc.length]);
+          if (rnd() < 0.5) seg.reverse();
+          placePath(tiles, W, seg, false);
+          pos += len;
+        });
+      }
+      // 固定タイル
+      var cells = [];
+      for (i = 0; i < tiles.length; i++) if (tiles[i]) cells.push(i);
+      var nf = pr[4] || 0;
+      for (i = 0; i < nf && cells.length; i++) {
+        var k2 = Math.floor(rnd() * cells.length);
+        tiles[cells[k2]].fixed = true; cells.splice(k2, 1);
+      }
+      // 崩す(固定以外を回す)。ほとんどがずれているように
+      var lvObj = { W: W, H: H, tiles: tiles, lv: lv };
+      for (var tries = 0; tries < 50; tries++) {
+        cells.forEach(function (c) { tiles[c].rot = Math.floor(rnd() * 4); });
+        var wrong = 0;
+        cells.forEach(function (c) { if (tiles[c].rot !== 0) wrong++; });
+        if (wrong >= cells.length * 0.6 && !isSolved(lvObj)) break;
+      }
+      return lvObj;
+    }
+
+    function endAt(t, side, rot) {
+      if (!t) return null;
+      var r = rot === undefined ? t.rot : rot;
+      for (var i = 0; i < t.ends.length; i++) if ((t.ends[i].s + r) % 4 === side) return t.ends[i].p;
+      return null;
+    }
+    function tileAt(lvObj, x, y) {
+      if (x < 0 || y < 0 || x >= lvObj.W || y >= lvObj.H) return null;
+      return lvObj.tiles[y * lvObj.W + x] || null;
+    }
+    // 端の状態: 'a' 吸い付き / 'r' 反発 / 'o' 空き
+    function endState(lvObj, x, y, side) {
+      var t = tileAt(lvObj, x, y), p = endAt(t, side);
+      if (!p) return null;
+      var n = tileAt(lvObj, x + DX[side], y + DY[side]), q = endAt(n, (side + 2) % 4);
+      if (!q) return 'o';
+      return q !== p ? 'a' : 'r';
+    }
+    function count(lvObj) {
+      var a = 0, all = 0, r = 0;
+      for (var y = 0; y < lvObj.H; y++) for (var x = 0; x < lvObj.W; x++) {
+        var t = tileAt(lvObj, x, y);
+        if (!t) continue;
+        for (var s = 0; s < 4; s++) {
+          var st = endState(lvObj, x, y, s);
+          if (!st) continue;
+          all++;
+          if (st === 'a') a++;
+          if (st === 'r') r++;
+        }
+      }
+      return { attract: a, ends: all, repel: r };
+    }
+    function isSolved(lvObj) { var c = count(lvObj); return c.attract === c.ends; }
+
+    // 解く: 今の向きに近い順に試す。返り値 [rot...] か null。limit 個まで数える
+    function solve(lvObj, limit) {
+      var W = lvObj.W, H = lvObj.H, idx = [], i;
+      for (i = 0; i < W * H; i++) if (lvObj.tiles[i]) idx.push(i);
+      var rots = new Array(W * H), found = null, n = 0, nodes = 0;
+      limit = limit || 1;
+      function ok(c, r) {
+        var x = c % W, y = (c / W) | 0, t = lvObj.tiles[c];
+        for (var s = 0; s < 4; s++) {
+          var p = endAt(t, s, r), nx = x + DX[s], ny = y + DY[s];
+          var nt = (nx < 0 || ny < 0 || nx >= W || ny >= H) ? null : lvObj.tiles[ny * W + nx];
+          if (!nt) { if (p) return false; continue; }
+          var nc = ny * W + nx;
+          if (rots[nc] === undefined) continue;
+          var q = endAt(nt, (s + 2) % 4, rots[nc]);
+          if (!p && !q) continue;
+          if (!p || !q || p === q) return false;
+        }
+        return true;
+      }
+      function rec(k) {
+        if (n >= limit || ++nodes > 400000) return;
+        if (k === idx.length) { n++; if (!found) found = rots.slice(); return; }
+        var c = idx[k], t = lvObj.tiles[c];
+        for (var j = 0; j < 4; j++) {
+          var r = (t.rot + j) % 4;
+          if (t.fixed && j > 0) break;
+          if (ok(c, r)) { rots[c] = r; rec(k + 1); rots[c] = undefined; }
+        }
+      }
+      rec(0);
+      return { rots: found, count: n, nodes: nodes };
+    }
+    function par(lvObj) {
+      var s = 0;
+      lvObj.tiles.forEach(function (t) { if (t && !t.fixed) s += (4 - t.rot) % 4; });
+      return s;
+    }
+    return { LEVEL_COUNT: LEVEL_COUNT, DX: DX, DY: DY, makeLevel: makeLevel, endAt: endAt, endState: endState, tileAt: tileAt,
+             count: count, isSolved: isSolved, solve: solve, par: par };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = MagnetCore;
+  /*CORE-END*/
+  </script>
+  <script>
+  (function () {
+    'use strict';
+    var H = window.GameHub, C = MagnetCore, DX = C.DX, DY = C.DY;
+    var store = H.store('magnet');
+    var cleared = store.get('cleared', {});   // {lv: 星}
+    var lvIdx = Math.min(store.get('last', 0), C.LEVEL_COUNT - 1);
+    var L, moves, history, parN, won, cursor = null, hintCell = -1;
+    var anims = [];   // {type:'rot'|'shake'|'pulse', cell, t, dur, ...}
+    var winT = -1;
+    var CELL = 100, PAD = 16;
+    var canvas = document.getElementById('cv'), st = null, baseW = 300, baseH = 300;
+
+    function $(id) { return document.getElementById(id); }
+
+    function layout() {
+      baseW = L.W * CELL + PAD * 2; baseH = L.H * CELL + PAD * 2;
+      if (!st) st = H.canvasStage(canvas, baseW, baseH, function (w, h, ctx, s) { ctx.scale(s, s); draw(); });
+      else st.setBase(baseW, baseH);
+    }
+
+    function load(i) {
+      lvIdx = i; store.set('last', i);
+      L = C.makeLevel(i);
+      moves = 0; history = []; won = false; winT = -1; hintCell = -1; anims = []; cursor = null;
+      parN = C.par(L);
+      layout();
+      hud(); draw();
+    }
+    function hud() {
+      $('level').textContent = lvIdx + 1;
+      $('moves').textContent = moves;
+      $('par').textContent = parN;
+      var c = C.count(L);
+      $('joined').textContent = c.attract + '/' + c.ends;
+    }
+
+    // ---------- 描画 ----------
+    var COL_N = '#e74c3c', COL_S = '#3d7bf0';
+    function now() { return performance.now(); }
+    function animOf(cell, type) {
+      for (var i = 0; i < anims.length; i++) if (anims[i].cell === cell && anims[i].type === type) return anims[i];
+      return null;
+    }
+    function draw() {
+      var ctx = st && st.ctx();
+      if (!ctx || !L) return;
+      var t = now();
+      ctx.clearRect(0, 0, baseW, baseH);
+      ctx.fillStyle = '#141428';
+      ctx.fillRect(0, 0, baseW, baseH);
+      var x, y, c;
+      // マス
+      for (y = 0; y < L.H; y++) for (x = 0; x < L.W; x++) {
+        var px = PAD + x * CELL, py = PAD + y * CELL;
+        if (!L.tiles[y * L.W + x]) {
+          ctx.fillStyle = 'rgba(255,255,255,0.05)';
+          ctx.beginPath(); ctx.arc(px + CELL / 2, py + CELL / 2, 4, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      // つながりの光(下に敷く)
+      for (y = 0; y < L.H; y++) for (x = 0; x < L.W; x++) {
+        for (var s = 1; s <= 2; s++) {
+          if (C.endState(L, x, y, s) === 'a') {
+            var ex = PAD + x * CELL + CELL / 2 + DX[s] * CELL / 2, ey = PAD + y * CELL + CELL / 2 + DY[s] * CELL / 2;
+            var glow = winT >= 0 ? 1 : 0.55 + 0.25 * Math.sin(t / 300);
+            ctx.save();
+            ctx.shadowColor = '#fff6b0'; ctx.shadowBlur = 18;
+            ctx.fillStyle = 'rgba(255,246,176,' + glow + ')';
+            if (s === 1) ctx.fillRect(ex - 6, ey - 20, 12, 40); else ctx.fillRect(ex - 20, ey - 6, 40, 12);
+            ctx.restore();
+          }
+        }
+      }
+      for (y = 0; y < L.H; y++) for (x = 0; x < L.W; x++) {
+        c = y * L.W + x;
+        if (L.tiles[c]) drawTile(ctx, x, y, c, t);
+      }
+      // カーソル(キーボード)
+      if (cursor !== null) {
+        ctx.strokeStyle = '#f5b041'; ctx.lineWidth = 4;
+        ctx.strokeRect(PAD + (cursor % L.W) * CELL + 3, PAD + ((cursor / L.W) | 0) * CELL + 3, CELL - 6, CELL - 6);
+      }
+      // ヒント
+      if (hintCell >= 0) {
+        var hx = PAD + (hintCell % L.W) * CELL, hy = PAD + ((hintCell / L.W) | 0) * CELL;
+        ctx.strokeStyle = 'rgba(245,176,65,' + (0.5 + 0.5 * Math.sin(t / 150)) + ')'; ctx.lineWidth = 6;
+        ctx.strokeRect(hx + 4, hy + 4, CELL - 8, CELL - 8);
+      }
+    }
+    function drawTile(ctx, x, y, c, t) {
+      var tile = L.tiles[c];
+      var cx = PAD + x * CELL + CELL / 2, cy = PAD + y * CELL + CELL / 2;
+      var ang = 0, ra = animOf(c, 'rot');
+      if (ra) { var k = Math.min(1, (t - ra.t) / ra.dur); k = 1 - Math.pow(1 - k, 3); ang = -(1 - k) * Math.PI / 2; }
+      var sh = animOf(c, 'shake'), ox = 0;
+      if (sh) { var kk = (t - sh.t) / sh.dur; ox = Math.sin(kk * 40) * 6 * (1 - kk); }
+      var pu = animOf(c, 'pulse'), sc = 1;
+      if (pu) { var kp = (t - pu.t) / pu.dur; sc = 1 + 0.08 * Math.sin(kp * Math.PI); }
+      ctx.save();
+      ctx.translate(cx + ox, cy);
+      ctx.scale(sc, sc);
+      // 台
+      var r = CELL / 2 - 5;
+      ctx.fillStyle = tile.fixed ? '#3a3a52' : '#262646';
+      roundRect(ctx, -r, -r, r * 2, r * 2, 14); ctx.fill();
+      ctx.lineWidth = tile.fixed ? 4 : 2;
+      ctx.strokeStyle = tile.fixed ? '#9a9ab8' : 'rgba(255,255,255,0.14)';
+      ctx.stroke();
+      if (tile.fixed) {
+        ctx.fillStyle = '#9a9ab8';
+        [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (q) { ctx.beginPath(); ctx.arc(q[0] * (r - 9), q[1] * (r - 9), 3.5, 0, Math.PI * 2); ctx.fill(); });
+      }
+      ctx.rotate(ang);
+      // 腕
+      var w = CELL * 0.26;
+      tile.ends.forEach(function (e) {
+        var side = (e.s + tile.rot) % 4, state = C.endState(L, x, y, side);
+        ctx.save();
+        ctx.rotate(side * Math.PI / 2); // 上向きを基準に
+        var col = e.p === 'N' ? COL_N : COL_S;
+        // 根元は灰色の鉄、先が色
+        ctx.fillStyle = '#b8b8c8';
+        ctx.fillRect(-w / 2, -CELL * 0.18, w, CELL * 0.18);
+        ctx.fillStyle = col;
+        ctx.fillRect(-w / 2, -CELL / 2 + 4, w, CELL * 0.32 - 4);
+        // 先端の光
+        if (state === 'a') { ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(-w / 2, -CELL / 2 + 4, w, 6); }
+        if (state === 'r') { ctx.strokeStyle = '#ffdd55'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-w / 2 - 4, -CELL / 2 + 2); ctx.lineTo(0, -CELL / 2 + 10); ctx.lineTo(w / 2 + 4, -CELL / 2 + 2); ctx.stroke(); }
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold ' + Math.round(CELL * 0.17) + 'px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.save(); ctx.translate(0, -CELL * 0.33); ctx.rotate(-side * Math.PI / 2 - ang); ctx.fillText(e.p, 0, 1); ctx.restore();
+        ctx.restore();
+      });
+      // 中心の円
+      ctx.fillStyle = '#d8d8e4';
+      ctx.beginPath(); ctx.arc(0, 0, CELL * (tile.ends.length === 1 ? 0.2 : 0.15), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#8a8aa0';
+      ctx.beginPath(); ctx.arc(0, 0, CELL * 0.07, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
+    }
+
+    // アニメ用のループ(動きがある間だけ回す)
+    var raf = 0;
+    function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+    function frame() {
+      raf = 0;
+      var t = now();
+      anims = anims.filter(function (a) { return t - a.t < a.dur; });
+      draw();
+      raf = requestAnimationFrame(frame); // つながりの光がゆらぐので回し続ける(隠れている間はブラウザが止める)
+    }
+
+    // ---------- 操作 ----------
+    function sounds(kind) {
+      var A = H.audio;
+      if (kind === 'click') { A.beep(2200, 0.025, 'square', 0.05); setTimeout(function () { A.beep(1100, 0.04, 'square', 0.05); }, 30); }
+      else if (kind === 'repel') { A.beep(180, 0.12, 'sawtooth', 0.05); }
+      else if (kind === 'turn') { A.beep(520, 0.03, 'triangle', 0.04); }
+    }
+    function tapCell(c, record) {
+      if (won || !L.tiles[c]) return;
+      var tile = L.tiles[c];
+      if (tile.fixed) { H.toast('固定の磁石は回せません'); anims.push({ type: 'shake', cell: c, t: now(), dur: 250 }); sounds('repel'); return; }
+      var before = C.count(L);
+      tile.rot = (tile.rot + 1) % 4;
+      if (record !== false) { history.push(c); moves++; }
+      hintCell = -1;
+      anims.push({ type: 'rot', cell: c, t: now(), dur: 140 });
+      var x = c % L.W, y = (c / L.W) | 0, att = false, rep = false;
+      for (var s = 0; s < 4; s++) {
+        var stt = C.endState(L, x, y, s);
+        if (stt === 'a') att = true;
+        if (stt === 'r') rep = true;
+      }
+      var after = C.count(L);
+      setTimeout(function () {
+        if (after.attract > before.attract && att) {
+          sounds('click');
+          anims.push({ type: 'pulse', cell: c, t: now(), dur: 220 });
+        } else if (rep) {
+          sounds('repel');
+          anims.push({ type: 'shake', cell: c, t: now(), dur: 300 });
+          for (var s2 = 0; s2 < 4; s2++) if (C.endState(L, x, y, s2) === 'r') {
+            var nc = (y + DY[s2]) * L.W + x + DX[s2];
+            anims.push({ type: 'shake', cell: nc, t: now(), dur: 300 });
+          }
+        } else sounds('turn');
+      }, 120);
+      hud();
+      if (C.isSolved(L)) win();
+    }
+    function undo() {
+      if (won || !history.length) return;
+      var c = history.pop();
+      L.tiles[c].rot = (L.tiles[c].rot + 3) % 4;
+      moves = Math.max(0, moves - 1);
+      hintCell = -1;
+      anims.push({ type: 'rot', cell: c, t: now(), dur: 140 });
+      H.audio.click(); hud();
+    }
+    function hint() {
+      if (won) return;
+      var r = C.solve(L, 1);
+      if (!r.rots) { H.toast('解けない形です(固定がおかしい)'); return; }
+      for (var i = 0; i < L.tiles.length; i++) {
+        if (L.tiles[i] && L.tiles[i].rot !== r.rots[i]) { hintCell = i; H.toast('光っている磁石を回してみて'); return; }
+      }
+    }
+    function starsFor(m) { return m <= parN ? 3 : (m <= Math.ceil(parN * 1.6) + 2 ? 2 : 1); }
+    function win() {
+      won = true; winT = now();
+      var stars = starsFor(moves);
+      var prev = cleared[lvIdx] || 0;
+      if (stars > prev) { cleared[lvIdx] = stars; store.set('cleared', cleared); }
+      setTimeout(function () {
+        H.audio.win();
+        var s = '';
+        for (var i = 0; i < 3; i++) s += i < stars ? '★' : '<span class="off">★</span>';
+        var btns = [];
+        if (lvIdx < C.LEVEL_COUNT - 1) btns.push({ label: '次の面', onClick: function () { load(lvIdx + 1); } });
+        btns.push({ label: 'もう一度', secondary: true, onClick: function () { load(lvIdx); } });
+        btns.push({ label: '面一覧', secondary: true, onClick: showList });
+        H.overlay({ title: lvIdx < C.LEVEL_COUNT - 1 ? 'カチッ! クリア' : '全面クリア!', html: '<span class="stars">' + s + '</span><br>' + moves + ' 手(目安 ' + parN + ' 手)', buttons: btns });
+      }, 650);
+    }
+    function showList() {
+      H.levelPicker({ count: C.LEVEL_COUNT, current: lvIdx,
+        done: function (i) { return !!cleared[i]; },
+        label: function (i) { return cleared[i] ? '★★★'.slice(0, cleared[i]) : ''; },
+        onPick: function (i) { load(i); } });
+    }
+    function restart() { load(lvIdx); }
+
+    H.onTap(canvas, function (cx, cy) {
+      if (!L) return;
+      var p = st.toBase(cx, cy);
+      var x = Math.floor((p.x - PAD) / CELL), y = Math.floor((p.y - PAD) / CELL);
+      if (x < 0 || y < 0 || x >= L.W || y >= L.H) return;
+      cursor = null;
+      tapCell(y * L.W + x);
+    });
+    function moveCursor(dx, dy) {
+      if (cursor === null) { cursor = 0; return; }
+      var x = Math.max(0, Math.min(L.W - 1, cursor % L.W + dx)), y = Math.max(0, Math.min(L.H - 1, ((cursor / L.W) | 0) + dy));
+      cursor = y * L.W + x;
+    }
+    $('btn-undo').addEventListener('click', undo);
+    $('btn-hint').addEventListener('click', hint);
+    $('btn-restart').addEventListener('click', restart);
+    $('btn-list').addEventListener('click', showList);
+    H.keys({
+      ArrowLeft: function () { moveCursor(-1, 0); }, ArrowRight: function () { moveCursor(1, 0); },
+      ArrowUp: function () { moveCursor(0, -1); }, ArrowDown: function () { moveCursor(0, 1); },
+      ' ': function () { if (cursor !== null) tapCell(cursor); }, Enter: function () { if (cursor !== null) tapCell(cursor); },
+      z: undo, Z: undo, h: hint, H: hint, r: restart, R: restart, l: showList, L: showList
+    });
+    window.resetGame = function () {
+      document.querySelectorAll('.overlay').forEach(function (o) { o.parentNode.removeChild(o); });
+      restart();
+    };
+    window.__dbg = {
+      state: function () {
+        var c = C.count(L);
+        return JSON.stringify({ level: lvIdx + 1, W: L.W, H: L.H, moves: moves, par: parN, solved: C.isSolved(L), attract: c.attract, ends: c.ends,
+          rots: L.tiles.map(function (t) { return t ? t.rot : null; }) });
+      },
+      cmd: function (name, a, b) {
+        if (name === 'level') load(a - 1);
+        else if (name === 'tap') tapCell(a * L.W + b);
+        else if (name === 'solve') { var r = C.solve(L, 1); if (r.rots) for (var i = 0; i < L.tiles.length; i++) if (L.tiles[i] && L.tiles[i].rot !== r.rots[i]) { tapCell(i); break; } }
+        else if (name === 'reset') restart();
+        else if (name === 'mute') H.audio.setMuted(a !== false);
+        return this.state();
+      }
+    };
+    load(lvIdx);
+    kick();
+    if (!store.get('seen', false)) {
+      store.set('seen', true);
+      H.overlay({ title: '磁石つなぎ', html: '磁石をタップして回し、<br><b style="color:#e74c3c">N</b> と <b style="color:#3d7bf0">S</b> を向かい合わせて「カチッ」とつなごう。<br>全部つながればクリア。', buttons: [{ label: 'はじめる' }] });
+    }
+  })();
+  </script>
+</body>
+</html>

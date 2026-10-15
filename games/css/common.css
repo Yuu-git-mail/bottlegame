@@ -253,6 +253,24 @@ select.sel {
 .overlay p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 440px; }
 .overlay .big { font-size: 40px; font-weight: 800; color: var(--warn); font-variant-numeric: tabular-nums; }
 
+/* 面選択(GameHub.levelPicker)。長いときは中を指でスクロール */
+.overlay.lvpick { justify-content: flex-start; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; gap: 8px; padding: 12px 10px; }
+.overlay.lvpick > * { flex: 0 0 auto; }
+.overlay.lvpick h2 { font-size: 20px; }
+.lvp-sub { display: block; color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+.lvp-grid { display: inline-flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 480px; }
+.lvp-btn {
+  width: 52px; height: 46px; border-radius: 8px; position: relative;
+  border: 1px solid var(--panel-border); background: var(--panel); color: var(--text);
+  font-size: 16px; font-weight: 700; line-height: 1.1;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.lvp-btn small { font-size: 9px; color: var(--warn); font-weight: 400; }
+.lvp-btn.done { background: rgba(46, 204, 113, 0.22); border-color: var(--ok); }
+.lvp-btn.done::after { content: '✓'; position: absolute; top: -2px; right: 3px; font-size: 10px; color: var(--ok); }
+.lvp-btn.now { outline: 2px solid var(--warn); }
+
 /* ヘルプシート: 中だけスクロール可 */
 .sheet {
   position: absolute;
