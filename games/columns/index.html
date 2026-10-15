@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>コラムス風 - ゲーム集</title>
+  <title>宝石そろえ - ゲーム集</title>
   <link rel="stylesheet" href="../css/common.css">
   <style>
     .app-controls { gap: 6px; }
@@ -14,7 +14,7 @@
 </head>
 <body class="game">
   <div class="app">
-    <header class="app-bar" data-title="コラムス風" data-back="../index.html" data-reset></header>
+    <header class="app-bar" data-title="宝石そろえ" data-back="../index.html" data-reset></header>
     <div class="app-hud">
       <span class="hud-item">スコア<b id="score">0</b></span>
       <span class="hud-item">ベスト<b id="best">0</b></span>
@@ -397,7 +397,7 @@
     function togglePause(e) { if (e && e.repeat) return; if (paused) resumeGame(); else pauseGame(); }
     function showStart() {
       state = 'idle';
-      H.overlay({ title: 'コラムス風', html: '縦 3 個の宝石を並べ替えて<br>縦・横・斜めに 3 つそろえよう',
+      H.overlay({ title: '宝石そろえ', html: '縦 3 個の宝石を並べ替えて<br>縦・横・斜めに 3 つそろえよう',
         buttons: [{ label: 'スタート', onClick: start }] });
     }
     window.resetGame = function () {

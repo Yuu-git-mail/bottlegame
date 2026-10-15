@@ -254,7 +254,7 @@
         clearing = { rows: rows, t: 0, n: rows.length };
         var add = L.lineScore(rows.length, level);
         score += add;
-        var names = ['', 'シングル', 'ダブル', 'トリプル', 'テトリス!'];
+        var names = ['', 'シングル', 'ダブル', 'トリプル', '4 ライン!'];
         floatMsg = { text: names[rows.length] + ' +' + add, t: 0, big: rows.length === 4 };
         if (rows.length === 4) H.audio.win(); else H.audio.good();
       } else {

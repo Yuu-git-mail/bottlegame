@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>フロッガー - ゲーム集</title>
+  <title>カエル渡り - ゲーム集</title>
   <link rel="stylesheet" href="../css/common.css">
   <style>
     .hud-item.lives b { letter-spacing: 1px; }
@@ -11,7 +11,7 @@
 </head>
 <body class="game">
   <div class="app">
-    <header class="app-bar" data-title="フロッガー" data-back="../index.html" data-reset></header>
+    <header class="app-bar" data-title="カエル渡り" data-back="../index.html" data-reset></header>
     <div class="app-hud">
       <span class="hud-item">スコア<b id="score">0</b></span>
       <span class="hud-item">ベスト<b id="best">0</b></span>
@@ -487,7 +487,7 @@
     function showStart() {
       state = 'start';
       showOverlay({
-        title: 'フロッガー',
+        title: 'カエル渡り',
         html: '車をよけ、丸太に乗って<br>上の 5 つの巣にカエルを入れよう',
         buttons: [{ label: 'スタート', onClick: startGame }]
       });

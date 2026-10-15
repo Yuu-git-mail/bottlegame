@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>数独 - ゲーム集</title>
+  <title>ナンプレ - ゲーム集</title>
   <link rel="stylesheet" href="../css/common.css">
   <style>
     .pad { display: flex; flex-direction: column; gap: 5px; width: 100%; max-width: 440px; }
@@ -21,7 +21,7 @@
 </head>
 <body class="game">
   <div class="app">
-    <header class="app-bar" data-title="数独" data-back="../index.html" data-reset></header>
+    <header class="app-bar" data-title="ナンプレ" data-back="../index.html" data-reset></header>
     <div class="app-hud">
       <span class="hud-item"><span id="diff">ふつう</span></span>
       <span class="hud-item">タイム<b id="time">0:00</b></span>
@@ -411,7 +411,7 @@
       var bestHtml = ['easy', 'normal', 'hard'].map(function (k) {
         var b = store.get('best_' + k, 0); return DIFFS[k].label + ' ' + (b ? fmt(b) : '--');
       }).join(' / ');
-      H.overlay({ title: '数独', html: '難易度を選んでください<br><small>ベスト: ' + bestHtml + '</small>', buttons: btns });
+      H.overlay({ title: 'ナンプレ', html: '難易度を選んでください<br><small>ベスト: ' + bestHtml + '</small>', buttons: btns });
     }
     window.resetGame = showStart;
 
