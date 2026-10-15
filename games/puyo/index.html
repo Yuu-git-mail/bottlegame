@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>ぷよぷよ - ゲーム集</title>
+  <title>連鎖パズル - ゲーム集</title>
   <link rel="stylesheet" href="../css/common.css">
   <style>
     .app-controls .ctl-btn { min-width: 64px; font-size: 20px; }
@@ -20,7 +20,7 @@
 </head>
 <body class="game">
   <div class="app">
-    <header class="app-bar" data-title="ぷよぷよ" data-back="../index.html" data-reset></header>
+    <header class="app-bar" data-title="連鎖パズル" data-back="../index.html" data-reset></header>
     <div class="app-hud">
       <span class="hud-item">スコア<b id="score">0</b></span>
       <span class="hud-item accent">連鎖<b id="chain">0</b></span>
@@ -35,8 +35,8 @@
         <div class="sheet-body">
           <h3>遊び方</h3>
           <ul>
-            <li>2 つ組のぷよが落ちてくる。同じ色を縦横に 4 つ以上つなげると消える。</li>
-            <li>消えた後に落ちたぷよがまた消えると「連鎖」。連鎖が続くほど点が大きく伸びる。</li>
+            <li>2 つ組の玉が落ちてくる。同じ色を縦横に 4 つ以上つなげると消える。</li>
+            <li>消えた後に落ちた玉がまた消えると「連鎖」。連鎖が続くほど点が大きく伸びる。</li>
             <li>消した数が増えるとレベルが上がり、落ちる速さが増す。</li>
             <li>左から 3 列目の一番上まで積み上がるとゲームオーバー。</li>
           </ul>
@@ -88,7 +88,7 @@
       return cellFree(board, x, y) && cellFree(board, sx, sy);
     }
 
-    // 浮いているぷよを 1 段だけ下げる。動いたら true
+    // 浮いている玉を 1 段だけ下げる。動いたら true
     function gravityStep(board) {
       var moved = false;
       for (var c = 0; c < COLS; c++) {
@@ -409,7 +409,7 @@
     function showStart() {
       closeOverlay();
       overlayEl = H.overlay({
-        title: 'ぷよぷよ',
+        title: '連鎖パズル',
         html: '同じ色を 4 つつなげて消そう<br>連鎖で高得点!' + (best ? '<br>ベスト ' + best + ' 点' : ''),
         buttons: [{ label: 'スタート', onClick: function () { overlayEl = null; startGame(); } }]
       });
@@ -530,7 +530,7 @@
         ctx.lineWidth = 1;
       }
 
-      // 置かれたぷよ
+      // 置かれた玉
       var flashSet = {};
       var i;
       for (i = 0; i < flashCells.length; i++) flashSet[flashCells[i].r + ',' + flashCells[i].c] = true;
