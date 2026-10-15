@@ -72,6 +72,10 @@
 - `GameHub.loop(update(dt), draw)` … rAF ループ。`pause(true)` で止まる。
 - `GameHub.pauseWhenHidden(onHide, onShow)` … 画面を離れたら必ず一時停止（アクション系は必須）。
 - `GameHub.isTouch` … タッチ機かどうか。
+- `GameHub.rng(seed)` … 0..1 を返す種付き乱数（mulberry32）。面の生成は種付きにして、同じ面は同じ配りにする（2026-10-15）。
+- `GameHub.levelPicker({count, current, done(i), label(i), onPick(i), title})` … 面選択の一覧。中を指でスクロールできる（.scrollable）。面のあるゲームはこれを使う（2026-10-15）。
+- `canvasStage(...).setBase(w, h)` … 面ごとに盤の論理サイズを変えるとき。canvasStage を何度も呼ばない（呼ぶたびに resize の登録が増える）（2026-10-15）。
+- 自前でスクロールする箱を作るときは `scrollable` クラスを付ける。付けないと common.js の touchmove 止めでスマホでは動かない（2026-10-15 の色ブロック出口の不具合）。
 
 参考実装: `games/_template/index.html`（そのまま動く最小例）。
 
