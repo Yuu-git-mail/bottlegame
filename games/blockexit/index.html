@@ -14,7 +14,7 @@
     }
     .lvsel h3 { margin: 0 0 8px; text-align: center; font-size: 18px; }
     .lvsel .lvgrid {
-      flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
       display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; align-content: start; padding: 2px;
     }
     .lvsel .lvbtn {
@@ -523,7 +523,7 @@
     function showSelect() {
       if (selEl) selEl.parentNode.removeChild(selEl);
       selEl = document.createElement('div'); selEl.className = 'lvsel';
-      var html = '<h3>面を選ぶ</h3><div class="lvgrid">';
+      var html = '<h3>面を選ぶ</h3><div class="lvgrid scrollable">';
       for (var i = 0; i < LEVELS.length; i++) {
         var s = stars[i] || 0;
         html += '<button type="button" class="lvbtn' + (s ? ' done' : '') + (i === levelIdx ? ' cur' : '') + '" data-i="' + i + '">' + (i + 1) + '<small>' + (s ? '★★★'.slice(0, s) : '&nbsp;') + '</small></button>';
