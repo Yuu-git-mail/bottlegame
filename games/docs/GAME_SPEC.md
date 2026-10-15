@@ -112,6 +112,7 @@
 ```
 
 headless Chrome は http:// だと固まるので file:// で撮る（スクリプトが変換する）。
+3 サイズまとめての確認（はみ出し・コンソールのエラー・スクショ）は `python3 games/docs/chk.py <games の絶対パス> <名前> "<読み込み後の JS>" <待つ秒>`（2026-10-15）。
 操作して撮りたいときは selenium（`python3`、`-I` を付けない）で `file://` を開く。例: `~/.claude/jobs/35bb4763/tmp/sel_test.py`。
 
 ## 6. やってはいけない
