@@ -2,6 +2,9 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
+<!-- 外へ出る通信をブラウザに禁止させる。値は scripts/memo_csp.py が書く（中の script/style を変えたら必ず流す） -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-P1x4tz/iZ/OsNa7kw0NvpkopIziyDP5HwWJ2BbpNot0='; style-src 'sha256-7YSBLiY7l4UhgvRhks8yFVPmLqiGXR/a+O7llWA11hk='; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types memo">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -16,7 +19,7 @@
 <title>メモ</title>
 <!--
   書いたものは、この端末のブラウザの中（localStorage）にだけ置く。
-  外へ送る処理・外部の読み込み・解析は一切ない。
+  外へ送る処理・外部の読み込み・解析は一切ない。守りの考え方は SECURITY.md。
 -->
 <style>
 :root {
@@ -228,6 +231,12 @@ li.slot .face { transition: transform .15s; }
 (function () {
   'use strict';
 
+  // 他のサイトの枠（iframe）の中では何もしない。メモも読み込まない
+  if (window.top !== window.self) {
+    document.documentElement.textContent = '';
+    return;
+  }
+
   var KEY = 'memo_v1';
   // この時間より長く裏にいたら、戻ったときに書きかけを付箋として下ろし、新しい紙にする
   var AWAY_MS = 3 * 60 * 1000;
@@ -245,10 +254,22 @@ li.slot .face { transition: transform .15s; }
   var state = load();
   var doneOpen = false;
 
+  // 保存の中身は形を確かめてから使う（壊れていても落ちない）
   function load() {
-    var s = null;
-    try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
-    if (!s || !s.items) s = { draft: '', hiddenAt: 0, items: [] };
+    var raw = null;
+    try { raw = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
+    var s = { draft: '', hiddenAt: 0, items: [] };
+    if (!raw || typeof raw !== 'object') return s;
+    if (typeof raw.draft === 'string') s.draft = raw.draft;
+    if (typeof raw.hiddenAt === 'number') s.hiddenAt = raw.hiddenAt;
+    if (Array.isArray(raw.items)) {
+      raw.items.forEach(function (it) {
+        if (!it || typeof it.t !== 'string' || typeof it.id !== 'string') return;
+        var o = { id: it.id, t: it.t, done: it.done === true, at: typeof it.at === 'number' ? it.at : 0 };
+        if (o.done && typeof it.doneAt === 'number') o.doneAt = it.doneAt;
+        s.items.push(o);
+      });
+    }
     return s;
   }
   function save() {
@@ -406,12 +427,16 @@ li.slot .face { transition: transform .15s; }
     if (editing) endEdit();
     var txt = li.querySelector('.txt');
     editing = { li: li, txt: txt };
-    txt.contentEditable = 'true';
+    // 文字だけを受け付ける（貼り付けで画像や書式が入らないように）
+    try { txt.contentEditable = 'plaintext-only'; } catch (e) {}
+    if (txt.contentEditable !== 'plaintext-only') txt.contentEditable = 'true';
     txt.focus();
     var r = document.createRange();
     r.selectNodeContents(txt); r.collapse(false);
     var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
     txt.addEventListener('blur', endEdit, { once: true });
+    txt.addEventListener('paste', pastePlain);
+    txt.addEventListener('drop', noDrop);
   }
   function endEdit() {
     if (!editing) return;
@@ -419,10 +444,20 @@ li.slot .face { transition: transform .15s; }
     var id = e.li.dataset.id;
     var t = e.txt.innerText.replace(/\s+$/, '');
     e.txt.contentEditable = 'false';
+    e.txt.removeEventListener('paste', pastePlain);
+    e.txt.removeEventListener('drop', noDrop);
+    e.txt.textContent = t;   // 何が入っていても素の文字に戻す
     var i = find(id); if (i < 0) return;
     if (!t.trim()) { remove(id); return; }
     if (t !== state.items[i].t) { state.items[i].t = t; save(); }
   }
+
+  function pastePlain(ev) {
+    ev.preventDefault();
+    var t = (ev.clipboardData && ev.clipboardData.getData('text/plain')) || '';
+    if (t) document.execCommand('insertText', false, t);
+  }
+  function noDrop(ev) { ev.preventDefault(); }
 
   // ---- 指の動き: タップ / 払う / 長押しで並べ替え ----
 
@@ -632,7 +667,14 @@ li.slot .face { transition: transform .15s; }
     try { navigator.storage.persist(); } catch (e) {}
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(function () {});
+    // Trusted Types を強制しているので、登録する URL は決め打ちの 1 つだけ通す
+    var swUrl = 'sw.js';
+    if (window.trustedTypes && window.trustedTypes.createPolicy) {
+      swUrl = window.trustedTypes.createPolicy('memo', {
+        createScriptURL: function (u) { if (u !== 'sw.js') throw new Error('blocked'); return u; }
+      }).createScriptURL('sw.js');
+    }
+    navigator.serviceWorker.register(swUrl).catch(function () {});
   }
 
   fit(); syncAdd(); render();
