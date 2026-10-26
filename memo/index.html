@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- 外へ出る通信をブラウザに禁止させる。値は scripts/memo_csp.py が書く（中の script/style を変えたら必ず流す） -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-P1x4tz/iZ/OsNa7kw0NvpkopIziyDP5HwWJ2BbpNot0='; style-src 'sha256-7YSBLiY7l4UhgvRhks8yFVPmLqiGXR/a+O7llWA11hk='; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types memo">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o+3gZpc+ZyklKoqk6XOrIf6jA5qA9MkR+B9L9N9Lr7A='; style-src 'sha256-7YSBLiY7l4UhgvRhks8yFVPmLqiGXR/a+O7llWA11hk='; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types memo">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -221,7 +221,7 @@ li.slot .face { transition: transform .15s; }
 <button id="doneHead" type="button"></button>
 <ul id="doneList" class="hide"></ul>
 
-<button id="exp" type="button">全部コピー</button>
+<button id="exp" type="button">まだの分をコピー</button>
 
 <p id="hint">共有ボタン →「ホーム画面に追加」で、次からアイコンですぐ開けます。</p>
 
@@ -367,7 +367,7 @@ li.slot .face { transition: transform .15s; }
     doneHead.classList.toggle('show', nDone > 0);
     doneEl.classList.toggle('hide', !doneOpen);
     hint.classList.toggle('show', !standalone());
-    document.getElementById('exp').classList.toggle('show', state.items.length > 0);
+    document.getElementById('exp').classList.toggle('show', state.items.some(function (it) { return !it.done; }));
   }
 
   function find(id) {
@@ -626,14 +626,13 @@ li.slot .face { transition: transform .15s; }
   document.addEventListener('contextmenu', function (e) { if (rowOf(e.target)) e.preventDefault(); });
 
   // ---- 全部コピー ----
-  // 純正メモ帳などに貼れる素の文字。済みかどうかは ☐ / ☑ で残す
+  // 純正メモ帳に貼って ○（チェックリスト）にできる形: 済みでないものだけ、1 件 1 行、記号なし。
+  // メモ帳は貼った記号をチェックに変えないので、行頭に何も付けない。1 件の中の改行は空白にする
 
   function toText() {
-    var open = state.items.filter(function (it) { return !it.done; });
-    var done = state.items.filter(function (it) { return it.done; });
-    return open.concat(done).map(function (it) {
-      return (it.done ? '☑ ' : '☐ ') + it.t.split('\n').join('\n   ');
-    }).join('\n') + '\n';
+    return state.items.filter(function (it) { return !it.done; }).map(function (it) {
+      return it.t.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).join(' ');
+    }).join('\n');
   }
   function copyText(t) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
