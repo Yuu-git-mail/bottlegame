@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- 外へ出る通信をブラウザに禁止させる。値は scripts/memo_csp.py が書く（中の script/style を変えたら必ず流す） -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o+3gZpc+ZyklKoqk6XOrIf6jA5qA9MkR+B9L9N9Lr7A='; style-src 'sha256-7YSBLiY7l4UhgvRhks8yFVPmLqiGXR/a+O7llWA11hk='; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types memo">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cZfg4m6arDzGSyocLC6AHAMCAyHlleTN23C2fN+TxFM='; style-src 'sha256-vZMuvnFLBPJt/NhubYk9OkGHF7nj/73jOqGeYmqXOJ8='; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types memo">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,7 +18,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <title>メモ</title>
 <!--
-  書いたものは、この端末のブラウザの中（localStorage）にだけ置く。
+  書いたものは、この端末のブラウザの中（IndexedDB）にだけ、端末で作った鍵で暗号にして置く。
   外へ送る処理・外部の読み込み・解析は一切ない。守りの考え方は SECURITY.md。
 -->
 <style>
@@ -174,6 +174,8 @@ li.slot .face { transition: transform .15s; }
 }
 #doneHead.show { display: block; }
 #doneList.hide { display: none; }
+#doneMore { margin: 4px 4px 0; color: var(--sub); font-size: 13px; }
+#doneMore:empty { display: none; }
 
 #toast {
   position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom));
@@ -220,6 +222,7 @@ li.slot .face { transition: transform .15s; }
 
 <button id="doneHead" type="button"></button>
 <ul id="doneList" class="hide"></ul>
+<p id="doneMore"></p>
 
 <button id="exp" type="button">まだの分をコピー</button>
 
@@ -237,7 +240,11 @@ li.slot .face { transition: transform .15s; }
     return;
   }
 
-  var KEY = 'memo_v1';
+  // 保存は IndexedDB に暗号文で置く。鍵はこの端末のブラウザが作り、取り出せない形（extractable: false）で持つ
+  var DB_NAME = 'memo';
+  var OLD_KEY = 'memo_v1';   // 平文で localStorage に置いていた頃の保存。見つけたら暗号にして消す
+  // 済みは開いたときだけ描く。描くのは新しい方からこの件数まで
+  var DONE_SHOW = 300;
   // この時間より長く裏にいたら、戻ったときに書きかけを付箋として下ろし、新しい紙にする
   var AWAY_MS = 3 * 60 * 1000;
 
@@ -250,31 +257,121 @@ li.slot .face { transition: transform .15s; }
   var toastMsg = document.getElementById('toastMsg');
   var undoBtn = document.getElementById('undo');
   var hint = document.getElementById('hint');
+  var doneMore = document.getElementById('doneMore');
 
-  var state = load();
+  var state = { draft: '', hiddenAt: 0, items: [] };
   var doneOpen = false;
+  var ready = false;
+
+  // ---- 暗号つきの保存 ----
+
+  var db = null, key = null, saveFailed = false;
+
+  function req(r) {
+    return new Promise(function (res, rej) {
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function openDb() {
+    var r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = function () {
+      r.result.createObjectStore('key');    // 'main' → CryptoKey
+      r.result.createObjectStore('data');   // 'items' / 'draft' → { iv, ct }
+    };
+    return req(r);
+  }
+  function getKey() {
+    return req(db.transaction('key').objectStore('key').get('main')).then(function (k) {
+      if (k) return k;
+      return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function (nk) {
+        // 別のタブが先に作っていたら（add が失敗）、そちらを使う
+        return req(db.transaction('key', 'readwrite').objectStore('key').add(nk, 'main')).then(function () { return nk; }, function () {
+          return req(db.transaction('key').objectStore('key').get('main')).then(function (k2) {
+            if (!k2) throw new Error('no key');
+            return k2;
+          });
+        });
+      });
+    });
+  }
+  function seal(obj) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var plain = new TextEncoder().encode(JSON.stringify(obj));
+    return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, plain).then(function (ct) { return { iv: iv, ct: ct }; });
+  }
+  function unseal(rec) {
+    if (!rec || !rec.iv || !rec.ct) return Promise.resolve(null);
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: rec.iv }, key, rec.ct).then(function (buf) {
+      return JSON.parse(new TextDecoder().decode(buf));
+    });
+  }
+  // 書き込みは来た順に 1 本ずつ。暗号化が終わった順で前後しないように
+  var queue = Promise.resolve();
+  function put(name, obj) {
+    if (!db || !key) return;
+    queue = queue.then(function () {
+      return seal(obj).then(function (rec) {
+        return req(db.transaction('data', 'readwrite').objectStore('data').put(rec, name));
+      });
+    }).then(function () {
+      saveFailed = false;
+    }, function () {
+      if (!saveFailed) showToast('保存できませんでした（端末の空きを確認）', null);
+      saveFailed = true;
+    });
+  }
+  function save() { put('items', { items: state.items }); }
+  function saveDraft() { put('draft', { draft: state.draft, hiddenAt: state.hiddenAt }); }
 
   // 保存の中身は形を確かめてから使う（壊れていても落ちない）
+  function clean(raw) {
+    var out = [];
+    if (!raw || !Array.isArray(raw.items)) return out;
+    raw.items.forEach(function (it) {
+      if (!it || typeof it.t !== 'string' || typeof it.id !== 'string') return;
+      var o = { id: it.id, t: it.t, done: it.done === true, at: typeof it.at === 'number' ? it.at : 0 };
+      if (o.done && typeof it.doneAt === 'number') o.doneAt = it.doneAt;
+      out.push(o);
+    });
+    return out;
+  }
+
   function load() {
+    return openDb().then(function (d) {
+      db = d;
+      return getKey();
+    }).then(function (k) {
+      key = k;
+      var st = db.transaction('data').objectStore('data');
+      return Promise.all([req(st.get('items')), req(st.get('draft'))]);
+    }).then(function (recs) {
+      // 鍵が合わない・壊れている記録は読めないので空として扱う
+      return Promise.all(recs.map(function (r) { return unseal(r).catch(function () { return null; }); }));
+    }).then(function (vals) {
+      state.items = clean(vals[0]);
+      var dr = vals[1];
+      if (dr && typeof dr.draft === 'string') state.draft = dr.draft;
+      if (dr && typeof dr.hiddenAt === 'number') state.hiddenAt = dr.hiddenAt;
+      migrateOld();
+    });
+  }
+  // 前の版の平文を取り込み、暗号で書き直してから平文を消す
+  function migrateOld() {
     var raw = null;
-    try { raw = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
-    var s = { draft: '', hiddenAt: 0, items: [] };
-    if (!raw || typeof raw !== 'object') return s;
-    if (typeof raw.draft === 'string') s.draft = raw.draft;
-    if (typeof raw.hiddenAt === 'number') s.hiddenAt = raw.hiddenAt;
-    if (Array.isArray(raw.items)) {
-      raw.items.forEach(function (it) {
-        if (!it || typeof it.t !== 'string' || typeof it.id !== 'string') return;
-        var o = { id: it.id, t: it.t, done: it.done === true, at: typeof it.at === 'number' ? it.at : 0 };
-        if (o.done && typeof it.doneAt === 'number') o.doneAt = it.doneAt;
-        s.items.push(o);
-      });
-    }
-    return s;
+    try { raw = JSON.parse(localStorage.getItem(OLD_KEY)); } catch (e) {}
+    if (!raw) return;
+    var old = clean(raw);
+    var have = {};
+    state.items.forEach(function (it) { have[it.id] = 1; });
+    old.forEach(function (it) { if (!have[it.id]) state.items.push(it); });
+    if (typeof raw.draft === 'string' && raw.draft && !state.draft) state.draft = raw.draft;
+    save(); saveDraft();
+    queue.then(function () {
+      if (!saveFailed) { try { localStorage.removeItem(OLD_KEY); } catch (e) {} }
+    });
   }
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
-  }
+
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
   // ---- 紙（書く場所） ----
@@ -292,14 +389,16 @@ li.slot .face { transition: transform .15s; }
     state.items.unshift({ id: uid(), t: t, done: false, at: Date.now() });
     pad.value = '';
     state.draft = '';
-    save();
+    save(); saveDraft();
     fit(); syncAdd(); render();
     return true;
   }
 
+  // 打つたびに保存するのは書きかけだけ（一覧は変わったときだけ）。件数が増えても打つ速さが落ちない
   pad.addEventListener('input', function () {
+    if (!ready) return;
     state.draft = pad.value;
-    save();
+    saveDraft();
     fit(); syncAdd();
   });
 
@@ -311,21 +410,17 @@ li.slot .face { transition: transform .15s; }
     pad.focus();
   });
 
-  // 起動のたびに新しい紙。前回の書きかけは付箋にしておく
-  pad.value = state.draft || '';
-  commitDraft();
-
   document.addEventListener('visibilitychange', function () {
+    if (!ready) return;
     if (document.visibilityState === 'hidden') {
       state.hiddenAt = Date.now();
-      save();
+      saveDraft();
     } else if (state.hiddenAt && Date.now() - state.hiddenAt > AWAY_MS) {
       commitDraft();
       state.hiddenAt = 0;
-      save();
+      saveDraft();
     }
   });
-  window.addEventListener('pagehide', function () { state.draft = pad.value; save(); });
 
   // ---- リスト ----
 
@@ -360,9 +455,12 @@ li.slot .face { transition: transform .15s; }
     doneEl.textContent = '';
     var nDone = 0;
     state.items.forEach(function (it) {
-      if (it.done) { nDone++; doneEl.appendChild(rowFor(it)); }
-      else listEl.appendChild(rowFor(it));
+      if (it.done) {
+        nDone++;
+        if (doneOpen && nDone <= DONE_SHOW) doneEl.appendChild(rowFor(it));
+      } else listEl.appendChild(rowFor(it));
     });
+    doneMore.textContent = doneOpen && nDone > DONE_SHOW ? 'ほかに古い済みが ' + (nDone - DONE_SHOW) + ' 件' : '';
     doneHead.textContent = '済み ' + nDone + (doneOpen ? '  ▴' : '  ▾');
     doneHead.classList.toggle('show', nDone > 0);
     doneEl.classList.toggle('hide', !doneOpen);
@@ -588,9 +686,12 @@ li.slot .face { transition: transform .15s; }
     var moved = ids.splice(cur.from, 1)[0];
     ids.splice(cur.to, 0, moved);
     var isDone = cur.parent === doneEl;
-    var others = state.items.filter(function (it) { return !!it.done !== isDone; });
+    var shown = {};
+    ids.forEach(function (id) { shown[id] = 1; });
     var mine = ids.map(function (id) { return state.items[find(id)]; });
-    state.items = isDone ? others.concat(mine) : mine.concat(others);
+    var open = state.items.filter(function (it) { return !it.done && !shown[it.id]; });
+    var done = state.items.filter(function (it) { return it.done && !shown[it.id]; });
+    state.items = isDone ? open.concat(mine, done) : mine.concat(done);
     save(); render();
   }
 
@@ -676,8 +777,20 @@ li.slot .face { transition: transform .15s; }
     navigator.serviceWorker.register(swUrl).catch(function () {});
   }
 
-  fit(); syncAdd(); render();
+  // 読み込みが済むまでは書けないようにしておく（数ミリ秒）
+  pad.readOnly = true;
+  fit(); syncAdd();
   try { pad.focus(); } catch (e) {}
+  load().catch(function () {
+    showToast('この端末では保存が使えません', null);
+  }).then(function () {
+    ready = true;
+    pad.readOnly = false;
+    // 起動のたびに新しい紙。前回の書きかけは付箋にしておく
+    pad.value = state.draft || '';
+    commitDraft();
+    fit(); syncAdd(); render();
+  });
 })();
 </script>
 </body>
