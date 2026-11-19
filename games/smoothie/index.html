@@ -153,7 +153,7 @@ body.zd #result, body.zd #title, body.zd #hud, body.zd #zdet { justify-content: 
         <li>「起きる」で始まる。台所の床にミキサーと材料が散らばっている</li>
         <li>集める（25 秒）: 画面に指を置いて引っぱると、その向きにミキサーが転がる。遠くへ引っぱるほど強く押す。離しても勢いで少し転がる。当たった材料が入る（10 個で満杯）</li>
         <li>続けて拾うと連続（x2, x3…）で点が増える。速く転がっているときに拾うと「いきおい」で +4</li>
-        <li>氷はすべる。そっと当てると逃げていくので、勢いよくぶつける</li>
+        <li>氷はすべる。ミキサーを引っぱると氷も同じ向きにすべるので、狙って当てる</li>
         <li>石けん・スポンジ・電池・猫のおやつ・靴下・アヒルは入れてはいけない物。入ると笑える名前になる</li>
         <li>上の「まぜる」で混ぜる場面へ（満杯か時間切れでも移る）</li>
         <li>混ぜる: 画面を指で左右にこすると混ざる。速くこするほどよく混ざるが、こすりすぎるとフタが飛んで材料が 1 つ飛んでいく。タップの連打でも混ざる</li>
@@ -317,7 +317,7 @@ const THEME = {
           timeUp: '時間切れ！', early: 'まぜるぞ！', mix: 'まぜる' },
   time: { collect: 25, alarm: 1.0, ready: 1.4, spawnEvery: 1.2 },
   game: { capacity: 10, fieldStart: 14, fieldMax: 18, badRatio: 0.22, comboGap: 1.5, gaugeBase: 100, gaugePerIce: 6 },
-  // 指で転がす。sens は引っぱったときの加速の倍率
+  // 指で転がす。sens は引っぱったときの加速の倍率（ゲームの釣り合いなので設定画面には出さない）
   // こする量は CSS px を 400 で割った単位（端末が変わっても手の動きの量がほぼ同じ）。rubGauge は 1 単位こすったときに溜まる量、
   // rubLoose は毎秒これ以上の速さでこすり続けるとフタがゆるむ。lidTh は揺れと音の目盛り。tapGauge は 1 回のタップで溜まる量
   input: { sens: 1.0, rubGauge: 7, rubLoose: 5, lidTh: 28, tapPulse: 17, tapGauge: 3.5, tapLooseRate: 9 },
@@ -336,10 +336,9 @@ const store = {
 (function loadSettings() {
   const s = store.get('settings', null);
   if (!s) return;
-  if (s.input && s.input.stickSens) THEME.input.sens = s.input.stickSens;
   for (const g of ['time', 'sound']) if (s[g]) Object.assign(THEME[g], s[g]);
 })();
-function saveSettings() { store.set('settings', { input: { stickSens: THEME.input.sens }, time: { collect: THEME.time.collect }, sound: THEME.sound }); }
+function saveSettings() { store.set('settings', { time: { collect: THEME.time.collect }, sound: THEME.sound }); }
 
 // ---------- 画面の大きさ ----------
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -468,7 +467,6 @@ function rescale(sx, sy) {
 }
 
 const FAST = 0.9;      // いきおいの速さ（U/秒）
-const ICE_SPEED = 0.8; // これより遅く当たった氷は逃げる（U/秒）
 function rnd(a, b) { return a + Math.random() * (b - a); }
 function pickWeighted(list) {
   let s = 0; list.forEach(i => s += i.w);
@@ -580,16 +578,13 @@ function updateCollect(dt) {
   const speed = Math.hypot(m.vx, m.vy) / U;
   if (speed > FAST && Math.random() < 0.5) G.parts.push({ x: m.x + rnd(-R, R) * 0.6, y: m.y + rnd(-R, R) * 0.6, vx: -m.vx * 0.2, vy: -m.vy * 0.2 - 50, t: 0, life: 0.35, color: '#fff', r: 3 });
 
-  // すべる材料（氷）: 押されると逃げ、壁で跳ね返る
+  // すべる材料（氷）: 本家と同じく、ミキサーを転がす傾き（指の引っぱり）で半分の強さですべる
   for (const it of G.items) {
     if (!ING[it.id].slide) continue;
-    const dd = Math.exp(-1.3 * dt); it.vx = (it.vx || 0) * dd; it.vy = (it.vy || 0) * dd;
-    it.x += it.vx * dt; it.y += it.vy * dt;
-    if (it.x < f.x0 + it.r) { it.x = f.x0 + it.r; it.vx = Math.abs(it.vx) * 0.7; }
-    if (it.x > f.x1 - it.r) { it.x = f.x1 - it.r; it.vx = -Math.abs(it.vx) * 0.7; }
-    if (it.y < f.y0 + it.r) { it.y = f.y0 + it.r; it.vy = Math.abs(it.vy) * 0.7; }
-    if (it.y > f.y1 - it.r) { it.y = f.y1 - it.r; it.vy = -Math.abs(it.vy) * 0.7; }
-    it.rot += (it.vx || 0) / Math.max(1, it.r) * dt * 0.3;
+    it.vx = (it.vx || 0) + tx * K * 0.5 * dt; it.vy = (it.vy || 0) + ty * K * 0.5 * dt;
+    const dd = Math.exp(-2.2 * dt); it.vx *= dd; it.vy *= dd;
+    it.x = Math.max(f.x0 + it.r, Math.min(f.x1 - it.r, it.x + it.vx * dt));
+    it.y = Math.max(f.y0 + it.r, Math.min(f.y1 - it.r, it.y + it.vy * dt));
   }
   // 拾う
   const cap = THEME.game.capacity;
@@ -597,14 +592,6 @@ function updateCollect(dt) {
     const it = G.items[i];
     if (G.inMix.length + G.sucking.length >= cap) break;
     const dist = Math.hypot(it.x - m.x, it.y - m.y);
-    if (ING[it.id].slide && speed < ICE_SPEED && dist < R + it.r * 0.9) {
-      // ゆっくり当たった氷は、つるっと押し出される
-      const nx = (it.x - m.x) / (dist || 1), ny = (it.y - m.y) / (dist || 1);
-      it.x = m.x + nx * (R + it.r * 0.95); it.y = m.y + ny * (R + it.r * 0.95);
-      it.vx = m.vx * 1.3 + nx * U * 0.9; it.vy = m.vy * 1.3 + ny * U * 0.9;
-      if (G.t - (it.slipT || -9) > 0.6) { it.slipT = G.t; addFloat(it.x, it.y - it.r, 'つるっ', '#3b82c4'); Snd.tone(1500, 0.08, 'sine', 0.12, 2200); }
-      continue;
-    }
     if (dist < R + it.r * 0.45) {
       G.items.splice(i, 1);
       pickUp(it, speed);
@@ -630,7 +617,8 @@ function pickUp(it, speed) {
     addFloat(it.x, it.y - it.r, ing.name + '!?', THEME.color.warn);
   } else {
     let p = ing.pts * (1 + 0.15 * (G.combo - 1));
-    let label = ing.name;
+    let label = ing.slide ? ing.name + ' つるっ' : ing.name;
+    if (ing.slide) Snd.tone(1500, 0.08, 'sine', 0.12, 2200);
     if (speed > FAST) { p += 4; label += ' いきおい!'; }
     p = Math.round(p); G.gather += p;
     Snd.pick(G.combo);
@@ -1216,7 +1204,6 @@ function renderSettings() {
     opts('collect', '集める時間（秒）', [[15, '15'], [20, '20'], [25, '25'], [30, '30'], [40, '40']], 'time') +
     opts('on', '音', [[true, '入'], [false, '切']], 'sound') +
     range('vol', '音量', 0, 1, 0.05, THEME.sound) +
-    range('sens', '転がる速さ（倍）', 0.3, 2.5, 0.05) +
     '<div class="set"><button id="setReset" class="btn">設定を最初に戻す</button><button id="setWipe" class="btn" style="margin-top:6px">図鑑を消す</button></div>';
   $('sheetBody').querySelectorAll('input[type=range]').forEach(el => el.addEventListener('input', () => {
     const g = el.dataset.g, k = el.dataset.k; THEME[g][k] = +el.value; $('v_' + k).textContent = el.value; Snd.applyVol(); saveSettings();
