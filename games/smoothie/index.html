@@ -151,7 +151,7 @@ body.zd #result, body.zd #title, body.zd #hud, body.zd #zdet { justify-content: 
       <h3>遊び方</h3>
       <ul>
         <li>「起きる」で始まる。台所の床にミキサーと材料が散らばっている</li>
-        <li>集める（25 秒）: 画面を指でなぞると、ミキサーが指と同じ向きに動く。はじくように離すと勢いのまま転がる。当たった材料が入る（10 個で満杯）</li>
+        <li>集める（25 秒）: 画面に指を置いて引っぱると、その向きにミキサーが転がる。遠くへ引っぱるほど強く押す。離しても勢いで少し転がる。当たった材料が入る（10 個で満杯）</li>
         <li>続けて拾うと連続（x2, x3…）で点が増える。速く転がっているときに拾うと「いきおい」で +4</li>
         <li>氷はすべる。そっと当てると逃げていくので、勢いよくぶつける</li>
         <li>石けん・スポンジ・電池・猫のおやつ・靴下・アヒルは入れてはいけない物。入ると笑える名前になる</li>
@@ -160,7 +160,7 @@ body.zd #result, body.zd #title, body.zd #hud, body.zd #zdet { justify-content: 
         <li>完成: 入れた材料の組み合わせで名前・色・星（1〜5）が決まる。図鑑は 101 種類</li>
       </ul>
       <h3>操作</h3>
-      <ul><li>スマホ・iPad: 指でなぞる・こする</li><li>PC: マウスでドラッグ。混ぜるのはスペースキーの連打でも</li></ul>
+      <ul><li>スマホ・iPad: 指を置いて引っぱる・こする</li><li>PC: マウスで押して引っぱる。混ぜるのはスペースキーの連打でも</li></ul>
     </div>
   </div>
 </main>
@@ -317,10 +317,10 @@ const THEME = {
           timeUp: '時間切れ！', early: 'まぜるぞ！', mix: 'まぜる' },
   time: { collect: 25, alarm: 1.0, ready: 1.4, spawnEvery: 1.2 },
   game: { capacity: 10, fieldStart: 14, fieldMax: 18, badRatio: 0.22, comboGap: 1.5, gaugeBase: 100, gaugePerIce: 6 },
-  // 指で動かす。sens は指の移動に対するミキサーの移動の倍率。friction は離したあとの減速（大きいほど早く止まる）
+  // 指で転がす。sens は引っぱったときの加速の倍率
   // こする量は CSS px を 400 で割った単位（端末が変わっても手の動きの量がほぼ同じ）。rubGauge は 1 単位こすったときに溜まる量、
   // rubLoose は毎秒これ以上の速さでこすり続けるとフタがゆるむ。lidTh は揺れと音の目盛り。tapGauge は 1 回のタップで溜まる量
-  input: { sens: 1.15, friction: 1.5, rubGauge: 7, rubLoose: 5, lidTh: 28, tapPulse: 17, tapGauge: 3.5, tapLooseRate: 9 },
+  input: { sens: 1.0, rubGauge: 7, rubLoose: 5, lidTh: 28, tapPulse: 17, tapGauge: 3.5, tapLooseRate: 9 },
   sound: { on: true, vol: 0.6 },
 };
 
@@ -336,10 +336,10 @@ const store = {
 (function loadSettings() {
   const s = store.get('settings', null);
   if (!s) return;
-  if (s.input && s.input.sens) THEME.input.sens = s.input.sens;
+  if (s.input && s.input.stickSens) THEME.input.sens = s.input.stickSens;
   for (const g of ['time', 'sound']) if (s[g]) Object.assign(THEME[g], s[g]);
 })();
-function saveSettings() { store.set('settings', { input: { sens: THEME.input.sens }, time: { collect: THEME.time.collect }, sound: THEME.sound }); }
+function saveSettings() { store.set('settings', { input: { stickSens: THEME.input.sens }, time: { collect: THEME.time.collect }, sound: THEME.sound }); }
 
 // ---------- 画面の大きさ ----------
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -467,7 +467,7 @@ function rescale(sx, sy) {
   G.items.forEach(i => { i.x *= sx; i.y *= sy; });
 }
 
-const FAST = 1.3;      // いきおいの速さ（U/秒）
+const FAST = 0.9;      // いきおいの速さ（U/秒）
 const ICE_SPEED = 0.8; // これより遅く当たった氷は逃げる（U/秒）
 function rnd(a, b) { return a + Math.random() * (b - a); }
 function pickWeighted(list) {
@@ -555,22 +555,24 @@ function update(dt) {
 function updateCollect(dt) {
   const f = field(), m = G.mixer, R = W * THEME.size.mixerR;
   G.timeLeft -= dt;
-  // 動く: 指が触れている間は指と同じだけ動き、離すとその速さのまま転がって減速する
-  const d = Inp.take(), vmax = U * 3.2;
-  if (Inp.finger && dt > 0) {
-    const tx = d.x * THEME.input.sens, ty = d.y * THEME.input.sens;
-    const k = 1 - Math.exp(-14 * dt);
-    m.vx += (tx / dt - m.vx) * k; m.vy += (ty / dt - m.vy) * k;
-    m.x += tx; m.y += ty; m.held = true;
-  } else {
-    m.held = false;
-    const damp = Math.exp(-THEME.input.friction * dt); m.vx *= damp; m.vy *= damp;
-    m.x += m.vx * dt; m.y += m.vy * dt;
+  // 動く（アーティファクト「スムージー予定」と同じ）: 指を置いた所からのずれを傾きとみなし、その向きに加速して転がる。
+  // ずれ W×0.15 で傾き 5、遊び 0.35・上限 7。速さの上限と減速があるので、指より遅れてついてくる
+  Inp.take();
+  let tx = 0, ty = 0;
+  if (Inp.finger) {
+    const k = 5 / (U * 0.15);
+    tx = (Inp.finger.x - Inp.finger.sx) * k; ty = (Inp.finger.y - Inp.finger.sy) * k;
+    const mg = Math.hypot(tx, ty), dz = 0.35, mx = 7;
+    if (mg < dz) { tx = 0; ty = 0; } else { const sc = Math.min(mx, mg - dz) / mg; tx *= sc; ty *= sc; }
   }
-  const sp = Math.hypot(m.vx, m.vy);
+  const K = U * 0.2 * THEME.input.sens;
+  m.vx += tx * K * dt; m.vy += ty * K * dt;
+  const damp = Math.exp(-0.9 * dt); m.vx *= damp; m.vy *= damp;
+  const vmax = U * 1.6, sp = Math.hypot(m.vx, m.vy);
   if (sp > vmax) { m.vx *= vmax / sp; m.vy *= vmax / sp; }
-  m.rot += (m.vx / R) * dt * 0.5;
-  const bounce = (v) => { if (m.held) return 0; const s = Math.abs(v) / U; if (s > 0.25) { Snd.thud(s); G.quake = Math.min(1, s * 0.6); } return -v * 0.55; };
+  m.x += m.vx * dt; m.y += m.vy * dt; m.rot += (m.vx / R) * dt * 0.5;
+  m.held = !!Inp.finger;
+  const bounce = (v) => { const s = Math.abs(v) / U; if (s > 0.25) { Snd.thud(s); G.quake = Math.min(1, s * 0.6); } return -v * 0.45; };
   if (m.x < f.x0 + R) { m.x = f.x0 + R; m.vx = bounce(m.vx); }
   if (m.x > f.x1 - R) { m.x = f.x1 - R; m.vx = bounce(m.vx); }
   if (m.y < f.y0 + R) { m.y = f.y0 + R; m.vy = bounce(m.vy); }
@@ -941,11 +943,14 @@ function drawCollect() {
   }
   drawMixerTop();
   // 指が触れているところ
-  if (Inp.finger) { ctx.fillStyle = 'rgba(59,42,26,.18)'; circ(Inp.finger.x, Inp.finger.y, 22); ctx.fill(); }
+  if (Inp.finger && G.scene === 'collect') {
+    ctx.strokeStyle = 'rgba(59,42,26,.35)'; ctx.lineWidth = 3; circ(Inp.finger.sx, Inp.finger.sy, U * 0.15); ctx.stroke();
+    ctx.fillStyle = 'rgba(59,42,26,.25)'; circ(Inp.finger.x, Inp.finger.y, 18); ctx.fill();
+  }
   // 始まってすぐは操作の案内
   if (G.sceneT < 4 && !G.everDragged) {
     ctx.globalAlpha = Math.min(1, (4 - G.sceneT)); ctx.fillStyle = THEME.color.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '800 18px sans-serif'; ctx.fillText('指でなぞると動く・はじくと転がる', W / 2, field().y1 - 26); ctx.globalAlpha = 1;
+    ctx.font = '800 18px sans-serif'; ctx.fillText('指を置いて引っぱった向きに転がる', W / 2, field().y1 - 26); ctx.globalAlpha = 1;
   }
 }
 
@@ -1211,7 +1216,7 @@ function renderSettings() {
     opts('collect', '集める時間（秒）', [[15, '15'], [20, '20'], [25, '25'], [30, '30'], [40, '40']], 'time') +
     opts('on', '音', [[true, '入'], [false, '切']], 'sound') +
     range('vol', '音量', 0, 1, 0.05, THEME.sound) +
-    range('sens', '指で動かす速さ（倍）', 0.6, 2.5, 0.05) +
+    range('sens', '転がる速さ（倍）', 0.3, 2.5, 0.05) +
     '<div class="set"><button id="setReset" class="btn">設定を最初に戻す</button><button id="setWipe" class="btn" style="margin-top:6px">図鑑を消す</button></div>';
   $('sheetBody').querySelectorAll('input[type=range]').forEach(el => el.addEventListener('input', () => {
     const g = el.dataset.g, k = el.dataset.k; THEME[g][k] = +el.value; $('v_' + k).textContent = el.value; Snd.applyVol(); saveSettings();
@@ -1251,7 +1256,7 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (G.scene === 'collect' || G.scene === 'shake' || G.scene === 'alarm') {
     const q = local(e);
-    Inp.finger = { id: e.pointerId, x: q.x, y: q.y };
+    Inp.finger = { id: e.pointerId, x: q.x, y: q.y, sx: q.x, sy: q.y };
     try { cv.setPointerCapture(e.pointerId); } catch (er) {}
   }
   if (G.scene === 'shake') mixTap();
