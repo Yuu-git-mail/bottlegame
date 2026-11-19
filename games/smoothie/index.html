@@ -1,0 +1,1350 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>スムージーを作れ - ゲーム集</title>
+<link rel="stylesheet" href="../css/common.css">
+<style>
+#app { --bg: #FFE9B8; --ink: #3B2A1A; --accent: #FF5C8A; --accent2: #2BB673; --panel: rgba(255,250,240,.94); --warn: #E5484D; }
+#app, #app * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.app-main.sm-main { padding: 0; display: block; }
+#app { position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow: hidden; background: var(--bg); color: var(--ink); font-family: system-ui, "Noto Sans JP", sans-serif; }
+#cv { position: absolute; left: 0; top: 0; touch-action: none; display: block; }
+.hide { display: none !important; }
+#app button { font: inherit; color: inherit; border: 0; cursor: pointer; touch-action: manipulation; }
+#app .btn { min-height: 48px; min-width: 48px; padding: 0 18px; border-radius: 14px; background: #fff; color: var(--ink); box-shadow: 0 3px 0 rgba(0,0,0,.18); font-size: 17px; font-weight: 700; }
+#app .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.18); }
+#app .big { min-height: 76px; padding: 0 44px; font-size: 30px; background: var(--accent); color: #fff; border-radius: 22px; box-shadow: 0 5px 0 #c23763; }
+#app .sub { background: rgba(255,255,255,.8); font-size: 15px; min-height: 44px; }
+/* HUD */
+#hud { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; pointer-events: none; }
+#hud > * { pointer-events: auto; }
+#hudTime { font-size: 28px; font-weight: 800; min-width: 64px; font-variant-numeric: tabular-nums; }
+#hudTime.low { color: var(--warn); }
+#hudCount { font-size: 18px; font-weight: 700; flex: 1; }
+#app #hudMix { background: var(--accent2); color: #fff; box-shadow: 0 3px 0 #1d8a55; }
+/* 重ね画面 */
+.over { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 20px 16px calc(0px + 20px); text-align: center; }
+#title { justify-content: flex-end; padding-bottom: calc(0px + 28px); }
+#title h1 { margin: 0; font-size: 40px; letter-spacing: 2px; text-shadow: 0 3px 0 #fff; }
+#title p { margin: 0 0 18px; font-size: 17px; }
+#titleRow { display: flex; gap: 10px; margin-top: 10px; }
+#pause { background: rgba(59,42,26,.55); }
+#pause .card, #result .card { background: var(--panel); border-radius: 22px; padding: 20px 18px; width: min(92vw, 420px); display: flex; flex-direction: column; gap: 10px; align-items: stretch; box-shadow: 0 8px 30px rgba(0,0,0,.2); }
+body.zd #result, body.zd #title, body.zd #hud, body.zd #zdet { justify-content: flex-end; padding-bottom: calc(0px + 18px); z-index: 4; }
+#zdet .card { background: var(--panel); border-radius: 22px; padding: 20px 18px; width: min(92vw, 420px); display: flex; flex-direction: column; gap: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.2); }
+#zdName { font-size: 26px; font-weight: 800; margin: 0; }
+#zdStars { font-size: 30px; letter-spacing: 4px; color: #F5A524; }
+#zdComment { font-size: 16px; margin: 0; }
+#zdList, #zdScore, #zdStats { font-size: 14px; opacity: .85; }
+#zdet .tap { font-size: 14px; opacity: .6; margin-top: 4px; }
+.zsum { margin: 2px 0 6px; font-size: 15px; }
+.zsum b { font-size: 26px; color: var(--accent); }
+.zg { margin: 16px 0 8px; font-size: 16px; display: flex; justify-content: space-between; border-bottom: 2px solid rgba(0,0,0,.08); padding-bottom: 4px; }
+.zg span { font-weight: 400; font-size: 14px; opacity: .7; }
+.zc .hint { font-size: 13px; color: var(--accent); }
+#result { justify-content: flex-end; padding-bottom: calc(0px + 18px); }
+#resName { font-size: 28px; font-weight: 800; margin: 0; }
+#resStars { font-size: 32px; letter-spacing: 4px; color: #F5A524; }
+#resComment { font-size: 16px; margin: 0; }
+#resNew { color: var(--accent); font-weight: 800; }
+#resList { font-size: 14px; opacity: .85; }
+#resScore { font-size: 14px; opacity: .8; }
+.row { display: flex; gap: 10px; justify-content: center; }
+.row .btn { flex: 1; }
+/* シート（図鑑・設定） */
+#sheet { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 3; background: rgba(59,42,26,.5); display: flex; align-items: flex-end; }
+#sheetBox { background: var(--panel); width: 100%; max-height: 88%; border-radius: 22px 22px 0 0; display: flex; flex-direction: column;  }
+#sheetHead { display: flex; align-items: center; padding: 12px 14px; gap: 10px; }
+#sheetHead h2 { margin: 0; flex: 1; font-size: 20px; }
+#sheetBody { overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 18px; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
+.zgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.zc { background: #fff; border-radius: 14px; padding: 10px; display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.zc .sw { width: 34px; height: 44px; border-radius: 6px 6px 12px 12px; flex: none; border: 2px solid rgba(0,0,0,.15); }
+.zc b { display: block; font-size: 15px; }
+.zc.unk { opacity: .55; }
+.set { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-bottom: 1px solid rgba(0,0,0,.08); font-size: 15px; }
+.set label { display: flex; justify-content: space-between; }
+.set input[type=range] { width: 100%; height: 36px; accent-color: var(--accent); }
+.set .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.set .opts button { min-height: 40px; padding: 0 12px; border-radius: 10px; background: #fff; font-size: 15px; }
+.set .opts button.on { background: var(--accent); color: #fff; }
+#toast { position: absolute; left: 50%; top: 42%; transform: translateX(-50%); font-size: 34px; font-weight: 900; color: #fff; text-shadow: 0 3px 0 var(--ink), 0 0 12px rgba(0,0,0,.25); pointer-events: none; white-space: nowrap; }
+</style>
+</head>
+<body class="game">
+<div class="app">
+<header class="app-bar" data-title="スムージーを作れ" data-back="../index.html" data-reset></header>
+<main class="app-main sm-main">
+<div id="app">
+  <canvas id="cv"></canvas>
+
+  <div id="hud" class="hide">
+    <div id="hudTime">25</div>
+    <div id="hudCount">0/10</div>
+    <button id="hudMix" class="btn">まぜる</button>
+    <button id="hudPause" class="btn sub" aria-label="一時停止">II</button>
+  </div>
+
+  <div id="title" class="over">
+    <h1 id="tTitle">スムージーを作れ</h1>
+    <p id="tSub">朝だ。速攻でつくれ。</p>
+    <button id="btnStart" class="btn big">起きる</button>
+    <div id="titleRow">
+      <button id="btnZukan" class="btn sub">図鑑</button>
+      <button id="btnSettings" class="btn sub">設定</button>
+    </div>
+  </div>
+
+  <div id="pause" class="over hide">
+    <div class="card">
+      <h2 style="margin:0">一時停止</h2>
+      <button id="btnResume" class="btn big" style="font-size:24px">つづける</button>
+      <button id="btnQuit" class="btn">やめる</button>
+    </div>
+  </div>
+
+  <div id="result" class="over hide">
+    <div class="card">
+      <div id="resNew" class="hide">新しい一杯！</div>
+      <p id="resName">ピンクの朝</p>
+      <div id="resStars">★★★☆☆</div>
+      <p id="resComment"></p>
+      <div id="resList"></div>
+      <div id="resScore"></div>
+      <div class="row">
+        <button id="btnAgain" class="btn big" style="font-size:22px;padding:0 10px">もう一杯</button>
+      </div>
+      <div class="row">
+        <button id="btnResZukan" class="btn sub">図鑑</button>
+        <button id="btnResTitle" class="btn sub">ねる</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="zdet" class="over hide">
+    <div class="card">
+      <p id="zdName"></p>
+      <div id="zdStars"></div>
+      <p id="zdComment"></p>
+      <div id="zdList"></div>
+      <div id="zdScore"></div>
+      <div id="zdStats"></div>
+      <div class="tap">タップで閉じる</div>
+    </div>
+  </div>
+
+  <div id="sheet" class="hide">
+    <div id="sheetBox">
+      <div id="sheetHead"><h2 id="sheetTitle">図鑑</h2><button id="btnSheetClose" class="btn sub">とじる</button></div>
+      <div id="sheetBody" class="scrollable"></div>
+    </div>
+  </div>
+
+
+
+  <div id="toast" class="hide"></div>
+</div>
+  <div id="help-sheet" class="sheet hidden">
+    <div class="sheet-body">
+      <h3>遊び方</h3>
+      <ul>
+        <li>「起きる」で始まる。台所の床にミキサーと材料が散らばっている</li>
+        <li>集める（25 秒）: 画面を指でなぞると、ミキサーが指と同じ向きに動く。はじくように離すと勢いのまま転がる。当たった材料が入る（10 個で満杯）</li>
+        <li>続けて拾うと連続（x2, x3…）で点が増える。速く転がっているときに拾うと「いきおい」で +4</li>
+        <li>氷はすべる。そっと当てると逃げていくので、勢いよくぶつける</li>
+        <li>石けん・スポンジ・電池・猫のおやつ・靴下・アヒルは入れてはいけない物。入ると笑える名前になる</li>
+        <li>上の「まぜる」で混ぜる場面へ（満杯か時間切れでも移る）</li>
+        <li>混ぜる: 画面を指で左右にこすると混ざる。速くこするほどよく混ざるが、こすりすぎるとフタが飛んで材料が 1 つ飛んでいく。タップの連打でも混ざる</li>
+        <li>完成: 入れた材料の組み合わせで名前・色・星（1〜5）が決まる。図鑑は 101 種類</li>
+      </ul>
+      <h3>操作</h3>
+      <ul><li>スマホ・iPad: 指でなぞる・こする</li><li>PC: マウスでドラッグ。混ぜるのはスペースキーの連打でも</li></ul>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 材料と組み合わせ表（ここ 1 か所）。recipes は上から順に調べ、最初に当てはまったものになる。
+     cond（全部満たすと当てはまる）:
+       count=[最小,最大] 個数 / bad=[最小,最大] 入れてはいけない物の個数 / has=全部入っている / any=どれか入っている
+       none=どれも入っていない / only=これ以外入っていない / min={材料:最低個数} / tag={タグ:最低個数}
+       distinct=まともな材料の種類数の最低 / color=[色の名前…] 混ぜた色がどれか / muddy=色が濁っている
+     stars は評価（1〜5）、点の「表」は stars×8。g は図鑑での分け方（groups の順に並ぶ）。color が無ければ混ぜた色。name の {color} は色の名前
+     変えたら node tools/combo-check.mjs で、作れない物が無いか・偏りが無いかを確かめる -->
+<script type="application/json" id="data">
+{
+  "ingredients": [
+    {"id":"banana","name":"バナナ","shape":"banana","color":"#FFD93B","mix":"#F3E3A0","mw":1.0,"tags":["fruit","sweet"],"pts":10,"w":3},
+    {"id":"strawberry","name":"いちご","shape":"berry","color":"#E8394D","mix":"#F0567A","mw":1.2,"tags":["fruit"],"pts":10,"w":3},
+    {"id":"spinach","name":"ほうれん草","shape":"leaf","color":"#2E8B3A","mix":"#3E9B3A","mw":1.3,"tags":["green","veg"],"pts":12,"w":2},
+    {"id":"milk","name":"牛乳","shape":"carton","color":"#FFFFFF","mix":"#FFFFFF","mw":0.8,"tags":["dairy"],"pts":8,"w":2},
+    {"id":"ice","name":"氷","shape":"cube","color":"#BFE6FF","mix":"#E6F4FF","mw":0.3,"tags":["cold"],"pts":6,"w":3,"slide":true},
+    {"id":"yogurt","name":"ヨーグルト","shape":"cup","color":"#FFFDF5","mix":"#FFF8EE","mw":0.8,"tags":["dairy"],"pts":9,"w":2},
+    {"id":"blueberry","name":"ブルーベリー","shape":"dots","color":"#3B3F9E","mix":"#5B3F9A","mw":1.3,"tags":["fruit"],"pts":11,"w":2},
+    {"id":"mango","name":"マンゴー","shape":"oval","color":"#FFB020","mix":"#FFAE2B","mw":1.1,"tags":["fruit","sweet"],"pts":11,"w":2},
+    {"id":"kiwi","name":"キウイ","shape":"slice","color":"#7DBB3C","mix":"#8BC34A","mw":1.0,"tags":["fruit","green"],"pts":11,"w":2},
+    {"id":"honey","name":"はちみつ","shape":"jar","color":"#E8A317","mix":"#E8A317","mw":0.4,"tags":["sweet"],"pts":9,"w":1},
+    {"id":"carrot","name":"にんじん","shape":"carrot","color":"#FF7A1A","mix":"#FF7A1A","mw":1.0,"tags":["veg"],"pts":10,"w":1},
+    {"id":"coffee","name":"コーヒー豆","shape":"bean","color":"#6B3E26","mix":"#6B3E26","mw":1.4,"tags":["bitter"],"pts":9,"w":1},
+    {"id":"avocado","name":"アボカド","shape":"avocado","color":"#4E7A2A","mix":"#B5CF6B","mw":1.0,"tags":["green"],"pts":11,"w":1},
+    {"id":"soap","name":"石けん","shape":"bar","color":"#FF9EC7","mix":"#FFD6EA","mw":0.6,"tags":["bad"],"pts":0,"w":1},
+    {"id":"sponge","name":"スポンジ","shape":"sponge","color":"#FFE14D","mix":"#E8E07A","mw":0.6,"tags":["bad"],"pts":0,"w":1},
+    {"id":"battery","name":"電池","shape":"battery","color":"#2B2B2B","mix":"#9AA0A6","mw":0.6,"tags":["bad"],"pts":0,"w":1},
+    {"id":"cattreat","name":"猫のおやつ","shape":"fish","color":"#A0663A","mix":"#B98B66","mw":0.6,"tags":["bad"],"pts":0,"w":1},
+    {"id":"sock","name":"靴下","shape":"sock","color":"#5C7CFA","mix":"#9AA7C9","mw":0.6,"tags":["bad"],"pts":0,"w":1},
+    {"id":"duck","name":"アヒル","shape":"duck","color":"#FFD21F","mix":"#F5E08A","mw":0.3,"tags":["bad"],"pts":0,"w":1}
+  ],
+  "groups": ["ひとつだけ", "王道", "組み合わせ", "まぜこぜ", "量", "色", "入れてはいけない物", "大惨事"],
+  "recipes": [
+    {"id":"trash","name":"ゴミ箱の中身","g":"大惨事","stars":1,"cond":{"bad":[5,10]},"comment":"朝からなにをしているのか。"},
+    {"id":"disaster","name":"台所の大惨事","g":"大惨事","stars":1,"cond":{"bad":[3,10]},"comment":"ミキサーが泣いている。"},
+    {"id":"bath","name":"お風呂の時間","g":"大惨事","stars":2,"cond":{"has":["soap","duck"]},"comment":"泡の上をアヒルが行く。"},
+    {"id":"dishwash","name":"食器洗い機","g":"大惨事","stars":1,"cond":{"has":["soap","sponge"]},"comment":"ピカピカになった。ミキサーが。"},
+    {"id":"robotduck","name":"電動アヒル","g":"大惨事","stars":2,"cond":{"has":["battery","duck"]},"comment":"勝手に泳ぎだした。"},
+    {"id":"cattoy","name":"猫のおもちゃ箱","g":"大惨事","stars":2,"cond":{"has":["cattreat","sock"]},"comment":"猫が靴下をくわえて去った。"},
+    {"id":"sockwash","name":"靴下の手洗い","g":"大惨事","stars":1,"cond":{"has":["sock","soap"]},"comment":"洗濯機でやって。"},
+    {"id":"chargesponge","name":"充電スポンジ","g":"大惨事","stars":1,"cond":{"has":["sponge","battery"]},"comment":"ちょっとピリピリする。"},
+    {"id":"almost","name":"おしい一杯","g":"大惨事","stars":2,"cond":{"bad":[2,2],"distinct":4},"comment":"あと少しだった。何かが。"},
+    {"id":"junk","name":"ガラクタ・スムージー","g":"大惨事","stars":1,"cond":{"bad":[2,10]},"comment":"何を作ろうとしたのか。"},
+    {"id":"soaponly","name":"石けん水","g":"入れてはいけない物","stars":1,"cond":{"only":["soap"]},"comment":"シャボン玉が作れる。","color":"#FFE3F0"},
+    {"id":"milksoap","name":"ミルク石けん","g":"入れてはいけない物","stars":1,"cond":{"has":["soap"],"any":["milk","yogurt"]},"comment":"肌にはいい。口には悪い。"},
+    {"id":"fruitsoap","name":"果物の香りの石けん","g":"入れてはいけない物","stars":2,"cond":{"has":["soap"],"tag":{"fruit":3}},"comment":"いい匂い。飲めない。"},
+    {"id":"soap","name":"泡立つ朝","g":"入れてはいけない物","stars":1,"cond":{"any":["soap"]},"comment":"石けん入りは飲めない。台所はいい匂い。","color":"#FFD6EA"},
+    {"id":"spongeonly","name":"乾いたスポンジ","g":"入れてはいけない物","stars":1,"cond":{"only":["sponge"]},"comment":"ミキサーの中で跳ねている。"},
+    {"id":"spongefull","name":"全部吸った","g":"入れてはいけない物","stars":1,"cond":{"has":["sponge"],"count":[8,10]},"comment":"しぼれば一杯分。しぼらない。"},
+    {"id":"icesponge","name":"凍ったスポンジ","g":"入れてはいけない物","stars":1,"cond":{"has":["sponge","ice"]},"comment":"カチカチ。"},
+    {"id":"sponge","name":"スポンジ・ケーキ（ではない）","g":"入れてはいけない物","stars":2,"cond":{"any":["sponge"]},"comment":"全部吸われた。しぼれば飲める。飲まない。"},
+    {"id":"battonly","name":"電池が回る","g":"入れてはいけない物","stars":1,"cond":{"only":["battery"]},"comment":"ガラガラ鳴っている。"},
+    {"id":"fullcharge","name":"フル充電","g":"入れてはいけない物","stars":2,"cond":{"has":["battery","coffee"]},"comment":"目が覚めすぎた。飲んではいけない。"},
+    {"id":"kiwibatt","name":"キウイ電池","g":"入れてはいけない物","stars":2,"cond":{"has":["battery","kiwi"]},"comment":"理科の実験の味がする。"},
+    {"id":"battery","name":"ビリビリ・モーニング","g":"入れてはいけない物","stars":1,"cond":{"any":["battery"]},"comment":"飲んではいけない。でも目は覚めた。","color":"#9AA0A6"},
+    {"id":"catonly","name":"猫のごちそう","g":"入れてはいけない物","stars":3,"cond":{"only":["cattreat"]},"comment":"猫には最高の一杯。"},
+    {"id":"catmilk","name":"猫まっしぐら","g":"入れてはいけない物","stars":3,"cond":{"has":["cattreat","milk"]},"comment":"猫が飛んできた。"},
+    {"id":"catparty","name":"猫の宴会","g":"入れてはいけない物","stars":2,"cond":{"has":["cattreat"],"count":[8,10]},"comment":"近所の猫が集まった。"},
+    {"id":"cattreat","name":"猫の朝ごはん","g":"入れてはいけない物","stars":2,"cond":{"any":["cattreat"]},"comment":"猫が飲み干した。満足そうだ。"},
+    {"id":"sockonly","name":"片方の靴下","g":"入れてはいけない物","stars":1,"cond":{"only":["sock"]},"comment":"もう片方はどこへ。"},
+    {"id":"dyedsock","name":"染まった靴下","g":"入れてはいけない物","stars":1,"cond":{"has":["sock"],"any":["strawberry","blueberry"]},"comment":"靴下がきれいな色になった。"},
+    {"id":"coffeesock","name":"大人の靴下","g":"入れてはいけない物","stars":1,"cond":{"has":["sock","coffee"]},"comment":"香りが複雑。"},
+    {"id":"sock","name":"靴下の香り","g":"入れてはいけない物","stars":1,"cond":{"any":["sock"]},"comment":"誰の靴下だ。"},
+    {"id":"duckonly","name":"アヒルの散歩","g":"入れてはいけない物","stars":2,"cond":{"only":["duck"]},"comment":"ミキサーの中を一周した。"},
+    {"id":"iceduck","name":"氷上のアヒル","g":"入れてはいけない物","stars":2,"cond":{"has":["duck","ice"]},"comment":"すべって楽しそう。"},
+    {"id":"yellowpals","name":"黄色い仲間","g":"入れてはいけない物","stars":3,"cond":{"has":["duck"],"any":["mango","banana"]},"comment":"どれがアヒルか分からない。"},
+    {"id":"duck","name":"アヒルが泳いでる","g":"入れてはいけない物","stars":2,"cond":{"any":["duck"]},"comment":"取り出せば飲める。たぶん。"},
+    {"id":"empty","name":"空気のスムージー","g":"量","stars":1,"cond":{"count":[0,0]},"comment":"コップの底が見える。気分だけは爽やか。","color":"#EAF6FF"},
+    {"id":"onebite","name":"ひと口スムージー","g":"量","stars":2,"cond":{"count":[1,1]},"comment":"一瞬で飲み終わった。"},
+    {"id":"iceonly","name":"ただの氷","g":"ひとつだけ","stars":1,"cond":{"only":["ice"]},"comment":"かき氷にもなれなかった。","color":"#E6F4FF"},
+    {"id":"milkonly","name":"ただの牛乳","g":"ひとつだけ","stars":3,"cond":{"only":["milk"]},"comment":"おいしい。牛乳だから。"},
+    {"id":"yogurtonly","name":"飲むヨーグルト","g":"ひとつだけ","stars":3,"cond":{"only":["yogurt"]},"comment":"それはそう。"},
+    {"id":"bananawall","name":"バナナの壁","g":"ひとつだけ","stars":3,"cond":{"only":["banana"],"min":{"banana":3}},"comment":"濃すぎてストローが立つ。"},
+    {"id":"bananaonly","name":"バナナ・ストレート","g":"ひとつだけ","stars":2,"cond":{"only":["banana"]},"comment":"つぶしただけ。"},
+    {"id":"strawonly","name":"いちご一直線","g":"ひとつだけ","stars":4,"cond":{"only":["strawberry"]},"comment":"赤い。甘い。正しい。"},
+    {"id":"spinachonly","name":"ほうれん草の汁","g":"ひとつだけ","stars":1,"cond":{"only":["spinach"]},"comment":"修行の味。"},
+    {"id":"blueonly","name":"目にいい一杯","g":"ひとつだけ","stars":3,"cond":{"only":["blueberry"]},"comment":"ブルーベリーしか入っていない。"},
+    {"id":"mangoonly","name":"マンゴー百パーセント","g":"ひとつだけ","stars":4,"cond":{"only":["mango"]},"comment":"南国の朝。"},
+    {"id":"kiwionly","name":"すっぱい目覚め","g":"ひとつだけ","stars":3,"cond":{"only":["kiwi"]},"comment":"目が一気に開いた。"},
+    {"id":"honeyonly","name":"ただのはちみつ","g":"ひとつだけ","stars":2,"cond":{"only":["honey"]},"comment":"スプーンで食べて。"},
+    {"id":"carrotonly","name":"にんじんジュース","g":"ひとつだけ","stars":3,"cond":{"only":["carrot"]},"comment":"まっすぐな味。"},
+    {"id":"coffeeonly","name":"豆のまま","g":"ひとつだけ","stars":1,"cond":{"only":["coffee"]},"comment":"ガリガリ言っている。"},
+    {"id":"avocadoonly","name":"アボカドのペースト","g":"ひとつだけ","stars":2,"cond":{"only":["avocado"]},"comment":"パンに塗ろう。"},
+    {"id":"white","name":"白い朝","g":"ひとつだけ","stars":2,"cond":{"only":["milk","yogurt","ice"]},"comment":"これは牛乳では？"},
+    {"id":"fruitmountain","name":"果物の山","g":"量","stars":5,"cond":{"count":[10,10],"tag":{"fruit":8}},"comment":"ミキサーが重い。"},
+    {"id":"fullhouse","name":"満員電車","g":"量","stars":3,"cond":{"count":[10,10],"distinct":7},"comment":"ぎゅうぎゅう。でも全員いい味。"},
+    {"id":"alltogether","name":"全部のせ","g":"まぜこぜ","stars":5,"cond":{"distinct":9},"comment":"冷蔵庫が空になった。最高。"},
+    {"id":"rainbow","name":"手当たり次第ミックス","g":"まぜこぜ","stars":4,"cond":{"distinct":7},"comment":"勢いの勝利。何が入っているか誰も知らない。うまい。"},
+    {"id":"honey","name":"はちみつの約束","g":"王道","stars":5,"cond":{"has":["honey","yogurt","banana"]},"comment":"やさしい甘さ。二度寝したくなる。"},
+    {"id":"tropical","name":"トロピカル・ラッシュ","g":"王道","stars":5,"cond":{"has":["mango","banana","kiwi"]},"comment":"朝から休暇。"},
+    {"id":"berryberry","name":"ベリーベリー","g":"王道","stars":5,"cond":{"has":["strawberry","blueberry"],"any":["milk","yogurt"]},"comment":"甘ずっぱい。完ぺき。"},
+    {"id":"greenpower","name":"緑の三銃士","g":"王道","stars":5,"cond":{"has":["spinach","kiwi","avocado"]},"comment":"健康に全振り。"},
+    {"id":"pink","name":"ピンクの朝","g":"王道","stars":4,"cond":{"has":["strawberry","banana"],"any":["milk","yogurt"]},"comment":"王道。今日はいい日になる。"},
+    {"id":"green","name":"緑の決意","g":"王道","stars":4,"cond":{"has":["spinach","banana"]},"comment":"体にいい気がする。気がするのが大事。"},
+    {"id":"purple","name":"むらさきの静けさ","g":"王道","stars":4,"cond":{"has":["blueberry"],"any":["milk","yogurt"]},"comment":"落ち着いた朝。電車にも間に合う。"},
+    {"id":"lassi","name":"マンゴーラッシー風","g":"王道","stars":4,"cond":{"has":["mango","yogurt"]},"comment":"南の国の朝。"},
+    {"id":"coffee","name":"目覚まし特急","g":"王道","stars":3,"cond":{"has":["coffee"],"any":["milk","yogurt"]},"comment":"カフェインで二度目の起床。"},
+    {"id":"avocado","name":"アボカドの雲","g":"王道","stars":4,"cond":{"has":["avocado"],"any":["milk","yogurt","banana"]},"comment":"とろとろ。スプーンで食べる。"},
+    {"id":"sunset","name":"にんじん夕焼け","g":"王道","stars":3,"cond":{"has":["carrot"],"any":["mango","banana","strawberry"]},"comment":"朝なのに夕焼け色。"},
+    {"id":"coffeecarrot","name":"苦い夕焼け","g":"組み合わせ","stars":2,"cond":{"has":["coffee","carrot"]},"comment":"よく分からないが目は覚める。"},
+    {"id":"coffeebanana","name":"バナナ・ラテ風","g":"組み合わせ","stars":3,"cond":{"has":["coffee","banana"]},"comment":"牛乳がなくても意外といける。"},
+    {"id":"honeycoffee","name":"はちみつコーヒー","g":"組み合わせ","stars":3,"cond":{"has":["honey","coffee"]},"comment":"やさしい苦さ。"},
+    {"id":"coffeeice","name":"アイスコーヒー（豆）","g":"組み合わせ","stars":2,"cond":{"has":["coffee","ice"]},"comment":"豆が氷とぶつかっている。"},
+    {"id":"swamp","name":"沼","g":"組み合わせ","stars":1,"cond":{"has":["spinach","coffee"]},"comment":"見た目どおりの味。"},
+    {"id":"xmas","name":"赤と緑のクリスマス","g":"組み合わせ","stars":3,"cond":{"has":["kiwi","strawberry"]},"comment":"季節外れ。"},
+    {"id":"farm","name":"畑の朝","g":"組み合わせ","stars":2,"cond":{"has":["carrot","spinach"]},"comment":"野菜ジュースだ。"},
+    {"id":"bluebanana","name":"ブルーバナナ","g":"組み合わせ","stars":4,"cond":{"has":["blueberry","banana"]},"comment":"青くない。でもおいしい。"},
+    {"id":"summer","name":"夏の朝","g":"組み合わせ","stars":4,"cond":{"has":["mango","strawberry"]},"comment":"窓を開けたくなる。"},
+    {"id":"jewel","name":"宝石箱","g":"組み合わせ","stars":5,"cond":{"has":["blueberry","kiwi"]},"comment":"見た目がきれい。"},
+    {"id":"kiwiyogurt","name":"キウイヨーグルト","g":"組み合わせ","stars":4,"cond":{"has":["kiwi","yogurt"]},"comment":"すっぱさがちょうどいい。"},
+    {"id":"bananamilk","name":"バナナミルク","g":"組み合わせ","stars":3,"cond":{"has":["banana","milk"]},"comment":"なつかしい味。"},
+    {"id":"strawmilk","name":"いちごミルク","g":"組み合わせ","stars":3,"cond":{"has":["strawberry"],"any":["milk","yogurt"]},"comment":"子どものころの朝。"},
+    {"id":"mangomilk","name":"マンゴーミルク","g":"組み合わせ","stars":4,"cond":{"has":["mango","milk"]},"comment":"まろやか。"},
+    {"id":"kiwibanana","name":"キウイバナナ","g":"組み合わせ","stars":3,"cond":{"has":["kiwi","banana"]},"comment":"朝の定番になりそう。"},
+    {"id":"strawhoney","name":"いちごはちみつ","g":"組み合わせ","stars":5,"cond":{"has":["strawberry","honey"]},"comment":"とろける甘さ。"},
+    {"id":"forestbutter","name":"森のバター","g":"組み合わせ","stars":4,"cond":{"has":["avocado","honey"]},"comment":"濃厚。パンが欲しい。"},
+    {"id":"greenyogurt","name":"緑のヨーグルト","g":"組み合わせ","stars":3,"cond":{"has":["spinach","yogurt"]},"comment":"見た目ほど悪くない。"},
+    {"id":"salad","name":"サラダ","g":"組み合わせ","stars":2,"cond":{"has":["avocado","spinach"]},"comment":"ドレッシングが欲しい。"},
+    {"id":"carrotmilk","name":"オレンジ牛乳","g":"組み合わせ","stars":2,"cond":{"has":["carrot","milk"]},"comment":"色はきれい。"},
+    {"id":"iceheavy","name":"かき氷寸前","g":"量","stars":2,"cond":{"min":{"ice":4}},"comment":"シャリシャリ。歯にしみる。"},
+    {"id":"milkheavy","name":"ほぼ牛乳","g":"量","stars":2,"cond":{"min":{"milk":4}},"comment":"牛乳の味しかしない。"},
+    {"id":"toosweet","name":"甘すぎる朝","g":"量","stars":2,"cond":{"min":{"honey":2}},"comment":"歯みがきを忘れずに。"},
+    {"id":"greengreen","name":"まっ緑の月曜日","g":"まぜこぜ","stars":3,"cond":{"tag":{"green":3}},"comment":"森の味がする。"},
+    {"id":"fruitbasket","name":"果物かご","g":"まぜこぜ","stars":3,"cond":{"tag":{"fruit":5}},"comment":"果物屋さんの朝。"},
+    {"id":"dairyfest","name":"乳製品まつり","g":"まぜこぜ","stars":3,"cond":{"tag":{"dairy":3}},"comment":"こってり。"},
+    {"id":"veggie","name":"野菜たっぷり","g":"まぜこぜ","stars":3,"cond":{"tag":{"veg":2}},"comment":"えらい。"},
+    {"id":"sweettooth","name":"甘党の朝","g":"まぜこぜ","stars":3,"cond":{"tag":{"sweet":3}},"comment":"ごほうびの一杯。"},
+    {"id":"muddy","name":"茶色い何か","g":"まぜこぜ","stars":2,"cond":{"count":[6,10],"muddy":true},"comment":"味はいい。見た目は聞かないで。"},
+    {"id":"redmorning","name":"赤い朝","g":"色","stars":3,"cond":{"color":["ピンク","赤"]},"comment":"いい色に仕上がった。"},
+    {"id":"suncolor","name":"太陽の色","g":"色","stars":3,"cond":{"color":["黄色","オレンジ"]},"comment":"飲むと元気が出る。"},
+    {"id":"youngleaf","name":"若葉の朝","g":"色","stars":3,"cond":{"color":["緑","黄緑"]},"comment":"さわやか。"},
+    {"id":"dawn","name":"夜明け前","g":"色","stars":3,"cond":{"color":["むらさき","青"]},"comment":"静かな味。"},
+    {"id":"cafecolor","name":"カフェ色","g":"色","stars":2,"cond":{"color":["茶色"]},"comment":"落ち着いた色。"},
+    {"id":"default","name":"{color}の朝","g":"色","stars":2,"cond":{},"comment":"名もなき一杯。でも自分で作った。"}
+  ]
+}
+</script>
+
+<script src="../js/common.js"></script>
+<script>
+'use strict';
+// 見た目・文言・遊びの数字はここ 1 か所。設定画面で変えた値は localStorage に上書きされる
+const THEME = {
+  color: { bg: '#FFE9B8', floorA: '#F8DCA6', floorB: '#F2CD8C', edge: '#C98F55', ink: '#3B2A1A', accent: '#FF5C8A', accent2: '#2BB673',
+           warn: '#E5484D', glass: 'rgba(205,236,255,.55)', glassEdge: '#7FB8D8', base: '#475569', lid: '#334155', gauge: '#FF5C8A', gaugeBg: 'rgba(0,0,0,.12)' },
+  size: { mixerR: 0.095, itemR: 0.048, hudH: 64 },
+  text: { title: 'スムージーを作れ', sub: '朝だ。速攻でつくれ。', start: '起きる', alarm: '6:30 起きろ！', go: 'なぞって集めろ！',
+          shake: 'まぜろ！', shakeTap: '← 指でこすれ！ →', 
+          lid: 'フタが飛んだ！', loose: 'フタがゆるい！', done: '完成！', full: '満杯！',
+          timeUp: '時間切れ！', early: 'まぜるぞ！', mix: 'まぜる' },
+  time: { collect: 25, alarm: 1.0, ready: 1.4, spawnEvery: 1.2 },
+  game: { capacity: 10, fieldStart: 14, fieldMax: 18, badRatio: 0.22, comboGap: 1.5, gaugeBase: 100, gaugePerIce: 6 },
+  // 指で動かす。sens は指の移動に対するミキサーの移動の倍率。friction は離したあとの減速（大きいほど早く止まる）
+  // こする量は CSS px を 400 で割った単位（端末が変わっても手の動きの量がほぼ同じ）。rubGauge は 1 単位こすったときに溜まる量、
+  // rubLoose は毎秒これ以上の速さでこすり続けるとフタがゆるむ。lidTh は揺れと音の目盛り。tapGauge は 1 回のタップで溜まる量
+  input: { sens: 1.15, friction: 1.5, rubGauge: 7, rubLoose: 5, lidTh: 28, tapPulse: 17, tapGauge: 3.5, tapLooseRate: 9 },
+  sound: { on: true, vol: 0.6 },
+};
+
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const ING = {}; DATA.ingredients.forEach(i => ING[i.id] = i);
+const $ = id => document.getElementById(id);
+
+// ---------- 保存 ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('smoothie.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('smoothie.' + k, JSON.stringify(v)); } catch (e) {} }
+};
+(function loadSettings() {
+  const s = store.get('settings', null);
+  if (!s) return;
+  if (s.input && s.input.sens) THEME.input.sens = s.input.sens;
+  for (const g of ['time', 'sound']) if (s[g]) Object.assign(THEME[g], s[g]);
+})();
+function saveSettings() { store.set('settings', { input: { sens: THEME.input.sens }, time: { collect: THEME.time.collect }, sound: THEME.sound }); }
+
+// ---------- 画面の大きさ ----------
+const cv = $('cv'), ctx = cv.getContext('2d');
+let W = 360, H = 640, DPR = 1, U = 360;
+const appEl = $('app');
+function measure() {
+  const w = Math.max(200, appEl.clientWidth), h = Math.max(200, appEl.clientHeight);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (w === W && h === H && dpr === DPR && cv.width) return;
+  if (w !== W || h !== H) {
+    const sx = w / W, sy = h / H;
+    W = w; H = h;
+    rescale(sx, sy);
+  }
+  U = Math.min(W, H * 0.62);
+  DPR = dpr;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+window.addEventListener('resize', () => { setTimeout(measure, 0); setTimeout(measure, 300); });
+window.addEventListener('orientationchange', () => { setTimeout(measure, 250); setTimeout(measure, 700); });
+window.addEventListener('pageshow', measure);
+
+function field() {
+  const top = THEME.size.hudH + 6, m = 10;
+  return { x0: m, y0: top, x1: W - m, y1: H - m - 6 };
+}
+
+// ---------- 音（Web Audio で合成。鳴らなくても止めない） ----------
+const Snd = {
+  ac: null, master: null, hum: null, humGain: null, humFilt: null,
+  init() {
+    try {
+      if (!this.ac) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        this.ac = new AC();
+        this.master = this.ac.createGain();
+        this.master.connect(this.ac.destination);
+      }
+      this.applyVol();
+      if (this.ac.state === 'suspended') this.ac.resume();
+    } catch (e) {}
+  },
+  applyVol() { try { if (this.master) this.master.gain.value = THEME.sound.on ? THEME.sound.vol : 0; } catch (e) {} },
+  ok() { return this.ac && THEME.sound.on && this.ac.state === 'running'; },
+  tone(f, dur, type, vol, f2, delay) {
+    try {
+      if (!this.ok()) return;
+      const t = this.ac.currentTime + (delay || 0);
+      const o = this.ac.createOscillator(), g = this.ac.createGain();
+      o.type = type || 'sine'; o.frequency.setValueAtTime(f, t);
+      if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol || 0.3, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(this.master); o.start(t); o.stop(t + dur + 0.02);
+    } catch (e) {}
+  },
+  noise(dur, vol, freq) {
+    try {
+      if (!this.ok()) return;
+      const n = Math.floor(this.ac.sampleRate * dur), b = this.ac.createBuffer(1, n, this.ac.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      const s = this.ac.createBufferSource(), f = this.ac.createBiquadFilter(), g = this.ac.createGain();
+      s.buffer = b; f.type = 'bandpass'; f.frequency.value = freq || 1200; g.gain.value = vol || 0.3;
+      s.connect(f); f.connect(g); g.connect(this.master); s.start();
+    } catch (e) {}
+  },
+  alarm() { for (let i = 0; i < 6; i++) this.tone(i % 2 ? 1320 : 1180, 0.09, 'square', 0.12, null, i * 0.13); },
+  go() { this.tone(660, 0.12, 'triangle', 0.3); this.tone(990, 0.2, 'triangle', 0.3, null, 0.12); },
+  pick(c) { const f = 520 * Math.pow(1.06, Math.min(c, 14)); this.tone(f, 0.12, 'sine', 0.35, f * 1.5); this.tone(f * 2, 0.06, 'triangle', 0.1); },
+  bad() { this.tone(160, 0.3, 'sawtooth', 0.25, 70); },
+  thud(v) { this.tone(90, 0.12, 'sine', Math.min(0.4, 0.1 + v * 0.3), 50); },
+  pop() { this.noise(0.25, 0.5, 900); this.tone(300, 0.25, 'square', 0.2, 1400); },
+  done() { [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.3, null, i * 0.1)); },
+  humSet(m) {
+    try {
+      if (!this.ok()) { if (this.humGain) this.humGain.gain.value = 0; return; }
+      if (!this.hum) {
+        this.hum = this.ac.createOscillator(); this.hum.type = 'sawtooth';
+        this.humFilt = this.ac.createBiquadFilter(); this.humFilt.type = 'lowpass'; this.humFilt.frequency.value = 600;
+        this.humGain = this.ac.createGain(); this.humGain.gain.value = 0;
+        this.hum.connect(this.humFilt); this.humFilt.connect(this.humGain); this.humGain.connect(this.master); this.hum.start();
+      }
+      const t = this.ac.currentTime;
+      const k = Math.min(1, m / (THEME.input.lidTh * 1.2));
+      this.hum.frequency.setTargetAtTime(70 + k * 260, t, 0.05);
+      this.humFilt.frequency.setTargetAtTime(400 + k * 2400, t, 0.05);
+      this.humGain.gain.setTargetAtTime(m > 0.5 ? 0.05 + k * 0.18 : 0, t, 0.06);
+    } catch (e) {}
+  },
+  humOff() { try { if (this.humGain) this.humGain.gain.setTargetAtTime(0, this.ac.currentTime, 0.05); } catch (e) {} }
+};
+
+// ---------- 入力（指だけ。傾きセンサーは使わない） ----------
+// 集める: 指の移動量をそのままミキサーへ（どこをなぞってもよい）。離すと勢いのまま転がる
+// 混ぜる: 指でこすった道のりでゲージが溜まる。タップも 1 回ずつ溜まる
+const Inp = {
+  finger: null,            // {id, x, y}
+  dx: 0, dy: 0,            // 前のコマからの指の移動（px）
+  rub: 0, rubSpeed: 0,     // 前のコマからこすった道のり（400px 単位）と、なめらかにした速さ（毎秒）
+  tapMag: 0, visMag: 0, taps: [],
+  read(dt) {
+    const sp = dt > 0 ? this.rub / dt : 0;
+    const k = 1 - Math.exp(-8 * dt);
+    this.rubSpeed += (sp - this.rubSpeed) * k;
+    if (!this.finger) this.rubSpeed *= Math.exp(-6 * dt);
+    this.visMag = Math.max(this.tapMag, this.rubSpeed / THEME.input.rubLoose * THEME.input.lidTh * 0.9);
+  },
+  take() { const d = { x: this.dx, y: this.dy, rub: this.rub }; this.dx = 0; this.dy = 0; this.rub = 0; return d; },
+  decay(dt) { this.tapMag = Math.max(0, this.tapMag - 90 * dt); }
+};
+
+// ---------- ゲームの状態 ----------
+const G = {
+  scene: 'title', paused: false, timeScale: 1, t: 0, sceneT: 0,
+  timeLeft: 0, mixer: { x: 0, y: 0, vx: 0, vy: 0, rot: 0, held: false }, items: [], inMix: [], sucking: [],
+  spawnT: 0, combo: 0, bestCombo: 0, lastPick: -9, gather: 0, endReason: '',
+  gauge: 0, gaugeMax: 100, shakeTime: 0, lid: { loose: 0, off: 0, flies: 0, anim: null }, earlyT: 0,
+  floats: [], parts: [], splats: [], quake: 0, result: null, toastT: 0
+};
+
+function rescale(sx, sy) {
+  const m = G.mixer; m.x *= sx; m.y *= sy;
+  G.items.forEach(i => { i.x *= sx; i.y *= sy; });
+}
+
+const FAST = 1.3;      // いきおいの速さ（U/秒）
+const ICE_SPEED = 0.8; // これより遅く当たった氷は逃げる（U/秒）
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function pickWeighted(list) {
+  let s = 0; list.forEach(i => s += i.w);
+  let r = Math.random() * s;
+  for (const i of list) { r -= i.w; if (r <= 0) return i; }
+  return list[list.length - 1];
+}
+const GOOD = DATA.ingredients.filter(i => !i.tags.includes('bad'));
+const BAD = DATA.ingredients.filter(i => i.tags.includes('bad'));
+
+function spawnItem(pop) {
+  const f = field(), r = U * THEME.size.itemR;
+  const ing = Math.random() < THEME.game.badRatio ? pickWeighted(BAD) : pickWeighted(GOOD);
+  for (let k = 0; k < 40; k++) {
+    const x = rnd(f.x0 + r * 1.3, f.x1 - r * 1.3), y = rnd(f.y0 + r * 1.3, f.y1 - r * 1.3);
+    if (Math.hypot(x - G.mixer.x, y - G.mixer.y) < U * THEME.size.mixerR * 2.6) continue;
+    if (G.items.some(o => Math.hypot(o.x - x, o.y - y) < r * 2.4)) continue;
+    G.items.push({ id: ing.id, x, y, r, vx: 0, vy: 0, rot: rnd(-0.6, 0.6), born: pop ? G.t : -9 });
+    return true;
+  }
+  return false;
+}
+
+function setScene(s) {
+  G.scene = s; G.sceneT = 0;
+  $('title').classList.toggle('hide', s !== 'title');
+  $('hud').classList.toggle('hide', !(s === 'collect' || s === 'shake'));
+  $('hudMix').classList.toggle('hide', s !== 'collect');
+  $('result').classList.toggle('hide', s !== 'result');
+  if (s !== 'shake') Snd.humOff();
+}
+
+function startRound(skipIntro) {
+  Snd.init(); Inp.finger = null; Inp.take(); Inp.rubSpeed = 0;
+  closeSheet(); G.paused = false; $('pause').classList.add('hide');
+  const f = field();
+  Object.assign(G, { items: [], inMix: [], sucking: [], floats: [], parts: [], splats: [], combo: 0, bestCombo: 0, lastPick: -9, gather: 0,
+    gauge: 0, shakeTime: 0, lid: { loose: 0, off: 0, flies: 0, anim: null }, result: null, earlyT: 0, endReason: '', spawnT: 0 });
+  G.mixer = { x: (f.x0 + f.x1) / 2, y: f.y0 + (f.y1 - f.y0) * 0.62, vx: 0, vy: 0, rot: 0, held: false };
+  G.timeLeft = THEME.time.collect;
+  for (let i = 0; i < THEME.game.fieldStart; i++) spawnItem(false);
+  if (skipIntro) setScene('collect');
+  else { setScene('alarm'); Snd.alarm(); }
+}
+
+function toast(text, sec) { const el = $('toast'); el.textContent = text; el.classList.remove('hide'); G.toastT = sec || 1.0; }
+
+function addFloat(x, y, text, color) { G.floats.push({ x, y, text, color: color || THEME.color.ink, t: 0, life: 0.9 }); }
+function burst(x, y, color, n, sp) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, v = rnd(0.3, 1) * (sp || U * 0.5);
+    G.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: rnd(0.4, 0.8), color, r: rnd(2, 5) }); }
+}
+
+function endCollect(reason) {
+  if (G.scene !== 'collect') return;
+  G.endReason = reason;
+  G.sucking.forEach(s => G.inMix.push(s.id)); G.sucking = [];
+  toast(reason === 'full' ? THEME.text.full : reason === 'time' ? THEME.text.timeUp : THEME.text.early, 0.9);
+  Inp.take(); Inp.rubSpeed = 0;
+  G.gaugeMax = THEME.game.gaugeBase + THEME.game.gaugePerIce * G.inMix.filter(i => i === 'ice').length;
+  G.gauge = 0; G.shakeTime = 0;
+  setScene('shake');
+  Snd.go();
+}
+
+function update(dt) {
+  G.t += dt; G.sceneT += dt;
+  Inp.decay(dt);
+  if (G.toastT > 0) { G.toastT -= dt; if (G.toastT <= 0) $('toast').classList.add('hide'); }
+  G.quake = Math.max(0, G.quake - dt * 3);
+  // 飛び散り・浮き文字
+  G.parts = G.parts.filter(p => { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 900 * dt; return p.t < p.life; });
+  G.floats = G.floats.filter(f => { f.t += dt; f.y -= 40 * dt; return f.t < f.life; });
+  G.splats = G.splats.filter(s => { s.t += dt; return s.t < 2.5; });
+
+  if (G.scene === 'alarm') {
+    if (G.sceneT > THEME.time.alarm && !G._goShown) { G._goShown = true; toast(THEME.text.go, 1.2); }
+    if (G.sceneT > THEME.time.alarm + THEME.time.ready) { G._goShown = false; Inp.take(); setScene('collect'); Snd.go(); }
+  } else if (G.scene === 'collect') updateCollect(dt);
+  else if (G.scene === 'shake') updateShake(dt);
+  else if (G.scene === 'done') { if (G.sceneT > 1.0) showResult(); }
+}
+
+function updateCollect(dt) {
+  const f = field(), m = G.mixer, R = W * THEME.size.mixerR;
+  G.timeLeft -= dt;
+  // 動く: 指が触れている間は指と同じだけ動き、離すとその速さのまま転がって減速する
+  const d = Inp.take(), vmax = U * 3.2;
+  if (Inp.finger && dt > 0) {
+    const tx = d.x * THEME.input.sens, ty = d.y * THEME.input.sens;
+    const k = 1 - Math.exp(-14 * dt);
+    m.vx += (tx / dt - m.vx) * k; m.vy += (ty / dt - m.vy) * k;
+    m.x += tx; m.y += ty; m.held = true;
+  } else {
+    m.held = false;
+    const damp = Math.exp(-THEME.input.friction * dt); m.vx *= damp; m.vy *= damp;
+    m.x += m.vx * dt; m.y += m.vy * dt;
+  }
+  const sp = Math.hypot(m.vx, m.vy);
+  if (sp > vmax) { m.vx *= vmax / sp; m.vy *= vmax / sp; }
+  m.rot += (m.vx / R) * dt * 0.5;
+  const bounce = (v) => { if (m.held) return 0; const s = Math.abs(v) / U; if (s > 0.25) { Snd.thud(s); G.quake = Math.min(1, s * 0.6); } return -v * 0.55; };
+  if (m.x < f.x0 + R) { m.x = f.x0 + R; m.vx = bounce(m.vx); }
+  if (m.x > f.x1 - R) { m.x = f.x1 - R; m.vx = bounce(m.vx); }
+  if (m.y < f.y0 + R) { m.y = f.y0 + R; m.vy = bounce(m.vy); }
+  if (m.y > f.y1 - R) { m.y = f.y1 - R; m.vy = bounce(m.vy); }
+  const speed = Math.hypot(m.vx, m.vy) / U;
+  if (speed > FAST && Math.random() < 0.5) G.parts.push({ x: m.x + rnd(-R, R) * 0.6, y: m.y + rnd(-R, R) * 0.6, vx: -m.vx * 0.2, vy: -m.vy * 0.2 - 50, t: 0, life: 0.35, color: '#fff', r: 3 });
+
+  // すべる材料（氷）: 押されると逃げ、壁で跳ね返る
+  for (const it of G.items) {
+    if (!ING[it.id].slide) continue;
+    const dd = Math.exp(-1.3 * dt); it.vx = (it.vx || 0) * dd; it.vy = (it.vy || 0) * dd;
+    it.x += it.vx * dt; it.y += it.vy * dt;
+    if (it.x < f.x0 + it.r) { it.x = f.x0 + it.r; it.vx = Math.abs(it.vx) * 0.7; }
+    if (it.x > f.x1 - it.r) { it.x = f.x1 - it.r; it.vx = -Math.abs(it.vx) * 0.7; }
+    if (it.y < f.y0 + it.r) { it.y = f.y0 + it.r; it.vy = Math.abs(it.vy) * 0.7; }
+    if (it.y > f.y1 - it.r) { it.y = f.y1 - it.r; it.vy = -Math.abs(it.vy) * 0.7; }
+    it.rot += (it.vx || 0) / Math.max(1, it.r) * dt * 0.3;
+  }
+  // 拾う
+  const cap = THEME.game.capacity;
+  for (let i = G.items.length - 1; i >= 0; i--) {
+    const it = G.items[i];
+    if (G.inMix.length + G.sucking.length >= cap) break;
+    const dist = Math.hypot(it.x - m.x, it.y - m.y);
+    if (ING[it.id].slide && speed < ICE_SPEED && dist < R + it.r * 0.9) {
+      // ゆっくり当たった氷は、つるっと押し出される
+      const nx = (it.x - m.x) / (dist || 1), ny = (it.y - m.y) / (dist || 1);
+      it.x = m.x + nx * (R + it.r * 0.95); it.y = m.y + ny * (R + it.r * 0.95);
+      it.vx = m.vx * 1.3 + nx * U * 0.9; it.vy = m.vy * 1.3 + ny * U * 0.9;
+      if (G.t - (it.slipT || -9) > 0.6) { it.slipT = G.t; addFloat(it.x, it.y - it.r, 'つるっ', '#3b82c4'); Snd.tone(1500, 0.08, 'sine', 0.12, 2200); }
+      continue;
+    }
+    if (dist < R + it.r * 0.45) {
+      G.items.splice(i, 1);
+      pickUp(it, speed);
+    }
+  }
+  // 吸い込みの動き
+  G.sucking = G.sucking.filter(s => { s.t += dt; if (s.t > 0.25) { G.inMix.push(s.id); return false; } return true; });
+  // 補充
+  G.spawnT += dt;
+  if (G.spawnT > THEME.time.spawnEvery) { G.spawnT = 0; if (G.items.length < THEME.game.fieldMax) spawnItem(true); }
+  if (G.inMix.length + G.sucking.length >= cap) { G.fullT = (G.fullT || 0) + dt; if (G.fullT > 0.5) { G.fullT = 0; endCollect('full'); return; } }
+  if (G.timeLeft <= 0) { G.timeLeft = 0; endCollect('time'); }
+}
+
+function pickUp(it, speed) {
+  const ing = ING[it.id];
+  G.sucking.push({ id: it.id, x: it.x, y: it.y, t: 0, r: it.r, rot: it.rot });
+  const bad = ing.tags.includes('bad');
+  if (G.t - G.lastPick < THEME.game.comboGap) G.combo++; else G.combo = 1;
+  G.lastPick = G.t; G.bestCombo = Math.max(G.bestCombo, G.combo);
+  if (bad) {
+    Snd.bad(); G.quake = 0.8;
+    addFloat(it.x, it.y - it.r, ing.name + '!?', THEME.color.warn);
+  } else {
+    let p = ing.pts * (1 + 0.15 * (G.combo - 1));
+    let label = ing.name;
+    if (speed > FAST) { p += 4; label += ' いきおい!'; }
+    p = Math.round(p); G.gather += p;
+    Snd.pick(G.combo);
+    addFloat(it.x, it.y - it.r, label + ' +' + p + (G.combo > 1 ? ' x' + G.combo : ''), THEME.color.ink);
+  }
+  burst(it.x, it.y, ing.color, 8, U * 0.35);
+}
+
+// 「まぜる！」のタップ 1 回。速く連打するほど 1 回の量が増える。速すぎるとフタがゆるむ
+function mixTap() {
+  if (G.scene !== 'shake' || G.lid.off > 0) return;
+  const now = G.t;
+  Inp.taps = Inp.taps.filter(t => now - t < 1); Inp.taps.push(now);
+  const rate = Inp.taps.length;
+  Inp.tapMag = Math.max(Inp.tapMag, THEME.input.tapPulse + rnd(0, 3) + rate);
+  G.gauge += THEME.input.tapGauge * (1 + Math.min(1, rate / 8));
+  if (rate >= THEME.input.tapLooseRate) G.lid.loose += 0.12;
+  if (G.lid.loose >= 1) flyLid();
+  Snd.tone(180 + rate * 25, 0.06, 'square', 0.08);
+}
+
+function updateShake(dt) {
+  const I = THEME.input, L = G.lid;
+  const rub = Inp.take().rub, rs = Inp.rubSpeed;
+  G.shakeTime += dt;
+  Snd.humSet(L.off > 0 ? Inp.visMag * 0.6 : Inp.visMag);
+  if (L.anim) { const a = L.anim; a.t += dt; a.x += a.vx * dt; a.y += a.vy * dt; a.vy += 1400 * dt; a.rot += a.vr * dt; }
+  if (L.off > 0) {
+    L.off -= dt;
+    if (L.off <= 0) { L.anim = null; L.loose = 0; Snd.thud(0.5); }
+    return;
+  }
+  // こすった道のりで溜まる。速くこするほど 1 回の量が増える（毎秒 3 単位で倍）
+  G.gauge += rub * I.rubGauge * (1 + Math.min(1, rs / 3));
+  if (rs > I.rubLoose) L.loose += (rs - I.rubLoose) / I.rubLoose * 6 * dt; else L.loose = Math.max(0, L.loose - 0.35 * dt);
+  if (L.loose >= 1) flyLid();
+  if (G.gauge >= G.gaugeMax) {
+    G.gauge = G.gaugeMax; Snd.humOff(); Snd.done(); toast(THEME.text.done, 1.0);
+    G.result = judge(); setScene('done');
+  }
+}
+
+function flyLid() {
+  const L = G.lid; L.flies++; L.off = 1.1; L.loose = 0;
+  L.anim = { x: 0, y: 0, vx: rnd(-1, 1) * U * 0.5, vy: -H * 1.2, rot: 0, vr: rnd(-12, 12), t: 0 };
+  Snd.pop(); G.quake = 1; toast(THEME.text.lid, 1.0);
+  G.gauge = Math.max(0, G.gauge - 15);
+  const mix = mixColor(G.inMix);
+  burst(W / 2, H * 0.35, mix, 24, U * 0.9);
+  for (let i = 0; i < 5; i++) G.splats.push({ x: rnd(0.1, 0.9) * W, y: rnd(0.15, 0.7) * H, r: rnd(14, 34), color: mix, t: 0 });
+  if (G.inMix.length) {
+    const k = Math.floor(Math.random() * G.inMix.length);
+    const lost = G.inMix.splice(k, 1)[0];
+    addFloat(W / 2, H * 0.3, ING[lost].name + ' が飛んでいった', THEME.color.warn);
+  }
+}
+
+// ==== 判定ここから（tools/combo-check.mjs がこの区間をそのまま読み込む。DATA と ING だけを使う） ====
+function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function rgbHex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
+function hslHex(h, s, l) {
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return rgbHex([f(0) * 255, f(8) * 255, f(4) * 255]);
+}
+function hsl(hex) {
+  const [r, g, b] = hexRgb(hex).map(v => v / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  let h = 0, s = 0;
+  if (mx !== mn) { const d = mx - mn; s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h *= 60; }
+  return { h, s, l };
+}
+function colorWord(hex) {
+  const { h, s, l } = hsl(hex);
+  if (s < 0.18) return l > 0.82 ? '白' : l < 0.3 ? '黒' : '灰色';
+  if (l > 0.82 && (h < 20 || h > 300)) return 'ピンク';
+  if (h < 15 || h >= 345) return '赤';
+  if (h < 40) return l < 0.4 || s < 0.45 ? '茶色' : 'オレンジ';
+  if (h < 65) return '黄色';
+  if (h < 90) return '黄緑';
+  if (h < 160) return '緑';
+  if (h < 200) return '水色';
+  if (h < 250) return '青';
+  if (h < 300) return 'むらさき';
+  return 'ピンク';
+}
+const IDX = {}; DATA.ingredients.forEach((i, k) => IDX[i.id] = k);
+const ISBAD = DATA.ingredients.map(i => i.tags.includes('bad'));
+const MIXW = DATA.ingredients.map(i => { const c = hexRgb(i.mix); return [c[0] * c[0] * i.mw, c[1] * c[1] * i.mw, c[2] * c[2] * i.mw, i.mw]; });
+function countsOf(ids) { const c = new Array(DATA.ingredients.length).fill(0); ids.forEach(id => c[IDX[id]]++); return c; }
+// 混ぜた色。二乗平均で混ぜ、灰色に寄りすぎるので彩度を少し戻す
+function mixColorC(c) {
+  let r = 0, g = 0, b = 0, w = 0;
+  for (let k = 0; k < c.length; k++) if (c[k]) { const m = MIXW[k]; r += m[0] * c[k]; g += m[1] * c[k]; b += m[2] * c[k]; w += m[3] * c[k]; }
+  if (!w) return '#EAF6FF';
+  const q = hsl(rgbHex([Math.sqrt(r / w), Math.sqrt(g / w), Math.sqrt(b / w)]));
+  return hslHex(q.h, Math.min(1, q.s * 1.45), q.l);
+}
+function mixColor(ids) { return mixColorC(countsOf(ids)); }
+function isMuddy(hex) { const c = hsl(hex); return c.s < 0.3 && c.l < 0.62; }
+function compileCond(q) {
+  const t = [];
+  const ix = a => a.map(id => { if (!(id in IDX)) throw new Error('材料が無い: ' + id); return IDX[id]; });
+  if (q.count) t.push(s => s.n >= q.count[0] && s.n <= q.count[1]);
+  if (q.bad) t.push(s => s.bad >= q.bad[0] && s.bad <= q.bad[1]);
+  if (q.has) { const a = ix(q.has); t.push(s => a.every(k => s.c[k] > 0)); }
+  if (q.any) { const a = ix(q.any); t.push(s => a.some(k => s.c[k] > 0)); }
+  if (q.none) { const a = ix(q.none); t.push(s => a.every(k => !s.c[k])); }
+  if (q.only) { const ok = DATA.ingredients.map(() => false); ix(q.only).forEach(k => ok[k] = true); t.push(s => s.n > 0 && s.c.every((v, k) => !v || ok[k])); }
+  if (q.min) { const e = Object.keys(q.min).map(id => [ix([id])[0], q.min[id]]); t.push(s => e.every(([k, m]) => s.c[k] >= m)); }
+  if (q.tag) { const e = Object.keys(q.tag).map(tg => [DATA.ingredients.map((i, k) => i.tags.includes(tg) ? k : -1).filter(k => k >= 0), q.tag[tg]]);
+    t.push(s => e.every(([ks, m]) => ks.reduce((a, k) => a + s.c[k], 0) >= m)); }
+  if (q.distinct) t.push(s => s.distinct >= q.distinct);
+  if (q.color) t.push(s => q.color.includes(s.word()));
+  if (q.muddy) t.push(s => isMuddy(s.color()));
+  return s => t.every(f => f(s));
+}
+const RECIPE_TESTS = DATA.recipes.map(r => compileCond(r.cond || {}));
+// c は材料ごとの個数（DATA.ingredients の順）。返すのは当てはまった表の番号と、色などを出す s
+function matchCounts(c) {
+  let n = 0, bad = 0, distinct = 0, col = null, word = null;
+  for (let k = 0; k < c.length; k++) { n += c[k]; if (ISBAD[k]) bad += c[k]; else if (c[k]) distinct++; }
+  const s = { c, n, bad, distinct, color: () => col || (col = mixColorC(c)), word: () => word || (word = colorWord(s.color())) };
+  for (let i = 0; i < RECIPE_TESTS.length; i++) if (RECIPE_TESTS[i](s)) return { index: i, recipe: DATA.recipes[i], s };
+  return { index: DATA.recipes.length - 1, recipe: DATA.recipes[DATA.recipes.length - 1], s };
+}
+// 未解除のヒント。表の条件から機械的に 1 行作る
+const TAGNAME = { fruit: '果物', green: '緑の物', dairy: '乳製品', veg: '野菜', sweet: '甘い物', cold: '冷たい物', bitter: '苦い物' };
+function recipeHint(r) {
+  const q = r.cond || {}, out = [];
+  const isBad = id => ING[id].tags.includes('bad'), ini = id => '「' + ING[id].name[0] + '」';
+  if (q.count && q.count[1] === 0) return '何も入れずに混ぜる';
+  const badIds = (q.has || []).concat(q.any || []).filter(isBad);
+  if (q.bad) out.push('入れてはいけない物を ' + q.bad[0] + ' 個' + (q.bad[1] > q.bad[0] ? '以上' : 'だけ'));
+  if (badIds.length) out.push('入れてはいけない物が入っている（' + badIds.map(ini).join('と') + 'で始まる物）');
+  if (q.only) out.push(q.only.length > 1 ? '決まった ' + q.only.length + ' 種類のうちの物だけ' : (isBad(q.only[0]) ? '入れてはいけない物' : '') + ini(q.only[0]) + 'で始まる物だけ');
+  if (q.min) Object.keys(q.min).forEach(id => out.push(ini(id) + 'で始まる物を ' + q.min[id] + ' 個以上'));
+  const gh = (q.has || []).filter(id => !isBad(id)), ga = (q.any || []).filter(id => !isBad(id));
+  const key = gh.length + (ga.length ? 1 : 0);
+  if (key) out.push((badIds.length ? '一緒に入れる' : '決め手は') + (gh.length ? gh.map(ini).join('') + 'で始まる物' + (ga.length ? 'と、' : '') : '') +
+    (ga.length ? (ga.length > 1 ? ga.length + ' 種類のうちどれか' : ini(ga[0]) + 'で始まる物') : ''));
+  if (q.tag) Object.keys(q.tag).forEach(t => out.push((TAGNAME[t] || t) + 'を ' + q.tag[t] + ' つ以上'));
+  if (q.distinct) out.push('まともな材料を ' + q.distinct + ' 種類以上');
+  if (q.count && q.count[1] > 0) out.push(q.count[0] === q.count[1] ? (q.count[0] === 10 ? '満杯（10 個）' : q.count[0] + ' 個だけ') : q.count[0] + ' 個以上');
+  if (q.color) out.push('色が「' + q.color.join('」か「') + '」になる');
+  if (q.muddy) out.push('色が濁る');
+  return out.length ? out.join('、') : 'どの表にも当てはまらない一杯';
+}
+// ==== 判定ここまで ====
+
+function lerpColor(a, b, t) { const x = hexRgb(a), y = hexRgb(b); return rgbHex(x.map((v, i) => v + (y[i] - v) * t)); }
+
+function judge() {
+  const ids = G.inMix.slice();
+  const m = matchCounts(countsOf(ids)), r = m.recipe, distinct = m.s.distinct;
+  const color = r.color || m.s.color();
+  const shakeBonus = G.shakeTime < 3 ? 25 : G.shakeTime < 5 ? 15 : G.shakeTime < 8 ? 8 : 0;
+  const timeBonus = Math.round(Math.max(0, G.timeLeft));
+  const parts = { 材料: G.gather, 種類: distinct * 4, 表: r.stars * 8, 混ぜ: shakeBonus, 残り時間: timeBonus, フタ: -6 * G.lid.flies };
+  let score = 0; for (const k in parts) score += parts[k];
+  score = Math.max(0, score);
+  return { id: r.id, name: r.name.replace('{color}', colorWord(color)), comment: r.comment, color, stars: r.stars, score, parts,
+    items: ids, shakeTime: +G.shakeTime.toFixed(2), lidFlies: G.lid.flies, bestCombo: G.bestCombo };
+}
+
+function showResult() {
+  const r = G.result;
+  setScene('result');
+  const z = store.get('zukan', { recipes: {}, total: 0, best: 0 });
+  const prev = z.recipes[r.id];
+  r.isNew = !prev;
+  const now = Date.now(), rec = { items: r.items, score: r.score, parts: r.parts, stars: r.stars, color: r.color, at: now };
+  // first は初めて作ったときの記録。0.1.1 以前の記録には無いので null のまま（図鑑では「記録なし」）
+  z.recipes[r.id] = { count: (prev ? prev.count : 0) + 1, bestStars: Math.max(prev ? prev.bestStars : 0, r.stars),
+    bestScore: Math.max(prev ? prev.bestScore : 0, r.score), color: r.color, name: r.name,
+    first: prev ? (prev.first || null) : rec, last: rec };
+  z.total++; z.best = Math.max(z.best, r.score);
+  store.set('zukan', z);
+  $('resNew').classList.toggle('hide', !r.isNew);
+  $('resName').textContent = r.name;
+  $('resStars').textContent = '★'.repeat(r.stars) + '☆'.repeat(5 - r.stars);
+  $('resComment').textContent = r.comment;
+  $('resList').textContent = itemsText(r.items);
+  $('resScore').textContent = scoreText(r.score, r.parts);
+}
+
+// ---------- 描画 ----------
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function circ(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); }
+
+function drawIng(id, x, y, r, rot) {
+  const i = ING[id], c = i.color;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot || 0);
+  ctx.lineWidth = Math.max(1.5, r * 0.08); ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  switch (i.shape) {
+    case 'banana':
+      ctx.beginPath(); ctx.arc(0, -r * 0.5, r * 1.05, Math.PI * 0.15, Math.PI * 0.85); ctx.arc(0, -r * 1.1, r * 1.25, Math.PI * 0.78, Math.PI * 0.22, true); ctx.closePath();
+      ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#6B4A1F'; circ(r * 0.9, 0.05 * r, r * 0.1); ctx.fill(); break;
+    case 'berry':
+      ctx.beginPath(); ctx.moveTo(0, r); ctx.bezierCurveTo(-r * 1.2, r * 0.1, -r * 0.8, -r * 0.8, 0, -r * 0.55); ctx.bezierCurveTo(r * 0.8, -r * 0.8, r * 1.2, r * 0.1, 0, r);
+      ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#FFE38A'; [[-.3, 0], [.3, 0], [0, .35], [-.15, -.3], [.15, -.3]].forEach(p => { circ(p[0] * r, p[1] * r, r * 0.06); ctx.fill(); });
+      ctx.fillStyle = '#2E9B3A'; ctx.beginPath(); ctx.moveTo(-r * 0.5, -r * 0.7); ctx.lineTo(0, -r * 0.45); ctx.lineTo(r * 0.5, -r * 0.7); ctx.lineTo(0, -r * 0.9); ctx.closePath(); ctx.fill(); break;
+    case 'leaf':
+      ctx.beginPath(); ctx.ellipse(0, 0, r * 0.55, r, 0, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#A8E08F'; ctx.beginPath(); ctx.moveTo(0, -r * 0.9); ctx.lineTo(0, r * 1.2); ctx.stroke(); break;
+    case 'carton':
+      rr(-r * 0.55, -r * 0.5, r * 1.1, r * 1.4, r * 0.1); ctx.fillStyle = '#fff'; ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-r * 0.55, -r * 0.5); ctx.lineTo(0, -r * 1.0); ctx.lineTo(r * 0.55, -r * 0.5); ctx.closePath(); ctx.fillStyle = '#4A90E2'; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#4A90E2'; ctx.fillRect(-r * 0.55, r * 0.1, r * 1.1, r * 0.25); break;
+    case 'cube':
+      rr(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5, r * 0.3); ctx.fillStyle = c; ctx.fill(); ctx.strokeStyle = '#7FB8D8'; ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.85)'; rr(-r * 0.5, -r * 0.55, r * 0.5, r * 0.25, r * 0.1); ctx.fill(); break;
+    case 'cup':
+      ctx.beginPath(); ctx.moveTo(-r * 0.75, -r * 0.6); ctx.lineTo(r * 0.75, -r * 0.6); ctx.lineTo(r * 0.55, r * 0.8); ctx.lineTo(-r * 0.55, r * 0.8); ctx.closePath();
+      ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0, -r * 0.6, r * 0.8, r * 0.25, 0, 0, Math.PI * 2); ctx.fillStyle = '#FF8FB3'; ctx.fill(); ctx.stroke(); break;
+    case 'dots':
+      [[-.4, .25], [.4, .25], [0, -.4]].forEach(p => { circ(p[0] * r, p[1] * r, r * 0.48); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#1F2160'; circ(p[0] * r, p[1] * r - r * 0.25, r * 0.1); ctx.fill(); }); break;
+    case 'oval':
+      ctx.beginPath(); ctx.ellipse(0, 0, r * 0.75, r, 0.3, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(230,60,40,.45)'; ctx.beginPath(); ctx.ellipse(-r * 0.2, -r * 0.4, r * 0.35, r * 0.45, 0.3, 0, Math.PI * 2); ctx.fill(); break;
+    case 'slice':
+      circ(0, 0, r); ctx.fillStyle = '#8B6A3E'; ctx.fill(); ctx.stroke(); circ(0, 0, r * 0.82); ctx.fillStyle = c; ctx.fill();
+      circ(0, 0, r * 0.3); ctx.fillStyle = '#F2F7D9'; ctx.fill(); ctx.fillStyle = '#222';
+      for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; circ(Math.cos(a) * r * 0.47, Math.sin(a) * r * 0.47, r * 0.06); ctx.fill(); } break;
+    case 'jar':
+      rr(-r * 0.65, -r * 0.6, r * 1.3, r * 1.5, r * 0.35); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#8B5A1E'; rr(-r * 0.7, -r * 0.9, r * 1.4, r * 0.35, r * 0.1); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.5)'; rr(-r * 0.4, -r * 0.3, r * 0.2, r * 0.8, r * 0.1); ctx.fill(); break;
+    case 'carrot':
+      ctx.beginPath(); ctx.moveTo(-r * 0.45, -r * 0.6); ctx.lineTo(r * 0.45, -r * 0.6); ctx.lineTo(0, r * 1.1); ctx.closePath(); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#2E9B3A'; ctx.beginPath(); ctx.moveTo(-r * 0.4, -r * 1.1); ctx.lineTo(0, -r * 0.6); ctx.lineTo(r * 0.4, -r * 1.1); ctx.lineTo(0, -r * 0.8); ctx.closePath(); ctx.fill(); break;
+    case 'bean':
+      ctx.beginPath(); ctx.ellipse(0, 0, r * 0.65, r * 0.9, 0, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#2E1A0E'; ctx.beginPath(); ctx.moveTo(0, -r * 0.8); ctx.bezierCurveTo(-r * 0.3, -r * 0.2, r * 0.3, r * 0.2, 0, r * 0.8); ctx.stroke(); break;
+    case 'avocado':
+      ctx.beginPath(); ctx.ellipse(0, r * 0.2, r * 0.75, r * 0.85, 0, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0, r * 0.2, r * 0.58, r * 0.68, 0, 0, Math.PI * 2); ctx.fillStyle = '#D7E89A'; ctx.fill();
+      circ(0, r * 0.3, r * 0.3); ctx.fillStyle = '#8A5A2B'; ctx.fill(); break;
+    case 'bar':
+      rr(-r * 0.9, -r * 0.6, r * 1.8, r * 1.2, r * 0.45); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.8)'; [[0.9, -0.7, .3], [1.15, -0.25, .18], [-0.2, -0.85, .22]].forEach(p => { circ(p[0] * r, p[1] * r, p[2] * r); ctx.fill(); }); break;
+    case 'sponge':
+      rr(-r * 0.9, -r * 0.6, r * 1.8, r * 1.2, r * 0.15); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#3BA55C'; ctx.fillRect(-r * 0.9, r * 0.25, r * 1.8, r * 0.35);
+      ctx.fillStyle = 'rgba(160,120,0,.45)'; [[-.5, -.2], [0, -.35], [.45, -.1], [.1, .05]].forEach(p => { circ(p[0] * r, p[1] * r, r * 0.1); ctx.fill(); }); break;
+    case 'battery':
+      rr(-r * 0.45, -r * 0.85, r * 0.9, r * 1.75, r * 0.12); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#E2A63B'; ctx.fillRect(-r * 0.45, -r * 0.85, r * 0.9, r * 0.45); ctx.fillStyle = '#C0C0C0'; ctx.fillRect(-r * 0.15, -r * 1.05, r * 0.3, r * 0.2);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold ' + Math.round(r * 0.7) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('+', 0, r * 0.3); break;
+    case 'fish':
+      ctx.beginPath(); ctx.ellipse(-r * 0.15, 0, r * 0.7, r * 0.45, 0, 0, Math.PI * 2); ctx.moveTo(r * 0.45, 0); ctx.lineTo(r * 1.0, -r * 0.45); ctx.lineTo(r * 1.0, r * 0.45); ctx.closePath();
+      ctx.fillStyle = c; ctx.fill(); ctx.stroke(); ctx.fillStyle = '#222'; circ(-r * 0.5, -r * 0.08, r * 0.08); ctx.fill(); break;
+    case 'sock':
+      ctx.beginPath(); ctx.moveTo(-r * 0.4, -r); ctx.lineTo(r * 0.25, -r); ctx.lineTo(r * 0.25, r * 0.2); ctx.lineTo(r * 0.9, r * 0.45); ctx.lineTo(r * 0.8, r * 0.95); ctx.lineTo(-r * 0.4, r * 0.7); ctx.closePath();
+      ctx.fillStyle = c; ctx.fill(); ctx.stroke(); ctx.fillStyle = '#fff'; ctx.fillRect(-r * 0.4, -r * 0.7, r * 0.65, r * 0.18); ctx.fillRect(-r * 0.4, -r * 0.35, r * 0.65, r * 0.18); break;
+    case 'duck':
+      circ(0, r * 0.15, r * 0.75); ctx.fillStyle = c; ctx.fill(); ctx.stroke(); circ(r * 0.35, -r * 0.5, r * 0.42); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#FF8A1F'; ctx.beginPath(); ctx.moveTo(r * 0.7, -r * 0.55); ctx.lineTo(r * 1.05, -r * 0.45); ctx.lineTo(r * 0.7, -r * 0.35); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#222'; circ(r * 0.42, -r * 0.6, r * 0.07); ctx.fill(); break;
+    default:
+      circ(0, 0, r); ctx.fillStyle = c; ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawFloor() {
+  const f = field(), t = Math.max(32, U / 9);
+  ctx.fillStyle = THEME.color.edge; ctx.fillRect(0, 0, W, H);
+  ctx.save(); rr(f.x0, f.y0, f.x1 - f.x0, f.y1 - f.y0, 16); ctx.clip();
+  for (let y = f.y0, r = 0; y < f.y1; y += t, r++) for (let x = f.x0, c = 0; x < f.x1; x += t, c++) {
+    ctx.fillStyle = (r + c) % 2 ? THEME.color.floorA : THEME.color.floorB; ctx.fillRect(x, y, t + 1, t + 1);
+  }
+  ctx.restore();
+}
+
+function drawMixerTop() {
+  const m = G.mixer, R = U * THEME.size.mixerR, speed = Math.hypot(m.vx, m.vy) / U;
+  ctx.save(); ctx.translate(m.x, m.y);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; circ(R * 0.12, R * 0.18, R * 1.05); ctx.fill();
+  if (speed > FAST) { ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 4; circ(0, 0, R * 1.18); ctx.stroke(); }
+  ctx.rotate(m.rot);
+  // 取っ手
+  ctx.fillStyle = THEME.color.glassEdge; rr(R * 0.8, -R * 0.22, R * 0.55, R * 0.44, R * 0.15); ctx.fill();
+  circ(0, 0, R); ctx.fillStyle = '#F4FBFF'; ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = THEME.color.glassEdge; ctx.stroke();
+  const ids = G.inMix, n = ids.length;
+  if (n) {
+    circ(0, 0, R * (0.45 + 0.5 * n / THEME.game.capacity)); ctx.fillStyle = mixColor(ids); ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
+    ids.slice(-6).forEach((id, k) => { const a = k * 1.05 + G.t * 0.8; drawIng(id, Math.cos(a) * R * 0.45, Math.sin(a) * R * 0.45, R * 0.26, a); });
+  }
+  // 刃
+  ctx.strokeStyle = '#94A3B8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-R * 0.25, 0); ctx.lineTo(R * 0.25, 0); ctx.moveTo(0, -R * 0.25); ctx.lineTo(0, R * 0.25); ctx.stroke();
+  ctx.restore();
+}
+
+function drawCollect() {
+  drawFloor();
+  for (const it of G.items) {
+    const age = G.t - it.born, s = age < 0.3 ? Math.max(0.01, age / 0.3) : 1;
+    const bob = Math.sin(G.t * 3 + it.x) * 1.5;
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; circ(it.x + 2, it.y + 3, it.r * 0.9 * s); ctx.fill();
+    drawIng(it.id, it.x, it.y + bob, it.r * s, it.rot);
+  }
+  for (const s of G.sucking) {
+    const k = s.t / 0.25, x = s.x + (G.mixer.x - s.x) * k, y = s.y + (G.mixer.y - s.y) * k;
+    drawIng(s.id, x, y, s.r * (1 - k * 0.7), s.rot + k * 6);
+  }
+  drawMixerTop();
+  // 指が触れているところ
+  if (Inp.finger) { ctx.fillStyle = 'rgba(59,42,26,.18)'; circ(Inp.finger.x, Inp.finger.y, 22); ctx.fill(); }
+  // 始まってすぐは操作の案内
+  if (G.sceneT < 4 && !G.everDragged) {
+    ctx.globalAlpha = Math.min(1, (4 - G.sceneT)); ctx.fillStyle = THEME.color.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '800 18px sans-serif'; ctx.fillText('指でなぞると動く・はじくと転がる', W / 2, field().y1 - 26); ctx.globalAlpha = 1;
+  }
+}
+
+function jugGeom() {
+  const jh = Math.min(H * 0.42, W * 0.9), jwTop = jh * 0.62, jwBot = jh * 0.46;
+  const cy = H * 0.5;
+  return { jh, jwTop, jwBot, top: cy - jh * 0.5, bot: cy + jh * 0.5, cx: W / 2 };
+}
+
+function drawShake() {
+  ctx.fillStyle = '#FFF4DC'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#E9C9A0'; ctx.fillRect(0, H * 0.78, W, H * 0.22);
+  for (const s of G.splats) { ctx.globalAlpha = Math.max(0, 1 - s.t / 2.5) * 0.8; ctx.fillStyle = s.color; circ(s.x, s.y, s.r); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  const g = jugGeom(), mag = G.scene === 'shake' ? Inp.visMag : 0;
+  const j = Math.min(1.5, mag / THEME.input.lidTh);
+  ctx.save();
+  ctx.translate(g.cx + rnd(-1, 1) * j * 14, rnd(-1, 1) * j * 14);
+  ctx.rotate(rnd(-1, 1) * j * 0.08);
+  // 台
+  ctx.fillStyle = THEME.color.base; rr(g.cx - g.jwBot * 0.7 - g.cx, g.bot, g.jwBot * 1.4, g.jh * 0.22, 14); ctx.fill();
+  ctx.fillStyle = '#F97316'; circ(0, g.bot + g.jh * 0.11, g.jh * 0.045); ctx.fill();
+  // 中身
+  const ids = G.inMix, cap = THEME.game.capacity, blend = G.scene === 'shake' ? G.gauge / G.gaugeMax : 1, mix = mixColor(ids);
+  const layerH = (g.jh * 0.85) / cap;
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(-g.jwTop / 2, g.top); ctx.lineTo(g.jwTop / 2, g.top); ctx.lineTo(g.jwBot / 2, g.bot); ctx.lineTo(-g.jwBot / 2, g.bot); ctx.closePath(); ctx.clip();
+  ids.forEach((id, k) => {
+    const y = g.bot - (k + 1) * layerH;
+    const wob = Math.sin(G.t * 10 + k) * j * 8;
+    ctx.fillStyle = lerpColor(ING[id].mix, mix, Math.min(1, blend * 1.1));
+    ctx.fillRect(-g.jwTop, y + wob, g.jwTop * 2, layerH + 2);
+  });
+  // 浮いている材料（混ざると消える。だめな物は残る）
+  ids.forEach((id, k) => {
+    const bad = ING[id].tags.includes('bad');
+    const a = bad ? 1 : Math.max(0, 1 - blend * 1.4);
+    if (a <= 0) return;
+    ctx.globalAlpha = a;
+    const y = g.bot - (k + 0.5) * layerH, x = Math.sin(G.t * (2 + j * 8) + k * 2) * g.jwBot * 0.25;
+    drawIng(id, x, y, Math.min(layerH * 0.9, g.jh * 0.06), G.t * j * 6 + k);
+  });
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  // ガラス
+  ctx.beginPath(); ctx.moveTo(-g.jwTop / 2, g.top); ctx.lineTo(g.jwTop / 2, g.top); ctx.lineTo(g.jwBot / 2, g.bot); ctx.lineTo(-g.jwBot / 2, g.bot); ctx.closePath();
+  ctx.fillStyle = 'rgba(205,236,255,.25)'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = THEME.color.glassEdge; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(-g.jwTop * 0.38, g.top + 16); ctx.lineTo(-g.jwBot * 0.34, g.bot - 20); ctx.stroke();
+  // 取っ手
+  ctx.strokeStyle = THEME.color.glassEdge; ctx.lineWidth = 10; ctx.beginPath(); ctx.moveTo(g.jwTop * 0.48, g.top + g.jh * 0.15); ctx.lineTo(g.jwTop * 0.75, g.top + g.jh * 0.2); ctx.lineTo(g.jwTop * 0.68, g.top + g.jh * 0.65); ctx.lineTo(g.jwBot * 0.52, g.top + g.jh * 0.7); ctx.stroke();
+  // フタ
+  const L = G.lid;
+  let lx = 0, ly = 0, lr = 0;
+  if (L.anim) { lx = L.anim.x; ly = L.anim.y; lr = L.anim.rot; }
+  else if (L.loose > 0) { ly = -L.loose * 14 + Math.sin(G.t * 40) * L.loose * 4; lr = Math.sin(G.t * 30) * L.loose * 0.12; }
+  if (!(L.off > 0 && !L.anim)) {
+    ctx.save(); ctx.translate(lx, g.top + ly); ctx.rotate(lr);
+    ctx.fillStyle = THEME.color.lid; rr(-g.jwTop * 0.56, -g.jh * 0.07, g.jwTop * 1.12, g.jh * 0.07, 8); ctx.fill();
+    rr(-g.jwTop * 0.12, -g.jh * 0.12, g.jwTop * 0.24, g.jh * 0.06, 6); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+
+  if (G.scene === 'shake') {
+    // ゲージ
+    const bw = W * 0.8, bx = (W - bw) / 2, by = THEME.size.hudH + 14, bh = 22;
+    ctx.fillStyle = THEME.color.gaugeBg; rr(bx, by, bw, bh, 11); ctx.fill();
+    ctx.fillStyle = mix === '#EAF6FF' ? THEME.color.gauge : mix; rr(bx, by, Math.max(bh, bw * G.gauge / G.gaugeMax), bh, 11); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = THEME.color.ink; rr(bx, by, bw, bh, 11); ctx.stroke();
+    ctx.fillStyle = THEME.color.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.font = '900 ' + Math.round(U * 0.13) + 'px sans-serif';
+    const pulse = 1 + Math.sin(G.t * 12) * 0.06;
+    ctx.save(); ctx.translate(W / 2, by + bh + 14); ctx.scale(pulse, pulse); ctx.fillText(THEME.text.shake, 0, 0); ctx.restore();
+    ctx.font = '800 22px sans-serif'; ctx.fillText(THEME.text.shakeTap, W / 2 + Math.sin(G.t * 9) * 16, Math.max(g.bot + g.jh * 0.3, H - 70));
+    ctx.font = '600 14px sans-serif'; ctx.globalAlpha = 0.7; ctx.fillText('タップの連打でも混ざる', W / 2, Math.max(g.bot + g.jh * 0.3, H - 70) + 30); ctx.globalAlpha = 1;
+    if (L.loose > 0.45 && !L.anim) { ctx.fillStyle = THEME.color.warn; ctx.font = '800 20px sans-serif'; ctx.fillText(THEME.text.loose, W / 2, g.top - g.jh * 0.25); }
+  }
+}
+
+function drawAlarm() {
+  drawFloor();
+  ctx.fillStyle = 'rgba(255,233,184,.85)'; ctx.fillRect(0, 0, W, H);
+  const cx = W / 2, cy = H * 0.28, r = U * 0.2, ring = G.sceneT < THEME.time.alarm;
+  ctx.save(); ctx.translate(cx + (ring ? Math.sin(G.t * 60) * 6 : 0), cy); ctx.rotate(ring ? Math.sin(G.t * 45) * 0.12 : 0);
+  ctx.fillStyle = '#E5484D'; circ(-r * 0.65, -r * 0.85, r * 0.35); ctx.fill(); circ(r * 0.65, -r * 0.85, r * 0.35); ctx.fill();
+  circ(0, 0, r); ctx.fill(); circ(0, 0, r * 0.82); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = THEME.color.ink; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, r * 0.6); ctx.moveTo(0, 0); ctx.lineTo(0, -r * 0.65); ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = THEME.color.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '900 ' + Math.round(U * 0.1) + 'px sans-serif';
+  ctx.fillText(THEME.text.alarm, cx, H * 0.6);
+  if (!ring) { ctx.font = '600 16px sans-serif'; ctx.fillText('指でミキサーを動かして材料を集める', cx, H * 0.67); }
+}
+
+function drawTitle() {
+  ctx.fillStyle = THEME.color.bg; ctx.fillRect(0, 0, W, H);
+  // 窓の朝日
+  const sy = H * 0.04;
+  ctx.fillStyle = '#FFD27A'; circ(W * 0.78, sy + 30, U * 0.12); ctx.fill();
+  // 転がる材料
+  const list = ['banana', 'strawberry', 'spinach', 'milk', 'ice', 'mango', 'blueberry', 'soap', 'kiwi', 'cattreat'];
+  list.forEach((id, k) => { const x = ((k * 0.13 + G.t * 0.05) % 1.2 - 0.1) * W, y = H * 0.1 + (k % 3) * H * 0.06 + Math.sin(G.t * 2 + k) * 6;
+    drawIng(id, x, y, U * 0.05, G.t * 1.5 + k); });
+  // ミキサー
+  const g = { cx: W / 2, top: H * 0.27, jh: Math.min(H * 0.2, W * 0.45) };
+  ctx.save(); ctx.translate(g.cx, g.top); ctx.rotate(Math.sin(G.t * 2) * 0.05);
+  const wt = g.jh * 0.62, wb = g.jh * 0.46;
+  ctx.beginPath(); ctx.moveTo(-wt / 2, 0); ctx.lineTo(wt / 2, 0); ctx.lineTo(wb / 2, g.jh); ctx.lineTo(-wb / 2, g.jh); ctx.closePath();
+  ctx.fillStyle = 'rgba(205,236,255,.6)'; ctx.fill();
+  ctx.save(); ctx.clip(); ctx.fillStyle = '#F472B6'; ctx.fillRect(-wt, g.jh * 0.4 + Math.sin(G.t * 3) * 4, wt * 2, g.jh); ctx.restore();
+  ctx.lineWidth = 4; ctx.strokeStyle = THEME.color.glassEdge; ctx.stroke();
+  ctx.fillStyle = THEME.color.lid; rr(-wt * 0.56, -g.jh * 0.08, wt * 1.12, g.jh * 0.08, 6); ctx.fill();
+  ctx.fillStyle = THEME.color.base; rr(-wb * 0.7, g.jh, wb * 1.4, g.jh * 0.22, 10); ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.save();
+  if (G.quake > 0) ctx.translate(rnd(-1, 1) * G.quake * 8, rnd(-1, 1) * G.quake * 8);
+  if (G.zukanView) drawResultBg(G.zukanView);
+  else if (G.scene === 'title') drawTitle();
+  else if (G.scene === 'alarm') drawAlarm();
+  else if (G.scene === 'collect') drawCollect();
+  else if (G.scene === 'shake' || G.scene === 'done') drawShake();
+  else if (G.scene === 'result') drawResultBg();
+  for (const p of G.parts) { ctx.globalAlpha = Math.max(0, 1 - p.t / p.life); ctx.fillStyle = p.color; circ(p.x, p.y, p.r); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '800 16px sans-serif';
+  for (const f of G.floats) { ctx.globalAlpha = Math.max(0, 1 - f.t / f.life); ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.strokeText(f.text, f.x, f.y); ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawResultBg(view) {
+  ctx.fillStyle = THEME.color.bg; ctx.fillRect(0, 0, W, H);
+  const r = view || G.result; if (!r) return;
+  const gh = Math.min(H * 0.26, W * 0.55), gw = gh * 0.55, cx = W / 2, top = H * 0.06 + 20;
+  ctx.save(); ctx.translate(cx, top);
+  // 光
+  ctx.fillStyle = 'rgba(255,255,255,.6)';
+  for (let k = 0; k < 10; k++) { const a = k * Math.PI / 5 + G.t * 0.3; ctx.beginPath(); ctx.moveTo(0, gh * 0.5); ctx.arc(0, gh * 0.5, gh * 0.9, a, a + 0.18); ctx.closePath(); ctx.fill(); }
+  // ストロー
+  ctx.strokeStyle = '#FF5C8A'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(gw * 0.1, gh * 0.9); ctx.lineTo(gw * 0.3, -gh * 0.12); ctx.lineTo(gw * 0.5, -gh * 0.2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-gw / 2, 0); ctx.lineTo(gw / 2, 0); ctx.lineTo(gw * 0.4, gh); ctx.lineTo(-gw * 0.4, gh); ctx.closePath();
+  ctx.save(); ctx.clip(); ctx.fillStyle = r.color; ctx.fillRect(-gw, gh * 0.12 + Math.sin(G.t * 2) * 2, gw * 2, gh);
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-gw * 0.35, gh * 0.15, gw * 0.12, gh * 0.8); ctx.restore();
+  ctx.lineWidth = 4; ctx.strokeStyle = THEME.color.glassEdge; ctx.stroke();
+  // だめな物は上に浮いて見える
+  r.items.filter(i => ING[i].tags.includes('bad')).slice(0, 3).forEach((id, k) => drawIng(id, (k - 1) * gw * 0.3, gh * 0.12, gw * 0.14, Math.sin(G.t + k) * 0.4));
+  ctx.restore();
+}
+
+// ---------- ループ（1 本の rAF） ----------
+let last = performance.now();
+function frame(now) {
+  const raw = Math.min(0.1, Math.max(0, (now - last) / 1000)); last = now;
+  measure();
+  Inp.read(raw);
+  if (!G.paused) update(raw * G.timeScale); else Inp.take();
+  if (G.scene === 'collect' || G.scene === 'shake') {
+    const tl = G.scene === 'collect' ? Math.ceil(G.timeLeft) : G.shakeTime.toFixed(1);
+    $('hudTime').textContent = tl; $('hudTime').classList.toggle('low', G.scene === 'collect' && G.timeLeft < 5);
+    $('hudCount').textContent = (G.inMix.length + G.sucking.length) + '/' + THEME.game.capacity + (G.combo > 1 && G.t - G.lastPick < THEME.game.comboGap ? '  x' + G.combo : '');
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ---------- 一時停止 ----------
+function pause() {
+  if (!(G.scene === 'collect' || G.scene === 'shake' || G.scene === 'alarm') || G.paused) return;
+  G.paused = true; Inp.finger = null; Snd.humOff(); $('pause').classList.remove('hide');
+}
+function resume() { if (!G.paused) return; G.paused = false; $('pause').classList.add('hide'); last = performance.now(); }
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+window.addEventListener('pagehide', pause);
+window.addEventListener('blur', pause);
+
+// ---------- シート（図鑑・設定） ----------
+let sheetKind = '';
+function openSheet(kind) {
+  sheetKind = kind; $('sheet').classList.remove('hide');
+  if (kind === 'zukan') renderZukan(); else renderSettings();
+}
+function closeSheet() {
+  if (G.zukanOpen) { G.zukanOpen = null; G.zukanView = null; $('zdet').classList.add('hide'); document.body.classList.remove('zd'); }
+  $('sheet').classList.add('hide'); sheetKind = '';
+}
+
+let zukanHint = null;
+function renderZukan() {
+  const z = store.get('zukan', { recipes: {}, total: 0, best: 0 });
+  const all = DATA.recipes, found = all.filter(r => z.recipes[r.id]).length;
+  $('sheetTitle').textContent = '図鑑 ' + found + ' / ' + all.length;
+  const card = r => {
+    const e = z.recipes[r.id];
+    if (e) return '<div class="zc" data-id="' + r.id + '"><div class="sw" style="background:' + e.color + '"></div><div><b>' + esc(e.name) + '</b>' + '★'.repeat(e.bestStars) + '<br>' + e.count + ' 杯</div></div>';
+    return '<div class="zc unk" data-id="' + r.id + '"><div class="sw" style="background:#ddd"></div><div><b>？？？</b>' +
+      (zukanHint === r.id ? '<span class="hint">' + esc(recipeHint(r)) + '</span>' : 'まだ') + '</div></div>';
+  };
+  let h = '<div class="zsum"><b>' + found + '</b> / ' + all.length + '　作った数 ' + z.total + '　最高 ' + z.best + ' 点</div>';
+  const groups = (DATA.groups || []).concat(['その他']);
+  for (const g of groups) {
+    const list = all.filter(r => (groups.includes(r.g) ? r.g : 'その他') === g);
+    if (!list.length) continue;
+    h += '<h3 class="zg">' + esc(g) + '<span>' + list.filter(r => z.recipes[r.id]).length + ' / ' + list.length + '</span></h3><div class="zgrid">' + list.map(card).join('') + '</div>';
+  }
+  $('sheetBody').innerHTML = h;
+}
+$('sheetBody').addEventListener('click', e => {
+  const c = e.target.closest('.zc'); if (!c || sheetKind !== 'zukan') return;
+  openZukanDetail(c.dataset.id);
+});
+
+function itemsText(items) {
+  const cnt = {}; (items || []).forEach(i => cnt[i] = (cnt[i] || 0) + 1);
+  return Object.keys(cnt).map(i => (ING[i] ? ING[i].name : i) + (cnt[i] > 1 ? '×' + cnt[i] : '')).join('・') || '（なにも入っていない）';
+}
+function scoreText(score, parts) {
+  return score + ' 点（' + Object.keys(parts || {}).filter(k => parts[k]).map(k => k + ' ' + parts[k]).join(' / ') + '）';
+}
+function fmtDate(t) {
+  const d = new Date(t), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// 図鑑の詳細。結果画面と同じ見た目（グラスは本体の canvas に描く）
+function openZukanDetail(id) {
+  const rec = DATA.recipes.find(r => r.id === id); if (!rec) return false;
+  const z = store.get('zukan', { recipes: {} }), e = z.recipes[id];
+  if (!e) { zukanHint = zukanHint === id ? null : id; renderZukan(); return false; }
+  const f = e.first, l = e.last;
+  G.zukanOpen = id;
+  G.zukanView = { color: e.color, items: (f || l || {}).items || [] };
+  $('zdName').textContent = e.name;
+  $('zdStars').textContent = '★'.repeat(e.bestStars) + '☆'.repeat(5 - e.bestStars);
+  $('zdComment').textContent = rec.comment;
+  $('zdList').textContent = f ? '初めて ' + fmtDate(f.at) + '　' + itemsText(f.items) : '初めての記録なし';
+  $('zdScore').textContent = f ? scoreText(f.score, f.parts) : '';
+  $('zdStats').textContent = e.count + ' 杯　最高 ' + e.bestScore + ' 点' + (l ? '　最後 ' + fmtDate(l.at) : '');
+  $('sheet').classList.add('hide'); $('zdet').classList.remove('hide'); document.body.classList.add('zd');
+  return true;
+}
+function closeZukanDetail() {
+  if (!G.zukanOpen) return;
+  G.zukanOpen = null; G.zukanView = null;
+  $('zdet').classList.add('hide'); document.body.classList.remove('zd');
+  if (sheetKind === 'zukan') $('sheet').classList.remove('hide');
+}
+$('zdet').addEventListener('click', closeZukanDetail);
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function renderSettings() {
+  $('sheetTitle').textContent = '設定';
+  const I = THEME.input;
+  const range = (key, label, min, max, step, obj) => '<div class="set"><label><span>' + label + '</span><span id="v_' + key + '">' + (obj || I)[key] + '</span></label>' +
+    '<input type="range" data-k="' + key + '" data-g="' + (obj ? 'sound' : 'input') + '" min="' + min + '" max="' + max + '" step="' + step + '" value="' + (obj || I)[key] + '"></div>';
+  const opts = (key, label, list, g) => '<div class="set"><span>' + label + '</span><div class="opts">' +
+    list.map(o => '<button data-opt="' + key + '" data-g="' + g + '" data-v="' + o[0] + '" class="' + (String(THEME[g][key]) === String(o[0]) ? 'on' : '') + '">' + o[1] + '</button>').join('') + '</div></div>';
+  $('sheetBody').innerHTML =
+    opts('collect', '集める時間（秒）', [[15, '15'], [20, '20'], [25, '25'], [30, '30'], [40, '40']], 'time') +
+    opts('on', '音', [[true, '入'], [false, '切']], 'sound') +
+    range('vol', '音量', 0, 1, 0.05, THEME.sound) +
+    range('sens', '指で動かす速さ（倍）', 0.6, 2.5, 0.05) +
+    '<div class="set"><button id="setReset" class="btn">設定を最初に戻す</button><button id="setWipe" class="btn" style="margin-top:6px">図鑑を消す</button></div>';
+  $('sheetBody').querySelectorAll('input[type=range]').forEach(el => el.addEventListener('input', () => {
+    const g = el.dataset.g, k = el.dataset.k; THEME[g][k] = +el.value; $('v_' + k).textContent = el.value; Snd.applyVol(); saveSettings();
+  }));
+  $('sheetBody').querySelectorAll('[data-opt]').forEach(el => el.addEventListener('click', () => {
+    const g = el.dataset.g, k = el.dataset.opt, v = el.dataset.v;
+    THEME[g][k] = v === 'true' ? true : v === 'false' ? false : isFinite(+v) ? +v : v;
+    Snd.init(); Snd.applyVol(); saveSettings(); renderSettings();
+  }));
+  $('setReset').addEventListener('click', () => { store.set('settings', null); location.reload(); });
+  let wipeArm = 0;
+  $('setWipe').addEventListener('click', () => {
+    if (Date.now() - wipeArm < 3000) { store.set('zukan', null); wipeArm = 0; $('setWipe').textContent = '図鑑を消す'; toast('消した', 0.8); return; }
+    wipeArm = Date.now(); $('setWipe').textContent = 'もう一度押すと消える'; setTimeout(() => { const b = $('setWipe'); if (b) b.textContent = '図鑑を消す'; }, 3000);
+  });
+}
+
+// ---------- ボタンと指 ----------
+function onTap(id, fn) { $(id).addEventListener('click', e => { Snd.init(); fn(e); }); }
+onTap('btnStart', () => startRound(false));
+onTap('btnAgain', () => startRound(false));
+onTap('btnZukan', () => openSheet('zukan'));
+onTap('btnResZukan', () => openSheet('zukan'));
+onTap('btnSettings', () => openSheet('settings'));
+onTap('btnSheetClose', closeSheet);
+onTap('btnResTitle', () => setScene('title'));
+onTap('hudPause', pause);
+onTap('btnResume', resume);
+onTap('btnQuit', () => { G.paused = false; $('pause').classList.add('hide'); setScene('title'); });
+onTap('hudMix', () => { if (G.inMix.length + G.sucking.length > 0) endCollect('shake'); else toast('まだ空っぽ', 0.8); });
+$('sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
+
+function local(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+cv.addEventListener('pointerdown', e => {
+  Snd.init();
+  if (G.paused) return;
+  e.preventDefault();
+  if (G.scene === 'collect' || G.scene === 'shake' || G.scene === 'alarm') {
+    const q = local(e);
+    Inp.finger = { id: e.pointerId, x: q.x, y: q.y };
+    try { cv.setPointerCapture(e.pointerId); } catch (er) {}
+  }
+  if (G.scene === 'shake') mixTap();
+});
+cv.addEventListener('pointermove', e => {
+  const f = Inp.finger;
+  if (!f || e.pointerId !== f.id) return;
+  const q = local(e), dx = q.x - f.x, dy = q.y - f.y;
+  f.x = q.x; f.y = q.y;
+  if (G.paused) return;
+  if (G.scene === 'collect') { Inp.dx += dx; Inp.dy += dy; if (Math.abs(dx) + Math.abs(dy) > 2) G.everDragged = true; }
+  else if (G.scene === 'shake') Inp.rub += Math.hypot(dx, dy) / 400;
+});
+const fingerUp = e => { if (Inp.finger && e.pointerId === Inp.finger.id) Inp.finger = null; };
+cv.addEventListener('pointerup', fingerUp); cv.addEventListener('pointercancel', fingerUp); cv.addEventListener('lostpointercapture', fingerUp);
+document.addEventListener('touchmove', e => { if (!e.target.closest || !e.target.closest('#sheetBody, .sheet-body')) e.preventDefault(); }, { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('dblclick', e => e.preventDefault());
+document.addEventListener('contextmenu', e => e.preventDefault());
+// PC: スペース / Enter で混ぜる・始める、Esc で一時停止
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault(); Snd.init();
+    if (G.paused) resume();
+    else if (G.scene === 'shake') mixTap();
+    else if (G.scene === 'title' && $('sheet').classList.contains('hide')) startRound(false);
+    else if (G.scene === 'collect' && e.key === 'Enter') $('hudMix').click();
+  } else if (e.key === 'Escape') {
+    if (G.zukanOpen) closeZukanDetail(); else if (!$('sheet').classList.contains('hide')) closeSheet(); else if (G.paused) resume(); else pause();
+  }
+});
+
+// ↻（ゲーム集の上のバー）: いつでも新しい一杯を最初から
+window.resetGame = function () {
+  if (G.zukanOpen) closeZukanDetail();
+  closeSheet(); startRound(false);
+};
+
+// ---------- 監督用フック ----------
+window.__dbg = {
+  state() {
+    const m = G.mixer, f = field();
+    return JSON.stringify({
+      scene: G.scene, paused: G.paused, timeScale: G.timeScale,
+      timeLeft: +G.timeLeft.toFixed(2),
+      mixer: { x: Math.round(m.x), y: Math.round(m.y), vx: Math.round(m.vx), vy: Math.round(m.vy),
+               nx: +((m.x - f.x0) / (f.x1 - f.x0)).toFixed(3), ny: +((m.y - f.y0) / (f.y1 - f.y0)).toFixed(3), held: m.held },
+      inMix: G.inMix.concat(G.sucking.map(s => s.id)), onFloor: G.items.length, combo: G.combo, bestCombo: G.bestCombo, gather: G.gather,
+      gauge: +G.gauge.toFixed(1), gaugeMax: G.gaugeMax, shakeTime: +G.shakeTime.toFixed(2),
+      lid: { loose: +G.lid.loose.toFixed(2), off: G.lid.off > 0, flies: G.lid.flies },
+      result: G.result,
+      input: { finger: !!Inp.finger, rubSpeed: +Inp.rubSpeed.toFixed(2), sens: THEME.input.sens },
+      sound: { on: THEME.sound.on, ctx: Snd.ac ? Snd.ac.state : 'none' }, W, H, sheet: sheetKind, zukanOpen: G.zukanOpen || null, zukanHint: zukanHint || null
+    });
+  },
+  cmd(name, arg) {
+    switch (name) {
+      case 'start': startRound(arg === 'now'); break;
+      case 'pause': pause(); break;
+      case 'resume': resume(); break;
+      case 'mute': THEME.sound.on = arg == null ? !THEME.sound.on : !arg; Snd.applyVol(); break;
+      case 'fling': { // [vx, vy] U/秒 でミキサーをはじく
+        const p = Array.isArray(arg) ? arg : String(arg).split(',');
+        G.mixer.vx = (+p[0] || 0) * U; G.mixer.vy = (+p[1] || 0) * U; break;
+      }
+      case 'rub': { Inp.rub += +arg || 0; break; } // 400px 単位の道のりを足す
+      case 'fast': G.timeScale = +arg > 0 ? +arg : 1; break;
+      case 'finish':
+        if (G.scene === 'collect') endCollect('shake');
+        else if (G.scene === 'shake') { G.gauge = G.gaugeMax; updateShake(0); }
+        else if (G.scene === 'done') showResult();
+        break;
+      case 'add': if (ING[arg]) { G.inMix.push(arg); } break;
+      case 'title': closeZukanDetail(); closeSheet(); G.paused = false; $('pause').classList.add('hide'); setScene('title'); break;
+      case 'zukan': if (G.zukanOpen) closeZukanDetail(); openSheet('zukan'); if (arg) openZukanDetail(arg); break;
+      case 'zclose': closeZukanDetail(); break;
+      case 'settings': openSheet('settings'); break;
+      case 'close': closeSheet(); break;
+      case 'lid': flyLid(); break;
+      case 'tap': { const n = Math.max(1, +arg || 1); for (let k = 0; k < n; k++) mixTap(); break; }
+      case 'wipe': store.set('zukan', null); break;
+      default: return 'unknown: ' + name;
+    }
+    return this.state();
+  }
+};
+
+// ---------- 起動 ----------
+$('tTitle').textContent = THEME.text.title; $('tSub').textContent = THEME.text.sub; $('btnStart').textContent = THEME.text.start; $('hudMix').textContent = THEME.text.mix;
+measure(); setTimeout(measure, 300); setTimeout(measure, 1000);
+setScene('title');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
